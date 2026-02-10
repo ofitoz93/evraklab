@@ -11,16 +11,13 @@ import {
   Clock,
   Users,
   Zap,
-  Wallet,
   ShieldAlert,
   LogOut,
   ChevronRight,
-  Info,
   Star,
-  Sparkles,
 } from 'lucide-react';
 
-// --- FİYATLANDIRMA YAPILANDIRMASI ---
+// --- FİYATLANDIRMA AYARLARI ---
 const PRICING_CONFIG = {
   individual_standard: {
     1: { old: 250, price: 99, label: 'Aylık' },
@@ -51,7 +48,7 @@ export default function Pricing() {
   const [profile, setProfile] = useState<any>(null);
   const [activeMembersCount, setActiveMembersCount] = useState(1);
 
-  // Modlar
+  // Görünüm Modları
   const [viewMode, setViewMode] = useState<'selection' | 'dashboard'>(
     'selection'
   );
@@ -59,7 +56,7 @@ export default function Pricing() {
     'individual'
   );
 
-  // Seçimler
+  // Seçim State'leri
   const [addDuration, setAddDuration] = useState(12);
   const [targetSeats, setTargetSeats] = useState(5);
   const [companyName, setCompanyName] = useState('');
@@ -104,12 +101,16 @@ export default function Pricing() {
     setLoading(false);
   };
 
+  // Hangi fiyat tablosunu kullanacağız?
   const getCurrentPricingTable = () => {
     if (selectedPlan === 'corporate') return PRICING_CONFIG.corporate;
+
     const isPremium = profile?.role === 'premium_individual';
-    const hasTimeLeft =
-      profile?.subscription_end_date &&
-      new Date(profile.subscription_end_date) > new Date();
+    // Güvenli tarih kontrolü
+    const subEnd = profile?.subscription_end_date
+      ? new Date(profile.subscription_end_date)
+      : new Date(0);
+    const hasTimeLeft = subEnd > new Date();
 
     if (viewMode === 'dashboard' && isPremium && hasTimeLeft) {
       return PRICING_CONFIG.individual_renewal;
@@ -117,6 +118,7 @@ export default function Pricing() {
     return PRICING_CONFIG.individual_standard;
   };
 
+  // Toplam Tutar Hesaplama
   const calculateTotal = () => {
     const pricingTable = getCurrentPricingTable();
     // @ts-ignore
@@ -133,16 +135,15 @@ export default function Pricing() {
     return Math.max(0, total - credits);
   };
 
-  // --- SATIN ALMA TETİKLEYİCİ ---
+  // Satın Alma Butonuna Basınca
   const initiatePurchase = () => {
     if (viewMode === 'selection') {
-      // 1. Kurumsal Şirket Paketine sahip bir kişi bireysel premiuma geçmek isterse
+      // Kurumsaldan Bireysele geçiyorsa uyar
       if (profile?.organization_id && selectedPlan === 'individual') {
         setShowLeaveWarning(true);
         return;
       }
-
-      // 2. Bireysel premium olan bir kişi şirket almak istiyorsa
+      // Bireyselden Kurumsala geçiyorsa uyar
       if (
         profile?.role === 'premium_individual' &&
         selectedPlan === 'corporate'
@@ -150,48 +151,46 @@ export default function Pricing() {
         setShowIndToCorpWarning(true);
         return;
       }
-
-      // Diğer durumlar
+      // Normal işlem
       executePurchaseMock();
     } else {
       executePurchaseMock();
     }
   };
 
-  // --- MOCK ÖDEME FONKSİYONU (PAYTR BEKLENİYOR) ---
+  // --- MOCK ÖDEME FONKSİYONU (İŞLEM YAPMAZ, UYARI VERİR) ---
   const executePurchaseMock = () => {
-    // Modalları kapat
     setShowLeaveWarning(false);
     setShowIndToCorpWarning(false);
 
-    // Gerçek işlem yerine uyarı ver
+    // BURASI ÖNEMLİ: Gerçek işlem yerine sadece alert veriyoruz.
     alert(
-      '🚧 Ödeme Sistemi Entegrasyon Aşamasındadır.\n\nÇok yakında PayTR güvencesiyle paket satın alabileceksiniz.'
+      '🚧 Ödeme Sistemi Entegrasyon Aşamasındadır.\n\nÇok yakında kredi kartı ile güvenli ödeme yapabileceksiniz.'
     );
   };
-
-  /* // --- GERÇEK SATIN ALMA (PAYTR EKLENDİĞİNDE BU KOD AKTİF EDİLECEK) ---
-  const executePurchase = async () => {
-    if (!user) return alert('Giriş yapmalısınız.');
-    setProcessing(true);
-    // ... Eski veritabanı kayıt kodları buraya gelecek ...
-    setProcessing(false);
-  };
-  */
 
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;
 
   const pricingTable = getCurrentPricingTable();
-  const isRenewal =
-    profile?.role === 'premium_individual' &&
-    new Date(profile.subscription_end_date) > new Date();
+  // Tarih hesaplamaları
+  const orgEnd = profile?.organization?.subscription_end_date
+    ? new Date(profile.organization.subscription_end_date)
+    : null;
+  const indEnd = profile?.subscription_end_date
+    ? new Date(profile.subscription_end_date)
+    : null;
+  const finalDate = orgEnd || indEnd;
+  const isExpired = finalDate ? finalDate < new Date() : false;
+  const isRenewal = !isExpired && profile?.role === 'premium_individual';
 
-  // --- SÜRE SEÇİCİ BİLEŞENİ ---
+  // --- SÜRE SEÇİM KARTLARI ---
   const DurationSelector = () => (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
       {[1, 3, 6, 12].map((duration) => {
         // @ts-ignore
         const info = pricingTable[duration];
+        if (!info) return null;
+
         const monthlyCost = (info.price / duration).toFixed(2);
         const discountPercent = Math.round(
           ((info.old - info.price) / info.old) * 100
@@ -250,9 +249,7 @@ export default function Pricing() {
     </div>
   );
 
-  // ------------------------------------------------------------------
-  // GÖRÜNÜM: SELECTION (Paket Seçimi)
-  // ------------------------------------------------------------------
+  // --- GÖRÜNÜM 1: PAKET SEÇİMİ (SELECTION) ---
   if (viewMode === 'selection') {
     return (
       <div className="min-h-screen bg-gray-50 py-12 px-4 pb-40">
@@ -273,7 +270,7 @@ export default function Pricing() {
           </div>
         </div>
 
-        {/* ANA SEÇİM TABLARI */}
+        {/* Ana Sekmeler (Bireysel / Kurumsal) */}
         <div className="max-w-4xl mx-auto flex justify-center mb-10">
           <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
             <button
@@ -312,8 +309,10 @@ export default function Pricing() {
                 : 'Tüm ekibinizi tek çatı altında toplayın. Personel başına ücretlendirme ile maliyetlerinizi kontrol edin.'}
             </p>
 
+            {/* Süre Seçimi */}
             <DurationSelector />
 
+            {/* Kurumsal Ayarlar */}
             {selectedPlan === 'corporate' && (
               <div className="max-w-xl mx-auto bg-purple-50 p-6 rounded-2xl border border-purple-100 animate-fadeIn">
                 <div className="mb-4">
@@ -350,7 +349,7 @@ export default function Pricing() {
           </div>
         </div>
 
-        {/* ALT BAR (ÖDEME) */}
+        {/* Alt Bar */}
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.1)]">
           <div className="max-w-4xl mx-auto flex justify-between items-center">
             <div>
@@ -379,7 +378,7 @@ export default function Pricing() {
                 'İşleniyor...'
               ) : (
                 <>
-                  Ödeme Sistemi (Yakında) <ChevronRight />
+                  <CreditCard /> Ödeme Sistemi (Yakında) <ChevronRight />
                 </>
               )}
             </button>
@@ -459,15 +458,7 @@ export default function Pricing() {
     );
   }
 
-  // ------------------------------------------------------------------
-  // GÖRÜNÜM 2: DASHBOARD
-  // ------------------------------------------------------------------
-  const isExpired =
-    new Date(
-      profile?.organization?.subscription_end_date ||
-        profile?.subscription_end_date
-    ) < new Date();
-
+  // --- GÖRÜNÜM 2: YÖNETİM (DASHBOARD) ---
   return (
     <div className="max-w-5xl mx-auto py-10 px-4 pb-40">
       <div className="flex justify-between items-center mb-6">
@@ -513,7 +504,7 @@ export default function Pricing() {
             )}
             {!isExpired && isRenewal && (
               <span className="bg-green-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
-                <Sparkles size={12} /> Sadakat İndirimi Aktif
+                <Zap size={12} /> Sadakat İndirimi Aktif
               </span>
             )}
           </h1>
@@ -526,10 +517,7 @@ export default function Pricing() {
             )}
             <span className="flex items-center gap-1">
               <Clock size={16} /> Bitiş:{' '}
-              {new Date(
-                profile.organization?.subscription_end_date ||
-                  profile.subscription_end_date
-              ).toLocaleDateString()}
+              {finalDate ? finalDate.toLocaleDateString() : '-'}
             </span>
           </div>
         </div>
@@ -595,7 +583,7 @@ export default function Pricing() {
             </div>
           </div>
           <button
-            onClick={executePurchaseMock}
+            onClick={initiatePurchase}
             disabled={processing}
             className="w-full md:w-auto px-10 py-4 rounded-2xl font-bold text-white text-lg shadow-xl bg-gray-900 hover:bg-black transition flex items-center justify-center gap-2"
           >
