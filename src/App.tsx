@@ -24,10 +24,11 @@ import {
   Sun,
   Moon,
   HelpCircle,
-  Menu, // <--- YENİ: Hamburger Menü İkonu
-  X,    // <--- YENİ: Kapatma İkonu
+  Menu, // Hamburger Menü
+  X, // Kapatma İkonu
 } from 'lucide-react';
 
+// Sayfa Importları
 import Login from './Login';
 import Register from './Register';
 import Documents from './Documents';
@@ -44,6 +45,7 @@ import Dashboard from './Dashboard';
 import TeamChat from './TeamChat';
 import HelpPage from './HelpPage';
 
+// --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
 interface ThemeContextType {
   theme: Theme;
@@ -78,7 +80,7 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-// --- NAVBAR ---
+// --- NAVBAR COMPONENT ---
 function NavBarContent({
   session,
   userRole,
@@ -93,11 +95,13 @@ function NavBarContent({
   const [unreadCount, setUnreadCount] = useState(0);
   const [unreadTicketCount, setUnreadTicketCount] = useState(0);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false); // <--- MOBİL MENÜ DURUMU
+
+  // Mobil Menü State
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const { theme, toggleTheme } = useTheme();
 
-  // Sayfa değiştiğinde mobil menüyü kapat
+  // Sayfa değişince mobil menüyü kapat
   useEffect(() => {
     setIsMobileMenuOpen(false);
   }, [location]);
@@ -198,17 +202,17 @@ function NavBarContent({
   return (
     <nav className="sticky top-0 z-50 px-4 py-3 shadow-sm border-b transition-colors duration-300 bg-white border-gray-200 dark:bg-slate-900 dark:border-slate-800">
       <div className="max-w-7xl mx-auto flex justify-between items-center">
-        
-        {/* SOL TARA: Logo ve Hamburger */}
+        {/* --- SOL TARA: LOGO ve HAMBURGER --- */}
         <div className="flex items-center gap-4">
-          {/* MOBİL HAMBURGER BUTTON */}
-          <button 
+          {/* Mobil Menü Butonu (Mobilde görünür) */}
+          <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             className="lg:hidden p-2 text-gray-600 dark:text-gray-300 focus:outline-none"
           >
             {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
 
+          {/* LOGO: EVRAKLAB */}
           <Link
             to="/"
             className="flex items-center gap-2 hover:opacity-90 transition-opacity"
@@ -226,8 +230,8 @@ function NavBarContent({
             </div>
           </Link>
 
-          {/* DESKTOP MENÜ (Sadece büyük ekranda görünür) */}
-          <div className="hidden lg:flex gap-5 text-sm font-medium text-gray-600 dark:text-slate-300 ml-4">
+          {/* --- MASAÜSTÜ MENÜ LİNKLERİ (lg:flex ile sadece büyük ekranda görünür) --- */}
+          <div className="hidden lg:flex gap-5 text-sm font-medium text-gray-600 dark:text-slate-300 ml-6">
             <Link
               to="/documents"
               className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
@@ -290,7 +294,7 @@ function NavBarContent({
           </div>
         </div>
 
-        {/* SAĞ TARAF: Profil ve Ayarlar */}
+        {/* --- SAĞ TARAF: AYARLAR / PROFİL --- */}
         <div className="flex items-center gap-3 md:gap-4">
           <button
             onClick={toggleTheme}
@@ -298,73 +302,181 @@ function NavBarContent({
           >
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          
-          {/* Premium Butonu (Mobilde sadece ikon, büyük ekranda yazı) */}
+
+          {/* Masaüstü Premium Butonu */}
           {!isPremium && (
             <Link
               to="/pricing"
-              className="bg-gradient-to-r from-yellow-400 to-orange-500 text-white px-3 py-1.5 rounded-full font-bold shadow-md flex items-center gap-1 text-xs hover:scale-105 transition animate-pulse"
+              className="hidden sm:flex bg-gradient-to-r from-yellow-400 to-orange-500 text-white px-3 py-1.5 rounded-full font-bold shadow-md items-center gap-1 text-xs hover:scale-105 transition animate-pulse"
             >
-              <Crown size={14} /> <span className="hidden sm:inline">Premium</span>
+              <Crown size={14} /> Premium
             </Link>
           )}
-          
-          {/* Bilgi ve Ayarlar (Mobilde gizlenebilir veya küçültülebilir) */}
+
+          {isPremium && (
+            <div className="hidden sm:flex items-center gap-2">
+              {/* Premium Süre Kartı (Masaüstü) */}
+              {daysLeft !== null && (
+                <div
+                  className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded border transition cursor-default ${
+                    daysLeft <= 30
+                      ? 'text-red-600 bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-900'
+                      : 'text-green-600 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-900'
+                  }`}
+                >
+                  {daysLeft <= 0 ? (
+                    <AlertTriangle size={12} />
+                  ) : (
+                    <Clock size={12} />
+                  )}
+                  {daysLeft <= 0 ? 'Süre Doldu' : `${daysLeft} Gün`}
+                </div>
+              )}
+              {/* Premium Badge */}
+              <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-full px-1 py-0.5">
+                <span className="text-xs font-bold text-yellow-700 dark:text-yellow-500 px-2 flex items-center gap-1">
+                  <Crown size={12} /> PREMIUM
+                </span>
+                {canExtend && (
+                  <Link
+                    to="/pricing"
+                    className="text-[10px] bg-yellow-200 hover:bg-yellow-300 text-yellow-800 px-2 py-0.5 rounded-full font-bold transition"
+                  >
+                    Uzat
+                  </Link>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Ayırıcı Çizgi */}
+          <div className="h-6 w-px bg-gray-200 dark:bg-slate-700 hidden sm:block"></div>
+
+          {/* Masaüstü İkonlar (Yardım, Ayarlar, Çıkış) */}
           <div className="hidden sm:flex items-center gap-3">
-             <Link to="/help" className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400">
-               <HelpCircle size={20} />
-             </Link>
-             <Link to="/settings" className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400">
-               <SettingsIcon size={20} />
-             </Link>
-             <button onClick={handleLogout} className="text-gray-400 hover:text-red-600 dark:hover:text-red-400">
-               <LogOut size={20} />
-             </button>
+            <Link
+              to="/help"
+              className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+              title="Yardım"
+            >
+              <HelpCircle size={20} />
+            </Link>
+            <Link
+              to="/settings"
+              className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+              title="Ayarlar"
+            >
+              <SettingsIcon size={20} />
+            </Link>
+            <button
+              onClick={handleLogout}
+              className="text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+              title="Çıkış Yap"
+            >
+              <LogOut size={20} />
+            </button>
           </div>
         </div>
       </div>
 
-      {/* --- MOBİL MENÜ (Açılır Kapanır) --- */}
+      {/* --- MOBİL MENÜ (Sadece Mobilde Açılır) --- */}
       {isMobileMenuOpen && (
         <div className="lg:hidden absolute top-full left-0 w-full bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 shadow-xl animate-fadeIn z-50">
           <div className="flex flex-col p-4 space-y-4">
-            <Link to="/documents" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
+            {/* Mobil Premium Bilgisi (Varsa en üstte) */}
+            {isPremium && daysLeft !== null && (
+              <div
+                className={`flex items-center justify-between p-3 rounded-lg border ${
+                  daysLeft <= 30
+                    ? 'bg-red-50 border-red-200'
+                    : 'bg-green-50 border-green-200'
+                }`}
+              >
+                <span className="text-sm font-bold flex items-center gap-2">
+                  <Crown size={16} /> Premium Üye
+                </span>
+                <span className="text-xs font-bold">
+                  {daysLeft <= 0 ? 'Süre Doldu' : `${daysLeft} Gün Kaldı`}
+                </span>
+              </div>
+            )}
+
+            <Link
+              to="/documents"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
               <FileText size={20} /> Evraklar
             </Link>
-            
+
             {hasCompany && (
-              <Link to="/chat" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
-                <MessageSquare size={20} /> Sohbet 
-                {unreadChatCount > 0 && <span className="bg-green-500 text-white text-xs px-2 py-0.5 rounded-full">{unreadChatCount} Yeni</span>}
+              <Link
+                to="/chat"
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+              >
+                <MessageSquare size={20} /> Sohbet
+                {unreadChatCount > 0 && (
+                  <span className="bg-green-500 text-white text-xs px-2 py-0.5 rounded-full">
+                    {unreadChatCount} Yeni
+                  </span>
+                )}
               </Link>
             )}
 
-            <Link to="/notifications" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
+            <Link
+              to="/notifications"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
               <Bell size={20} /> Bildirimler
-              {unreadCount > 0 && <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">{unreadCount} Yeni</span>}
+              {unreadCount > 0 && (
+                <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">
+                  {unreadCount} Yeni
+                </span>
+              )}
             </Link>
 
             {canViewTeam && (
-              <Link to="/company" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
+              <Link
+                to="/company"
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+              >
                 <Users size={20} /> Ekip Yönetimi
               </Link>
             )}
 
-            <Link to="/support" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
+            <Link
+              to="/pricing"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
+              <Crown size={20} className="text-yellow-600" /> Paketler & Üyelik
+            </Link>
+
+            <Link
+              to="/support"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
               <MessageCircle size={20} /> Destek
             </Link>
 
             <div className="border-t border-gray-200 dark:border-slate-800 pt-2 mt-2"></div>
 
-            <Link to="/help" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
+            <Link
+              to="/help"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
               <HelpCircle size={20} /> Yardım & Kılavuz
             </Link>
 
-            <Link to="/settings" className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium">
+            <Link
+              to="/settings"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
               <SettingsIcon size={20} /> Ayarlar
             </Link>
 
-            <button onClick={handleLogout} className="flex items-center gap-3 p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 font-medium w-full text-left">
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 font-medium w-full text-left"
+            >
               <LogOut size={20} /> Çıkış Yap
             </button>
           </div>
@@ -374,7 +486,7 @@ function NavBarContent({
   );
 }
 
-// ... (Kalan kısımlar AppContent vb. aynı) ...
+// --- ANA UYGULAMA İÇERİĞİ ---
 function AppContent() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
