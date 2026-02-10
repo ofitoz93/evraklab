@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  min-height: 100vh;
+  /* Varsayılan: Beyaz. Karanlık mod: Koyu Lacivert (slate-900) */
+  @apply bg-white text-gray-900 dark:bg-slate-900 dark:text-gray-100 transition-colors duration-300;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Giriş ekranı input düzeltmesi */
+input,
+textarea,
+select {
+  @apply bg-white text-gray-900 border border-gray-300 rounded px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500;
+  @apply dark:bg-slate-800 dark:text-white dark:border-slate-700;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  @apply font-bold text-gray-900 dark:text-white;
+}
