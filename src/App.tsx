@@ -24,8 +24,9 @@ import {
   Sun,
   Moon,
   HelpCircle,
-  Menu, // Hamburger Menü
-  X, // Kapatma İkonu
+  Menu,
+  X,
+  Wrench, // <--- YENİ İKON (İngiliz Anahtarı)
 } from 'lucide-react';
 
 // Sayfa Importları
@@ -44,6 +45,7 @@ import Support from './Support';
 import Dashboard from './Dashboard';
 import TeamChat from './TeamChat';
 import HelpPage from './HelpPage';
+import Tools from './Tools'; // <--- YENİ ARAÇLAR SAYFASI
 
 // --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
@@ -96,12 +98,9 @@ function NavBarContent({
   const [unreadTicketCount, setUnreadTicketCount] = useState(0);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
 
-  // Mobil Menü State
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
   const { theme, toggleTheme } = useTheme();
 
-  // Sayfa değişince mobil menüyü kapat
   useEffect(() => {
     setIsMobileMenuOpen(false);
   }, [location]);
@@ -202,9 +201,7 @@ function NavBarContent({
   return (
     <nav className="sticky top-0 z-50 px-4 py-3 shadow-sm border-b transition-colors duration-300 bg-white border-gray-200 dark:bg-slate-900 dark:border-slate-800">
       <div className="max-w-7xl mx-auto flex justify-between items-center">
-        {/* --- SOL TARA: LOGO ve HAMBURGER --- */}
         <div className="flex items-center gap-4">
-          {/* Mobil Menü Butonu (Mobilde görünür) */}
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             className="lg:hidden p-2 text-gray-600 dark:text-gray-300 focus:outline-none"
@@ -212,7 +209,6 @@ function NavBarContent({
             {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
 
-          {/* LOGO: EVRAKLAB */}
           <Link
             to="/"
             className="flex items-center gap-2 hover:opacity-90 transition-opacity"
@@ -230,13 +226,20 @@ function NavBarContent({
             </div>
           </Link>
 
-          {/* --- MASAÜSTÜ MENÜ LİNKLERİ (lg:flex ile sadece büyük ekranda görünür) --- */}
           <div className="hidden lg:flex gap-5 text-sm font-medium text-gray-600 dark:text-slate-300 ml-6">
             <Link
               to="/documents"
               className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
             >
               <FileText size={16} /> Evraklar
+            </Link>
+
+            {/* --- ARAÇLAR LİNKİ EKLENDİ --- */}
+            <Link
+              to="/tools"
+              className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
+            >
+              <Wrench size={16} /> Araçlar
             </Link>
 
             {hasCompany && (
@@ -294,7 +297,6 @@ function NavBarContent({
           </div>
         </div>
 
-        {/* --- SAĞ TARAF: AYARLAR / PROFİL --- */}
         <div className="flex items-center gap-3 md:gap-4">
           <button
             onClick={toggleTheme}
@@ -303,7 +305,6 @@ function NavBarContent({
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
 
-          {/* Masaüstü Premium Butonu */}
           {!isPremium && (
             <Link
               to="/pricing"
@@ -315,7 +316,6 @@ function NavBarContent({
 
           {isPremium && (
             <div className="hidden sm:flex items-center gap-2">
-              {/* Premium Süre Kartı (Masaüstü) */}
               {daysLeft !== null && (
                 <div
                   className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded border transition cursor-default ${
@@ -332,7 +332,6 @@ function NavBarContent({
                   {daysLeft <= 0 ? 'Süre Doldu' : `${daysLeft} Gün`}
                 </div>
               )}
-              {/* Premium Badge */}
               <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-full px-1 py-0.5">
                 <span className="text-xs font-bold text-yellow-700 dark:text-yellow-500 px-2 flex items-center gap-1">
                   <Crown size={12} /> PREMIUM
@@ -349,10 +348,8 @@ function NavBarContent({
             </div>
           )}
 
-          {/* Ayırıcı Çizgi */}
           <div className="h-6 w-px bg-gray-200 dark:bg-slate-700 hidden sm:block"></div>
 
-          {/* Masaüstü İkonlar (Yardım, Ayarlar, Çıkış) */}
           <div className="hidden sm:flex items-center gap-3">
             <Link
               to="/help"
@@ -379,11 +376,10 @@ function NavBarContent({
         </div>
       </div>
 
-      {/* --- MOBİL MENÜ (Sadece Mobilde Açılır) --- */}
+      {/* --- MOBİL MENÜ --- */}
       {isMobileMenuOpen && (
         <div className="lg:hidden absolute top-full left-0 w-full bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 shadow-xl animate-fadeIn z-50">
           <div className="flex flex-col p-4 space-y-4">
-            {/* Mobil Premium Bilgisi (Varsa en üstte) */}
             {isPremium && daysLeft !== null && (
               <div
                 className={`flex items-center justify-between p-3 rounded-lg border ${
@@ -406,6 +402,14 @@ function NavBarContent({
               className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
             >
               <FileText size={20} /> Evraklar
+            </Link>
+
+            {/* Mobil Menüye Araçlar Eklendi */}
+            <Link
+              to="/tools"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
+              <Wrench size={20} /> Araçlar
             </Link>
 
             {hasCompany && (
@@ -486,7 +490,7 @@ function NavBarContent({
   );
 }
 
-// --- ANA UYGULAMA İÇERİĞİ ---
+// ... (Kalan kısım aynı) ...
 function AppContent() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -599,6 +603,8 @@ function AppContent() {
                 <Route path="/notifications" element={<Notifications />} />
                 <Route path="/support" element={<Support />} />
                 <Route path="/help" element={<HelpPage />} />
+                <Route path="/tools" element={<Tools />} />{' '}
+                {/* <--- YENİ ROTA */}
                 <Route
                   path="/admin"
                   element={

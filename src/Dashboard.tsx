@@ -3,25 +3,48 @@ import { supabase } from './supabaseClient';
 import { Link } from 'react-router-dom';
 import {
   FileText,
-  AlertTriangle,
   Clock,
-  PieChart,
-  Activity,
-  Scissors,
-  FilePlus,
-  Download,
+  AlertTriangle,
+  Plus,
   ArrowRight,
-  Building,
+  HardDrive,
+  CheckCircle,
+  TrendingUp,
+  Cloud,
+  Loader,
+  MapPin,
   User,
-  Briefcase, // Şahsi/Kurumsal ayrımı için ikon
+  Infinity, // Süresiz ikonu
+  Building,
+  AlertCircle,
+  File,
 } from 'lucide-react';
+
+// Boyut formatlama (Byte -> MB/GB)
+function formatBytes(bytes: number, decimals = 2) {
+  if (!bytes || bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({ total: 0, expired: 0, warning: 0 });
-  const [recentDocs, setRecentDocs] = useState<any[]>([]);
   const [userName, setUserName] = useState('');
-  const [orgName, setOrgName] = useState<string | null>(null);
+  const [stats, setStats] = useState({
+    totalDocs: 0,
+    expiringSoon: 0,
+    expired: 0,
+  });
+  const [storage, setStorage] = useState({
+    used: 0,
+    limit: 0,
+    percent: 0,
+    isCorporate: false,
+  });
+  const [recentDocs, setRecentDocs] = useState<any[]>([]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -29,346 +52,477 @@ export default function Dashboard() {
 
   const fetchDashboardData = async () => {
     setLoading(true);
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
-    if (session) {
-      // 1. Profil ve Yetki Bilgisi Çekme
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select(
-          'full_name, role, org_role, organization_id, organization:organizations(name), permissions'
-        )
-        .eq('id', session.user.id)
-        .single();
+      if (session) {
+        // 1. Profil ve Yetki Bilgisi
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select(
+            'id, full_name, role, permissions, storage_limit, storage_used, organization_id, organization:organizations(storage_limit, storage_used)'
+          )
+          .eq('id', session.user.id)
+          .single();
 
-      setUserName(profile?.full_name || 'Kullanıcı');
-      setOrgName(profile?.organization?.name || null);
+        if (profile) {
+          setUserName(profile.full_name);
+          const isCorp = !!profile.organization_id;
 
-      const userId = session.user.id;
-      const role = profile?.role || 'normal';
-      const orgRole = profile?.org_role; // Şirket içi rol (owner, chief, staff)
-      const myOrgId = profile?.organization_id;
-      const permissions = profile?.permissions || {};
+          // --- A. DEPOLAMA HESABI ---
+          let usedBytes = 0;
+          if (isCorp) {
+            const { data: orgUsage } = await supabase.rpc(
+              'get_org_storage_usage',
+              { org_id: profile.organization_id }
+            );
+            usedBytes = orgUsage || 0;
+          } else {
+            const { data: userUsage } = await supabase.rpc(
+              'get_user_storage_usage',
+              { target_user_id: session.user.id }
+            );
+            usedBytes = userUsage || 0;
+          }
 
-      // 2. Temel Sorgu Hazırlığı
-      let query = supabase
-        .from('documents')
-        .select('*, uploader:profiles(full_name)') // Yükleyen kişinin ismini de alalım
-        .eq('is_archived', false);
+          const limit = isCorp
+            ? profile.organization?.storage_limit
+            : profile.storage_limit;
+          const finalLimit = limit || (isCorp ? 1073741824 : 10485760);
 
-      // --- KRİTİK YETKİ MANTIĞI ---
+          setStorage({
+            used: usedBytes,
+            limit: finalLimit,
+            percent: Math.min(100, (usedBytes / finalLimit) * 100),
+            isCorporate: isCorp,
+          });
 
-      if (role === 'admin') {
-        // ADMIN: Her şeyi görür (Filtre yok)
-      } else {
-        // KULLANICI / YÖNETİCİ MANTIĞI
+          // --- B. BELGE SORGUSU ---
+          let query = supabase
+            .from('documents')
+            .select(
+              `
+                    *,
+                    uploader:profiles!uploader_id(full_name),
+                    type_def:user_definitions!type_def_id(label),
+                    location_def:user_definitions!location_def_id(label)
+                  `
+            )
+            .eq('is_archived', false); // Sadece aktifler
 
-        // Yönetici mi? (Rolü premium_corporate veya org_role owner ise)
-        const isOwner = role === 'premium_corporate' || orgRole === 'owner';
+          if (isCorp) {
+            const isOwner = profile.role === 'premium_corporate';
+            const hasViewPerm =
+              profile.permissions &&
+              profile.permissions.can_view_team_docs === true;
 
-        // Görme yetkisi olan Şef mi?
-        const isAuthorizedChief =
-          (role === 'corporate_chief' || orgRole === 'chief') &&
-          permissions.can_view_team_docs;
+            if (isOwner || hasViewPerm) {
+              // Yönetici: Şirkete ait + Kendi yükledikleri
+              query = query.or(
+                `organization_id.eq.${profile.organization_id},uploader_id.eq.${session.user.id}`
+              );
+            } else {
+              // Personel: Sadece kendi yükledikleri
+              query = query.eq('uploader_id', session.user.id);
+            }
+          } else {
+            // Bireysel
+            query = query.eq('uploader_id', session.user.id);
+          }
 
-        if (myOrgId && (isOwner || isAuthorizedChief)) {
-          // YÖNETİCİ veya YETKİLİ ŞEF İSE:
-          // "Belgeyi ben yükledim" (Şahsi veya Kurumsal) VEYA "Belge benim şirketime ait"
-          query = query.or(
-            `uploader_id.eq.${userId},organization_id.eq.${myOrgId}`
+          const { data: docs, error: docError } = await query.order(
+            'created_at',
+            { ascending: false }
           );
-        } else {
-          // STANDART PERSONEL veya NORMAL KULLANICI İSE:
-          // Sadece kendi yüklediği belgeleri görür.
-          query = query.eq('uploader_id', userId);
+
+          if (docError) console.error('Belge hatası:', docError.message);
+
+          if (docs) {
+            // İSTATİSTİK HESAPLAMA
+            const now = new Date();
+            now.setHours(0, 0, 0, 0);
+
+            const totalDocs = docs.length;
+            let expiredCount = 0;
+            let expiringSoonCount = 0;
+
+            docs.forEach((d) => {
+              if (d.is_indefinite) return;
+
+              const targetDateStr = d.son_tarih || d.expiry_date;
+              if (!targetDateStr) return;
+
+              const targetDate = new Date(targetDateStr);
+              if (isNaN(targetDate.getTime())) return;
+
+              targetDate.setHours(0, 0, 0, 0);
+              const diffTime = targetDate.getTime() - now.getTime();
+              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+              if (diffDays < 0) expiredCount++;
+              else if (diffDays <= 30) expiringSoonCount++;
+            });
+
+            setStats({
+              totalDocs,
+              expired: expiredCount,
+              expiringSoon: expiringSoonCount,
+            });
+
+            setRecentDocs(docs.slice(0, 10));
+          }
         }
       }
-
-      const { data: docs, error } = await query;
-
-      if (!error && docs) {
-        // İstatistik Hesaplama
-        let exp = 0;
-        let warn = 0;
-        const now = new Date().getTime();
-
-        docs.forEach((doc) => {
-          if (!doc.is_indefinite && doc.application_deadline) {
-            const date = new Date(doc.application_deadline).getTime();
-            const diffDay = Math.ceil((date - now) / (1000 * 3600 * 24));
-
-            if (diffDay < 0) exp++;
-            else if (diffDay <= 30) warn++;
-          }
-        });
-
-        setStats({
-          total: docs.length,
-          expired: exp,
-          warning: warn,
-        });
-
-        // Son Eklenenler (Tarihe göre yeniden eskiye sırala ve ilk 5'i al)
-        const sorted = docs
-          .sort(
-            (a, b) =>
-              new Date(b.created_at).getTime() -
-              new Date(a.created_at).getTime()
-          )
-          .slice(0, 5);
-        setRecentDocs(sorted);
-      }
+    } catch (error) {
+      console.error('Dashboard hatası:', error);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  const getStorageColor = () => {
+    if (storage.percent > 90) return 'bg-red-500';
+    if (storage.percent > 70) return 'bg-orange-500';
+    return 'bg-blue-600';
   };
 
   if (loading)
     return (
-      <div className="p-10 text-center text-gray-500 dark:text-gray-400">
-        Panel hazırlanıyor...
+      <div className="flex flex-col items-center justify-center h-[50vh] text-gray-500 dark:text-gray-400">
+        <Loader className="animate-spin mb-2" />
+        Veriler Yükleniyor...
       </div>
     );
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8">
+    <div className="max-w-7xl mx-auto py-8 px-4 pb-24">
       {/* BAŞLIK */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
-            <PieChart className="text-blue-600" /> Kontrol Paneli
+          <h1 className="text-3xl font-black text-gray-800 dark:text-white flex items-center gap-2">
+            Merhaba, {userName} <span className="text-2xl">👋</span>
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Hoş geldin,{' '}
-            <span className="font-bold text-gray-800 dark:text-gray-200">
-              {userName}
+          <p className="text-gray-500 dark:text-gray-400 mt-1 font-medium">
+            Evrak işlerini bugün de kontrol altında tutuyoruz.
+          </p>
+        </div>
+        <Link
+          to="/documents/add"
+          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-blue-600/20 transition flex items-center gap-2"
+        >
+          <Plus size={20} /> Yeni Belge Ekle
+        </Link>
+      </div>
+
+      {/* İSTATİSTİK KARTLARI */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+        {/* Toplam Belge */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col justify-between transition hover:shadow-md">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-xl">
+              <FileText size={24} />
+            </div>
+            <span className="text-xs font-bold bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-gray-300 px-2 py-1 rounded-lg">
+              Toplam
             </span>
-            .
-            {orgName && (
-              <span className="ml-1 px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">
-                <Building size={10} className="inline mr-1" />
-                {orgName}
-              </span>
-            )}
-          </p>
-        </div>
-        <div className="text-right hidden md:block">
-          <p className="text-xs text-gray-400 font-mono">
-            {new Date().toLocaleDateString('tr-TR', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
-          </p>
-        </div>
-      </div>
-
-      {/* İSTATİSTİK KARTLARI (Kişisel + Yetki Varsa Şirket Toplamı) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-blue-100 dark:border-slate-700 relative overflow-hidden group hover:shadow-md transition">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 dark:bg-blue-900/20 rounded-bl-full -mr-4 -mt-4 transition group-hover:scale-110"></div>
-          <div className="relative z-10">
-            <div className="text-gray-500 dark:text-gray-400 text-xs font-bold uppercase mb-2">
-              Toplam Belge
-            </div>
-            <div className="text-4xl font-extrabold text-blue-600 dark:text-blue-400">
-              {stats.total}
-            </div>
-            <Link
-              to="/documents"
-              className="mt-4 inline-flex items-center gap-1 text-sm text-blue-600 font-bold hover:underline"
-            >
-              Listeye Git <ArrowRight size={14} />
-            </Link>
           </div>
-          <FileText
-            className="absolute bottom-4 right-4 text-blue-100 dark:text-slate-700"
-            size={48}
-          />
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-red-100 dark:border-slate-700 relative overflow-hidden group hover:shadow-md transition">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-red-50 dark:bg-red-900/20 rounded-bl-full -mr-4 -mt-4 transition group-hover:scale-110"></div>
-          <div className="relative z-10">
-            <div className="text-gray-500 dark:text-gray-400 text-xs font-bold uppercase mb-2">
-              Süresi Geçen
-            </div>
-            <div className="text-4xl font-extrabold text-red-600 dark:text-red-400">
-              {stats.expired}
-            </div>
-            <div className="text-xs text-red-400 mt-2 font-medium">
-              Acil müdahale gerekli
-            </div>
-          </div>
-          <AlertTriangle
-            className="absolute bottom-4 right-4 text-red-100 dark:text-slate-700"
-            size={48}
-          />
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-orange-100 dark:border-slate-700 relative overflow-hidden group hover:shadow-md transition">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-orange-50 dark:bg-orange-900/20 rounded-bl-full -mr-4 -mt-4 transition group-hover:scale-110"></div>
-          <div className="relative z-10">
-            <div className="text-gray-500 dark:text-gray-400 text-xs font-bold uppercase mb-2">
-              Yaklaşan (30 Gün)
-            </div>
-            <div className="text-4xl font-extrabold text-orange-500 dark:text-orange-400">
-              {stats.warning}
-            </div>
-            <div className="text-xs text-orange-400 mt-2 font-medium">
-              Takip edilmeli
-            </div>
-          </div>
-          <Clock
-            className="absolute bottom-4 right-4 text-orange-100 dark:text-slate-700"
-            size={48}
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* SOL: SON EKLENEN BELGELER */}
-        <div className="lg:col-span-2 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-gray-200 dark:border-slate-700 p-6">
-          <h2 className="text-lg font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
-            <Activity className="text-gray-400" size={20} /> Son Eklenen
-            Belgeler
-          </h2>
-          <div className="space-y-3">
-            {recentDocs.length === 0 ? (
-              <div className="text-center py-10 text-gray-400 text-sm">
-                Görüntülenecek belge yok.
-              </div>
-            ) : (
-              recentDocs.map((doc) => {
-                // Belge Kurumsal mı Şahsi mi kontrolü
-                const isCorporate = !!doc.organization_id;
-
-                return (
-                  <div
-                    key={doc.id}
-                    className="flex items-center justify-between p-3 hover:bg-gray-50 dark:hover:bg-slate-700/50 rounded-lg transition border border-transparent hover:border-gray-100 dark:hover:border-slate-600"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                          isCorporate
-                            ? 'bg-purple-50 text-purple-600 dark:bg-purple-900/30 dark:text-purple-300'
-                            : 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300'
-                        }`}
-                      >
-                        {isCorporate ? (
-                          <Building size={20} />
-                        ) : (
-                          <User size={20} />
-                        )}
-                      </div>
-                      <div>
-                        <div className="font-bold text-sm text-gray-800 dark:text-gray-200 flex items-center gap-2">
-                          {doc.title}
-                          {/* Eğer yönetici ise ve belge başkasınınsa, kimin olduğunu göster */}
-                          {isCorporate && doc.uploader && (
-                            <span className="text-[10px] font-normal text-gray-400 bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">
-                              {doc.uploader.full_name}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-gray-400 flex items-center gap-1">
-                          {isCorporate ? 'Kurumsal Belge' : 'Şahsi Belge'} •{' '}
-                          {new Date(doc.created_at).toLocaleDateString('tr-TR')}
-                        </div>
-                      </div>
-                    </div>
-                    <Link
-                      to={`/documents/${doc.id}`}
-                      className="text-xs font-bold text-gray-500 hover:text-blue-600 px-3 py-1.5 bg-gray-100 dark:bg-slate-700 rounded-lg transition"
-                    >
-                      Detay
-                    </Link>
-                  </div>
-                );
-              })
-            )}
-          </div>
-          <div className="mt-6 text-center">
-            <Link
-              to="/documents"
-              className="text-sm font-bold text-blue-600 hover:text-blue-700 hover:underline"
-            >
-              Tüm Belgeleri Görüntüle
-            </Link>
-          </div>
-        </div>
-
-        {/* SAĞ: HIZLI ARAÇLAR (GELECEK İÇİN YER TUTUCU) */}
-        <div className="lg:col-span-1">
-          <div className="bg-gradient-to-br from-indigo-900 to-slate-900 text-white rounded-2xl shadow-lg p-6 h-full relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none"></div>
-
-            <h2 className="text-lg font-bold mb-2 flex items-center gap-2">
-              <Scissors size={20} /> Hızlı Araçlar
-            </h2>
-            <p className="text-indigo-200 text-xs mb-6">
-              PDF işlemleri ve dönüştürücüler çok yakında.
+          <div>
+            <h3 className="text-3xl font-black text-gray-800 dark:text-white">
+              {stats.totalDocs}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+              Görüntülenen Belge
             </p>
+          </div>
+        </div>
 
-            <div className="space-y-3">
-              <button
-                disabled
-                className="w-full flex items-center gap-3 p-3 rounded-xl bg-white/10 border border-white/10 hover:bg-white/20 transition cursor-not-allowed opacity-70 group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center shadow-lg">
-                  <Scissors size={16} />
-                </div>
-                <div className="text-left">
-                  <div className="font-bold text-sm">PDF Böl</div>
-                  <div className="text-[10px] text-indigo-300">
-                    Sayfaları ayırın
-                  </div>
-                </div>
-                <div className="ml-auto text-[10px] bg-indigo-950 px-2 py-0.5 rounded text-indigo-300">
-                  Yakında
-                </div>
-              </button>
+        {/* Yaklaşan */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col justify-between transition hover:shadow-md">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-3 bg-yellow-50 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400 rounded-xl">
+              <Clock size={24} />
+            </div>
+            <span className="text-xs font-bold bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400 px-2 py-1 rounded-lg">
+              30 Gün
+            </span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-black text-gray-800 dark:text-white">
+              {stats.expiringSoon}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+              Süresi Yaklaşan
+            </p>
+          </div>
+        </div>
 
-              <button
-                disabled
-                className="w-full flex items-center gap-3 p-3 rounded-xl bg-white/10 border border-white/10 hover:bg-white/20 transition cursor-not-allowed opacity-70 group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center shadow-lg">
-                  <FilePlus size={16} />
-                </div>
-                <div className="text-left">
-                  <div className="font-bold text-sm">PDF Birleştir</div>
-                  <div className="text-[10px] text-teal-200">
-                    Dosyaları birleştirin
-                  </div>
-                </div>
-                <div className="ml-auto text-[10px] bg-teal-950 px-2 py-0.5 rounded text-teal-300">
-                  Yakında
-                </div>
-              </button>
+        {/* Dolan */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col justify-between transition hover:shadow-md">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-3 bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-xl">
+              <AlertTriangle size={24} />
+            </div>
+            <span className="text-xs font-bold bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 px-2 py-1 rounded-lg">
+              Dikkat
+            </span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-black text-gray-800 dark:text-white">
+              {stats.expired}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+              Süresi Dolan
+            </p>
+          </div>
+        </div>
 
-              <button
-                disabled
-                className="w-full flex items-center gap-3 p-3 rounded-xl bg-white/10 border border-white/10 hover:bg-white/20 transition cursor-not-allowed opacity-70 group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-orange-500 flex items-center justify-center shadow-lg">
-                  <Download size={16} />
-                </div>
-                <div className="text-left">
-                  <div className="font-bold text-sm">Format Çevirici</div>
-                  <div className="text-[10px] text-orange-200">
-                    JPG to PDF vb.
-                  </div>
-                </div>
-                <div className="ml-auto text-[10px] bg-orange-950 px-2 py-0.5 rounded text-orange-300">
-                  Yakında
-                </div>
-              </button>
+        {/* DEPOLAMA KARTI */}
+        <div className="bg-gradient-to-br from-slate-800 to-slate-900 dark:from-slate-900 dark:to-black p-6 rounded-2xl shadow-lg text-white flex flex-col justify-between relative overflow-hidden ring-1 ring-white/10">
+          <Cloud
+            className="absolute -right-4 -top-4 text-white opacity-5"
+            size={100}
+          />
+          <div className="flex justify-between items-start mb-4 relative z-10">
+            <div className="p-3 bg-white/10 rounded-xl backdrop-blur-sm border border-white/10">
+              <HardDrive size={24} className="text-blue-300" />
+            </div>
+            <Link
+              to="/pricing"
+              className="text-xs font-bold bg-blue-600/90 hover:bg-blue-600 px-3 py-1.5 rounded-lg transition shadow-lg"
+            >
+              Yükselt
+            </Link>
+          </div>
+          <div className="relative z-10">
+            <div className="flex justify-between items-end mb-2">
+              <div>
+                <h3 className="text-xl font-bold tracking-tight">
+                  {formatBytes(storage.used)}
+                </h3>
+                <p className="text-xs text-slate-400 font-medium">
+                  Kullanılan Alan
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-400 block">Limit</span>
+                <span className="text-sm font-bold">
+                  {formatBytes(storage.limit)}
+                </span>
+              </div>
+            </div>
+            <div className="w-full bg-slate-700/50 rounded-full h-2 overflow-hidden border border-white/5">
+              <div
+                className={`h-full rounded-full transition-all duration-1000 shadow-[0_0_10px_rgba(59,130,246,0.5)] ${getStorageColor()}`}
+                style={{ width: `${storage.percent}%` }}
+              ></div>
+            </div>
+            <div className="text-[10px] text-right mt-2 text-slate-400 font-medium flex items-center justify-end gap-1">
+              {storage.isCorporate ? (
+                <Building size={10} />
+              ) : (
+                <User size={10} />
+              )}
+              {storage.isCorporate ? 'Şirket Kotası' : 'Bireysel Kota'}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* SON İŞLEMLER TABLOSU */}
+      <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
+        <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-gray-50/50 dark:bg-slate-800/50">
+          <h2 className="text-lg font-bold text-gray-800 dark:text-white flex items-center gap-2">
+            <TrendingUp
+              size={20}
+              className="text-blue-600 dark:text-blue-400"
+            />{' '}
+            Son İşlemler
+          </h2>
+          <Link
+            to="/documents"
+            className="text-sm font-bold text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1 transition"
+          >
+            Tümünü Gör <ArrowRight size={16} />
+          </Link>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="text-gray-400 dark:text-gray-500 text-xs uppercase border-b border-gray-100 dark:border-slate-700 bg-white dark:bg-slate-800">
+                <th className="p-4 font-bold tracking-wider">
+                  Belge Türü / Adı
+                </th>
+                <th className="p-4 font-bold hidden md:table-cell tracking-wider">
+                  Lokasyon
+                </th>
+                <th className="p-4 font-bold hidden lg:table-cell tracking-wider">
+                  Yükleyen
+                </th>
+                <th className="p-4 font-bold text-right tracking-wider">
+                  Durum (Son Başvuru)
+                </th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {recentDocs.length > 0 ? (
+                recentDocs.map((doc) => {
+                  // --- DURUM HESAPLAMA ---
+                  const isIndefinite = doc.is_indefinite || false;
+                  const dateStr = doc.son_tarih || doc.expiry_date;
+
+                  let statusBadge = null;
+                  let subText = '';
+
+                  if (isIndefinite) {
+                    statusBadge = (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-gray-100 text-gray-600 border border-gray-200 dark:bg-slate-700 dark:text-gray-300 dark:border-slate-600">
+                        <Infinity size={12} /> SÜRESİZ
+                      </span>
+                    );
+                    subText = 'Bitiş Yok';
+                  } else if (dateStr && !isNaN(new Date(dateStr).getTime())) {
+                    const targetDate = new Date(dateStr);
+                    const now = new Date();
+
+                    // Saatleri sıfırla (Tam gün farkı için)
+                    targetDate.setHours(0, 0, 0, 0);
+                    now.setHours(0, 0, 0, 0);
+
+                    const diffTime = targetDate.getTime() - now.getTime();
+                    const diffDays = Math.ceil(
+                      diffTime / (1000 * 60 * 60 * 24)
+                    );
+
+                    const dateFormatted =
+                      targetDate.toLocaleDateString('tr-TR');
+
+                    if (diffDays < 0) {
+                      // SÜRESİ GEÇTİ
+                      statusBadge = (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-red-50 text-red-600 border border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/50">
+                          <AlertCircle size={12} /> SÜRESİ GEÇTİ (
+                          {Math.abs(diffDays)} GÜN)
+                        </span>
+                      );
+                      subText = `Son Başvuru: ${dateFormatted}`;
+                    } else if (diffDays <= 30) {
+                      // YAKLAŞIYOR
+                      statusBadge = (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-50 text-yellow-700 border border-yellow-200 dark:bg-yellow-900/20 dark:text-yellow-400 dark:border-yellow-900/50">
+                          <Clock size={12} /> YAKLAŞIYOR ({diffDays} GÜN)
+                        </span>
+                      );
+                      subText = `Son Başvuru: ${dateFormatted}`;
+                    } else {
+                      // GÜNCEL
+                      statusBadge = (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-green-50 text-green-600 border border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/50">
+                          <CheckCircle size={12} /> GÜNCEL ({diffDays} GÜN)
+                        </span>
+                      );
+                      subText = `Son Başvuru: ${dateFormatted}`;
+                    }
+                  } else {
+                    statusBadge = (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-gray-50 text-gray-400 border border-gray-200 dark:bg-slate-700 dark:text-gray-500 dark:border-slate-600">
+                        BELİRSİZ
+                      </span>
+                    );
+                    subText = '-';
+                  }
+
+                  return (
+                    <tr
+                      key={doc.id}
+                      className="border-b border-gray-50 dark:border-slate-700/50 last:border-0 hover:bg-gray-50 dark:hover:bg-slate-700/30 transition group"
+                    >
+                      {/* 1. Belge Türü (Koyu) ve Dosya Adı (Silik) */}
+                      <td className="p-4">
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hidden sm:block">
+                            <File size={18} />
+                          </div>
+                          <div className="flex flex-col">
+                            {/* Ana Başlık: Belge Türü */}
+                            <span className="font-bold text-gray-800 dark:text-gray-200 uppercase text-xs sm:text-sm mb-0.5 tracking-wide">
+                              {doc.type_def?.label ||
+                                doc.kategori ||
+                                'GENEL BELGE'}
+                            </span>
+                            {/* Alt Bilgi: Dosya Adı */}
+                            <div className="flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
+                              <FileText size={10} className="sm:hidden" />
+                              <span
+                                className="truncate max-w-[180px] sm:max-w-[250px]"
+                                title={doc.belge_adi || doc.title}
+                              >
+                                {doc.belge_adi || doc.title || 'Dosyasız Kayıt'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* 2. Lokasyon */}
+                      <td className="p-4 hidden md:table-cell">
+                        <div className="flex items-center gap-1.5 text-gray-600 dark:text-gray-300 font-medium text-xs bg-gray-100 dark:bg-slate-700 px-2.5 py-1.5 rounded-md w-fit">
+                          <MapPin size={12} className="text-gray-400" />
+                          {doc.location_def?.label || 'Belirtilmemiş'}
+                        </div>
+                      </td>
+
+                      {/* 3. Yükleyen */}
+                      <td className="p-4 hidden lg:table-cell">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 flex items-center justify-center text-xs font-bold border border-blue-200 dark:border-blue-800">
+                            {doc.uploader?.full_name?.charAt(0) || (
+                              <User size={12} />
+                            )}
+                          </div>
+                          <span className="truncate max-w-[140px] text-sm font-medium text-gray-600 dark:text-gray-300">
+                            {doc.uploader?.full_name || 'Bilinmiyor'}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* 4. Durum (Badge) ve Tarih */}
+                      <td className="p-4 text-right">
+                        <div className="flex flex-col items-end gap-1">
+                          {statusBadge}
+                          <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">
+                            {subText}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td
+                    colSpan={4}
+                    className="p-12 text-center text-gray-400 dark:text-gray-500"
+                  >
+                    <div className="flex flex-col items-center justify-center">
+                      <div className="bg-gray-50 dark:bg-slate-800 p-4 rounded-full mb-3">
+                        <FileText size={32} className="opacity-30" />
+                      </div>
+                      <p className="font-medium">Henüz işlem yapılmamış.</p>
+                      <Link
+                        to="/documents/add"
+                        className="text-blue-600 dark:text-blue-400 text-xs font-bold mt-2 hover:underline"
+                      >
+                        İlk Belgeyi Yükle
+                      </Link>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

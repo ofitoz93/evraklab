@@ -162,15 +162,13 @@ export default function AddDocument() {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) return;
-    await supabase
-      .from('user_definitions')
-      .insert([
-        {
-          user_id: session.user.id,
-          category: manageCategory,
-          label: newDefLabel.trim(),
-        },
-      ]);
+    await supabase.from('user_definitions').insert([
+      {
+        user_id: session.user.id,
+        category: manageCategory,
+        label: newDefLabel.trim(),
+      },
+    ]);
     setNewDefLabel('');
     fetchDefinitions(session.user.id);
   };
@@ -240,8 +238,10 @@ export default function AddDocument() {
         canUploadCorporate && docScope === 'corporate' ? myOrgId : null;
       let publicUrl = null;
       let fileExt = null;
+      let fileSize = 0; // Dosya boyutu (Byte)
 
       if (file) {
+        fileSize = file.size; // Dosya boyutunu alıyoruz
         fileExt = file.name.split('.').pop();
         const fileName = `${Date.now()}.${fileExt}`;
         const folder = finalOrgId || session.user.id;
@@ -262,12 +262,15 @@ export default function AddDocument() {
         {
           organization_id: finalOrgId,
           uploader_id: session.user.id,
+          user_id: session.user.id, // Kullanıcı ID'si de eklenmeli
           title: file ? file.name : 'Dosyasız Kayıt',
+          belge_adi: file ? file.name : 'Dosyasız Kayıt', // İsim eşitleme
           description: desc,
           type_def_id: selectedTypeId,
           location_def_id: selectedLocId || null,
           acquisition_date: acquisitionDate,
           expiry_date: isIndefinite ? null : expiryDate,
+          son_tarih: isIndefinite ? null : expiryDate, // Dashboard için gerekli
           application_deadline: isIndefinite ? null : appDeadline || expiryDate,
           is_indefinite: isIndefinite,
           reminder_days: isPremium ? reminderDays : 0,
@@ -275,6 +278,7 @@ export default function AddDocument() {
           is_archived: false,
           file_url: publicUrl,
           file_type: fileExt,
+          file_size: fileSize, // <--- ÖNEMLİ: Dosya boyutu veritabanına yazılıyor
         },
       ]);
 

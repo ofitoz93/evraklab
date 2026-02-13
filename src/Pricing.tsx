@@ -15,7 +15,10 @@ import {
   LogOut,
   ChevronRight,
   Star,
+  Database, // Depolama İkonu
+  HardDrive,
 } from 'lucide-react';
+import { formatBytes } from './utils'; // Utils dosyasını oluşturduysan import et, yoksa aşağıya fonksiyonu ekle
 
 // --- FİYATLANDIRMA AYARLARI ---
 const PRICING_CONFIG = {
@@ -37,6 +40,11 @@ const PRICING_CONFIG = {
     6: { old: 3000, price: 1074, label: '6 Aylık' },
     12: { old: 6000, price: 1788, label: '1 Yıllık' },
   },
+  // YENİ: Depolama Paketleri
+  storage: [
+    { size_gb: 0.5, bytes: 524288000, price: 50, label: '500 MB Ekstra' },
+    { size_gb: 1, bytes: 1073741824, price: 90, label: '1 GB Ekstra' },
+  ],
 };
 
 export default function Pricing() {
@@ -48,7 +56,11 @@ export default function Pricing() {
   const [profile, setProfile] = useState<any>(null);
   const [activeMembersCount, setActiveMembersCount] = useState(1);
 
-  // Görünüm Modları
+  // Görünüm Modları: 'subscription' (Süre) veya 'storage' (Depolama)
+  const [purchaseType, setPurchaseType] = useState<'subscription' | 'storage'>(
+    'subscription'
+  );
+
   const [viewMode, setViewMode] = useState<'selection' | 'dashboard'>(
     'selection'
   );
@@ -60,6 +72,10 @@ export default function Pricing() {
   const [addDuration, setAddDuration] = useState(12);
   const [targetSeats, setTargetSeats] = useState(5);
   const [companyName, setCompanyName] = useState('');
+
+  // Depolama Seçimi
+  const [selectedStorageIndex, setSelectedStorageIndex] = useState(1); // Varsayılan 1 GB
+  const [storageQuantity, setStorageQuantity] = useState(1); // Kaç adet alınacak?
 
   // Modallar
   const [showLeaveWarning, setShowLeaveWarning] = useState(false);
@@ -101,12 +117,9 @@ export default function Pricing() {
     setLoading(false);
   };
 
-  // Hangi fiyat tablosunu kullanacağız?
   const getCurrentPricingTable = () => {
     if (selectedPlan === 'corporate') return PRICING_CONFIG.corporate;
-
     const isPremium = profile?.role === 'premium_individual';
-    // Güvenli tarih kontrolü
     const subEnd = profile?.subscription_end_date
       ? new Date(profile.subscription_end_date)
       : new Date(0);
@@ -118,8 +131,14 @@ export default function Pricing() {
     return PRICING_CONFIG.individual_standard;
   };
 
-  // Toplam Tutar Hesaplama
   const calculateTotal = () => {
+    // Depolama Modu
+    if (purchaseType === 'storage') {
+      const pack = PRICING_CONFIG.storage[selectedStorageIndex];
+      return pack.price * storageQuantity;
+    }
+
+    // Abonelik Modu
     const pricingTable = getCurrentPricingTable();
     // @ts-ignore
     const priceInfo = pricingTable[addDuration];
@@ -135,15 +154,18 @@ export default function Pricing() {
     return Math.max(0, total - credits);
   };
 
-  // Satın Alma Butonuna Basınca
   const initiatePurchase = () => {
+    if (purchaseType === 'storage') {
+      // Depolama satın alımı her zaman güvenlidir, uyarıya gerek yok.
+      executePurchaseMock();
+      return;
+    }
+
     if (viewMode === 'selection') {
-      // Kurumsaldan Bireysele geçiyorsa uyar
       if (profile?.organization_id && selectedPlan === 'individual') {
         setShowLeaveWarning(true);
         return;
       }
-      // Bireyselden Kurumsala geçiyorsa uyar
       if (
         profile?.role === 'premium_individual' &&
         selectedPlan === 'corporate'
@@ -151,19 +173,33 @@ export default function Pricing() {
         setShowIndToCorpWarning(true);
         return;
       }
-      // Normal işlem
       executePurchaseMock();
     } else {
       executePurchaseMock();
     }
   };
 
-  // --- MOCK ÖDEME FONKSİYONU (İŞLEM YAPMAZ, UYARI VERİR) ---
-  const executePurchaseMock = () => {
+  const executePurchaseMock = async () => {
     setShowLeaveWarning(false);
     setShowIndToCorpWarning(false);
 
-    // BURASI ÖNEMLİ: Gerçek işlem yerine sadece alert veriyoruz.
+    /* --- PAYTR ENTEGRASYONU BURAYA GELECEK ---
+       Ödeme başarılı olursa aşağıdaki backend fonksiyonu çağrılmalı:
+       
+       if (purchaseType === 'storage') {
+          const pack = PRICING_CONFIG.storage[selectedStorageIndex];
+          const totalBytesToAdd = pack.bytes * storageQuantity;
+          const targetId = profile.organization_id || user.id;
+          const isCorporate = !!profile.organization_id;
+
+          await supabase.rpc('add_storage_limit', {
+             target_id: targetId,
+             is_corporate: isCorporate,
+             bytes_to_add: totalBytesToAdd
+          });
+       }
+    */
+
     alert(
       '🚧 Ödeme Sistemi Entegrasyon Aşamasındadır.\n\nÇok yakında kredi kartı ile güvenli ödeme yapabileceksiniz.'
     );
@@ -172,15 +208,10 @@ export default function Pricing() {
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;
 
   const pricingTable = getCurrentPricingTable();
-  // Tarih hesaplamaları
-  const orgEnd = profile?.organization?.subscription_end_date
-    ? new Date(profile.organization.subscription_end_date)
-    : null;
-  const indEnd = profile?.subscription_end_date
-    ? new Date(profile.subscription_end_date)
-    : null;
-  const finalDate = orgEnd || indEnd;
-  const isExpired = finalDate ? finalDate < new Date() : false;
+  const subEndDate =
+    profile?.organization?.subscription_end_date ||
+    profile?.subscription_end_date;
+  const isExpired = subEndDate ? new Date(subEndDate) < new Date() : false;
   const isRenewal = !isExpired && profile?.role === 'premium_individual';
 
   // --- SÜRE SEÇİM KARTLARI ---
@@ -249,354 +280,340 @@ export default function Pricing() {
     </div>
   );
 
-  // --- GÖRÜNÜM 1: PAKET SEÇİMİ (SELECTION) ---
-  if (viewMode === 'selection') {
-    return (
-      <div className="min-h-screen bg-gray-50 py-12 px-4 pb-40">
-        <div className="max-w-6xl mx-auto mb-8">
-          <button
-            onClick={() => navigate(-1)}
-            className="flex items-center gap-2 text-gray-500 hover:text-gray-800 font-bold mb-4"
-          >
-            <ArrowLeft size={18} /> Geri Dön
-          </button>
-          <div className="text-center">
-            <h1 className="text-4xl font-black text-gray-900 mb-2">
-              Sizin İçin En Uygun Planı Seçin
-            </h1>
-            <p className="text-gray-500">
-              İster bireysel, ister tüm şirketiniz için profesyonel çözüm.
-            </p>
-          </div>
-        </div>
+  return (
+    <div className="min-h-screen bg-gray-50 py-12 px-4 pb-40">
+      <div className="max-w-6xl mx-auto mb-8">
+        <button
+          onClick={() => navigate(-1)}
+          className="flex items-center gap-2 text-gray-500 hover:text-gray-800 font-bold mb-4"
+        >
+          <ArrowLeft size={18} /> Geri Dön
+        </button>
 
-        {/* Ana Sekmeler (Bireysel / Kurumsal) */}
-        <div className="max-w-4xl mx-auto flex justify-center mb-10">
-          <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
+        {/* ANA MOD SEÇİCİ (ABONELİK / DEPOLAMA) */}
+        <div className="flex justify-center mb-8">
+          <div className="bg-white p-1.5 rounded-2xl shadow-md border border-gray-200 inline-flex">
             <button
-              onClick={() => setSelectedPlan('individual')}
-              className={`px-6 py-3 rounded-lg font-bold text-sm flex items-center gap-2 transition-all ${
-                selectedPlan === 'individual'
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'text-gray-500 hover:bg-gray-50'
+              onClick={() => setPurchaseType('subscription')}
+              className={`px-6 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-all ${
+                purchaseType === 'subscription'
+                  ? 'bg-gray-900 text-white shadow'
+                  : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
-              <User size={18} /> Bireysel Premium
+              <Zap size={18} /> Üyelik & Süre
             </button>
             <button
-              onClick={() => setSelectedPlan('corporate')}
-              className={`px-6 py-3 rounded-lg font-bold text-sm flex items-center gap-2 transition-all ${
-                selectedPlan === 'corporate'
-                  ? 'bg-purple-600 text-white shadow-md'
-                  : 'text-gray-500 hover:bg-gray-50'
+              onClick={() => setPurchaseType('storage')}
+              className={`px-6 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-all ${
+                purchaseType === 'storage'
+                  ? 'bg-gray-900 text-white shadow'
+                  : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
-              <Building size={18} /> Kurumsal Premium
+              <HardDrive size={18} /> Ekstra Depolama
             </button>
           </div>
         </div>
 
-        <div className="max-w-5xl mx-auto">
-          <div className="bg-white rounded-3xl shadow-xl border border-gray-100 p-8 mb-8 text-center">
-            <h2 className="text-2xl font-bold text-gray-800 mb-2">
-              {selectedPlan === 'individual'
-                ? 'Bireysel Premium Paket'
-                : 'Kurumsal Şirket Paketi'}
-            </h2>
-            <p className="text-gray-500 mb-8 max-w-2xl mx-auto">
-              {selectedPlan === 'individual'
-                ? 'Kendi belgelerinizi takip edin, sınırsız hatırlatma kurun ve kişisel asistanınızın keyfini çıkarın.'
-                : 'Tüm ekibinizi tek çatı altında toplayın. Personel başına ücretlendirme ile maliyetlerinizi kontrol edin.'}
-            </p>
+        <div className="text-center">
+          <h1 className="text-4xl font-black text-gray-900 mb-2">
+            {purchaseType === 'subscription'
+              ? 'Paket Seçimi & Yenileme'
+              : 'Depolama Alanını Genişlet'}
+          </h1>
+          <p className="text-gray-500">
+            {purchaseType === 'subscription'
+              ? 'İhtiyacınıza uygun paketi seçin veya mevcut planınızı uzatın.'
+              : 'Daha fazla belge yüklemek için ek alan satın alın. Satın alınan alan kalıcıdır.'}
+          </p>
+        </div>
+      </div>
 
-            {/* Süre Seçimi */}
-            <DurationSelector />
-
-            {/* Kurumsal Ayarlar */}
-            {selectedPlan === 'corporate' && (
-              <div className="max-w-xl mx-auto bg-purple-50 p-6 rounded-2xl border border-purple-100 animate-fadeIn">
-                <div className="mb-4">
-                  <label className="block text-left text-sm font-bold text-purple-900 mb-2">
-                    Şirket Adı
-                  </label>
-                  <input
-                    className="w-full p-3 border border-purple-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="Örn: Acme Lojistik A.Ş."
-                    value={companyName}
-                    onChange={(e) => setCompanyName(e.target.value)}
-                  />
+      {/* --- İÇERİK ALANI --- */}
+      <div className="max-w-5xl mx-auto">
+        <div className="bg-white rounded-3xl shadow-xl border border-gray-100 p-8 mb-8 text-center">
+          {purchaseType === 'subscription' ? (
+            <>
+              {viewMode === 'selection' && (
+                <div className="flex justify-center mb-8">
+                  <div className="bg-gray-50 p-1 rounded-xl border border-gray-200 inline-flex">
+                    <button
+                      onClick={() => setSelectedPlan('individual')}
+                      className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${
+                        selectedPlan === 'individual'
+                          ? 'bg-white text-blue-600 shadow'
+                          : 'text-gray-500'
+                      }`}
+                    >
+                      <User size={16} className="inline mr-2" /> Bireysel
+                    </button>
+                    <button
+                      onClick={() => setSelectedPlan('corporate')}
+                      className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${
+                        selectedPlan === 'corporate'
+                          ? 'bg-white text-purple-600 shadow'
+                          : 'text-gray-500'
+                      }`}
+                    >
+                      <Building size={16} className="inline mr-2" /> Kurumsal
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <div className="flex justify-between mb-2 text-sm font-bold text-purple-900">
-                    <span>Çalışan Sayısı</span>
+              )}
+
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                {selectedPlan === 'individual'
+                  ? 'Bireysel Premium Paket'
+                  : 'Kurumsal Şirket Paketi'}
+              </h2>
+              <p className="text-gray-500 mb-8 max-w-2xl mx-auto">
+                {selectedPlan === 'individual'
+                  ? 'Sınırsız hatırlatma ve 500 MB depolama.'
+                  : 'Ekip yönetimi, sohbet ve 1 GB ortak depolama.'}
+              </p>
+
+              <DurationSelector />
+
+              {/* Kurumsal Ayarlar (Sadece Selection Modunda ve Corporate seçiliyse) */}
+              {viewMode === 'selection' && selectedPlan === 'corporate' && (
+                <div className="max-w-xl mx-auto bg-purple-50 p-6 rounded-2xl border border-purple-100 animate-fadeIn">
+                  <div className="mb-4">
+                    <label className="block text-left text-sm font-bold text-purple-900 mb-2">
+                      Şirket Adı
+                    </label>
+                    <input
+                      className="w-full p-3 border border-purple-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="Örn: Acme Lojistik A.Ş."
+                      value={companyName}
+                      onChange={(e) => setCompanyName(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-2 text-sm font-bold text-purple-900">
+                      <span>Çalışan Sayısı</span>
+                      <span className="text-2xl">{targetSeats} Kişi</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="2"
+                      max="50"
+                      value={targetSeats}
+                      onChange={(e) => setTargetSeats(parseInt(e.target.value))}
+                      className="w-full accent-purple-600 h-2 bg-purple-200 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <div className="text-xs text-purple-500 mt-1 flex justify-between">
+                      <span>Min: 2</span>
+                      <span>Max: 50</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Mevcut Kurumsal Ayarları (Dashboard Modunda) */}
+              {viewMode === 'dashboard' && selectedPlan === 'corporate' && (
+                <div className="max-w-xl mx-auto bg-gray-50 p-6 rounded-2xl border">
+                  <div className="flex justify-between mb-2 text-sm font-bold text-gray-700">
+                    <span>Toplam Kapasite</span>
                     <span className="text-2xl">{targetSeats} Kişi</span>
                   </div>
                   <input
                     type="range"
-                    min="2"
+                    min={activeMembersCount}
                     max="50"
                     value={targetSeats}
                     onChange={(e) => setTargetSeats(parseInt(e.target.value))}
                     className="w-full accent-purple-600 h-2 bg-purple-200 rounded-lg appearance-none cursor-pointer"
                   />
-                  <div className="text-xs text-purple-500 mt-1 flex justify-between">
-                    <span>Min: 2</span>
-                    <span>Max: 50</span>
+                </div>
+              )}
+            </>
+          ) : (
+            /* --- DEPOLAMA SATIN ALMA EKRANI --- */
+            <div className="animate-fadeIn">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto mb-8">
+                {PRICING_CONFIG.storage.map((pack, index) => (
+                  <div
+                    key={index}
+                    onClick={() => setSelectedStorageIndex(index)}
+                    className={`relative cursor-pointer p-6 rounded-2xl border-2 transition-all flex items-center justify-between
+                                    ${
+                                      selectedStorageIndex === index
+                                        ? 'border-blue-600 bg-blue-50 shadow-lg'
+                                        : 'border-gray-200 hover:border-blue-300'
+                                    }
+                                `}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`p-3 rounded-full ${
+                          selectedStorageIndex === index
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        <Database size={24} />
+                      </div>
+                      <div className="text-left">
+                        <h4 className="text-xl font-bold text-gray-800">
+                          {pack.label}
+                        </h4>
+                        <p className="text-sm text-gray-500">
+                          Kalıcı alan artışı
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-2xl font-black text-gray-900">
+                        {pack.price} TL
+                      </div>
+                    </div>
                   </div>
+                ))}
+              </div>
+
+              <div className="max-w-md mx-auto bg-gray-50 p-6 rounded-2xl border">
+                <label className="block text-sm font-bold text-gray-500 mb-2">
+                  Adet Seçiniz (Kaç tane alınacak?)
+                </label>
+                <div className="flex items-center justify-center gap-4">
+                  <button
+                    onClick={() =>
+                      setStorageQuantity(Math.max(1, storageQuantity - 1))
+                    }
+                    className="w-10 h-10 rounded-lg bg-white border font-bold text-xl hover:bg-gray-100"
+                  >
+                    -
+                  </button>
+                  <span className="text-3xl font-black text-blue-600 w-12">
+                    {storageQuantity}
+                  </span>
+                  <button
+                    onClick={() => setStorageQuantity(storageQuantity + 1)}
+                    className="w-10 h-10 rounded-lg bg-white border font-bold text-xl hover:bg-gray-100"
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="mt-4 text-sm text-gray-600">
+                  Toplamda{' '}
+                  <b>
+                    {PRICING_CONFIG.storage[selectedStorageIndex].size_gb *
+                      storageQuantity}{' '}
+                    GB
+                  </b>{' '}
+                  alan eklenecek.
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Alt Bar */}
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.1)]">
-          <div className="max-w-4xl mx-auto flex justify-between items-center">
-            <div>
-              <div className="text-xs text-gray-400 font-bold uppercase">
-                Toplam Tutar
-              </div>
-              <div className="text-3xl font-black text-gray-900">
-                {calculateTotal()} TL
-              </div>
-              <div className="text-xs text-green-600 font-bold">
-                {selectedPlan === 'corporate'
-                  ? '(Tüm Ekip Dahil)'
-                  : '(Tek Seferlik Ödeme)'}
-              </div>
             </div>
-            <button
-              onClick={initiatePurchase}
-              disabled={processing}
-              className={`px-8 py-3 rounded-xl font-bold text-white text-lg shadow-lg transition flex items-center gap-2 ${
-                selectedPlan === 'corporate'
-                  ? 'bg-purple-600 hover:bg-purple-700'
-                  : 'bg-blue-600 hover:bg-blue-700'
-              }`}
-            >
-              {processing ? (
-                'İşleniyor...'
-              ) : (
-                <>
-                  <CreditCard /> Ödeme Sistemi (Yakında) <ChevronRight />
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* MODALLAR */}
-        {showLeaveWarning && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-fadeIn">
-              <div className="bg-orange-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <LogOut className="text-orange-600" size={32} />
-              </div>
-              <h3 className="text-xl font-bold text-center text-gray-900 mb-2">
-                Şirketten Ayrılma Onayı
-              </h3>
-              <p className="text-gray-600 text-center mb-6">
-                Şu anda <b>{profile?.organization?.name}</b> şirketine
-                bağlısınız.
-                <br />
-                <br />
-                Bireysel paket alımına devam ederseniz{' '}
-                <b>şirketten ayrılacaksınız.</b> Onaylıyor musunuz?
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowLeaveWarning(false)}
-                  className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition"
-                >
-                  İptal
-                </button>
-                <button
-                  onClick={executePurchaseMock}
-                  className="flex-1 py-3 rounded-xl font-bold text-white bg-orange-600 hover:bg-orange-700 transition"
-                >
-                  Evet, Ayrılıyorum
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {showIndToCorpWarning && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-fadeIn">
-              <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <ShieldAlert className="text-purple-600" size={32} />
-              </div>
-              <h3 className="text-xl font-bold text-center text-gray-900 mb-2">
-                Süre Sıfırlama Uyarısı
-              </h3>
-              <p className="text-gray-600 text-center mb-6">
-                Bireysel premiumun süresi bitmeden kurumsal paket alırsanız{' '}
-                <b>mevcut premium üyelik süresi sıfırlanır.</b>
-                <br />
-                <br />
-                Devam etmek istiyor musunuz?
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowIndToCorpWarning(false)}
-                  className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition"
-                >
-                  İptal
-                </button>
-                <button
-                  onClick={executePurchaseMock}
-                  className="flex-1 py-3 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-700 transition"
-                >
-                  Anladım, Devam Et
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // --- GÖRÜNÜM 2: YÖNETİM (DASHBOARD) ---
-  return (
-    <div className="max-w-5xl mx-auto py-10 px-4 pb-40">
-      <div className="flex justify-between items-center mb-6">
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-2 text-gray-500 hover:text-gray-800 font-bold"
-        >
-          <ArrowLeft size={18} /> Geri Dön
-        </button>
-        {!profile.organization && (
-          <button
-            onClick={() => {
-              setViewMode('selection');
-              setSelectedPlan('corporate');
-            }}
-            className="text-sm font-bold text-purple-600 hover:text-purple-800 flex items-center gap-1 bg-purple-50 px-3 py-2 rounded-lg"
-          >
-            <Building size={16} /> Şirket Hesabına Geç
-          </button>
-        )}
-      </div>
-
-      <div
-        className={`rounded-3xl p-8 text-white shadow-2xl mb-8 flex flex-col md:flex-row justify-between items-center relative overflow-hidden ${
-          isExpired
-            ? 'bg-gradient-to-r from-red-900 to-orange-800'
-            : selectedPlan === 'corporate'
-            ? 'bg-gradient-to-r from-purple-900 to-indigo-900'
-            : 'bg-gradient-to-r from-blue-900 to-cyan-800'
-        }`}
-      >
-        <Crown
-          className="absolute -left-10 -top-10 text-white opacity-10"
-          size={250}
-        />
-        <div className="relative z-10">
-          <h1 className="text-3xl font-bold mb-2 flex items-center gap-2">
-            {profile.organization?.name || 'Bireysel Premium Hesap'}
-            {isExpired && (
-              <span className="bg-red-500 text-white text-xs px-2 py-1 rounded animate-pulse">
-                SÜRESİ DOLDU
-              </span>
-            )}
-            {!isExpired && isRenewal && (
-              <span className="bg-green-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
-                <Zap size={12} /> Sadakat İndirimi Aktif
-              </span>
-            )}
-          </h1>
-          <div className="flex gap-4 text-sm font-medium opacity-80">
-            {profile.organization && (
-              <span className="flex items-center gap-1">
-                <Users size={16} /> {activeMembersCount} /{' '}
-                {profile.organization.member_limit} Üye
-              </span>
-            )}
-            <span className="flex items-center gap-1">
-              <Clock size={16} /> Bitiş:{' '}
-              {finalDate ? finalDate.toLocaleDateString() : '-'}
-            </span>
-          </div>
+          )}
         </div>
       </div>
 
-      <div className="bg-white rounded-3xl shadow-xl border border-gray-100 p-8">
-        <h2 className="text-2xl font-bold text-gray-800 mb-2 flex items-center gap-2">
-          <Zap className="text-yellow-500" />
-          {isExpired ? 'Hemen Yenileyin' : 'Sürenizi Uzatın'}
-        </h2>
-        <p className="text-gray-500 mb-8">
-          {isRenewal
-            ? 'Mevcut üye olduğunuz için size özel indirimli fiyatlardan yararlanın.'
-            : 'Aşağıdaki paketlerden birini seçerek kullanım sürenizi artırın.'}
-        </p>
-
-        <DurationSelector />
-
-        {profile.organization && (
-          <div className="max-w-xl mx-auto mt-8 bg-gray-50 p-6 rounded-2xl">
-            <div className="flex justify-between mb-4">
-              <label className="text-sm font-bold text-gray-500 uppercase">
-                Toplam Personel Kapasitesi
-              </label>
-              <span className="text-3xl font-black text-purple-600">
-                {targetSeats}
-              </span>
-            </div>
-            <input
-              type="range"
-              min={activeMembersCount}
-              max="50"
-              value={targetSeats}
-              onChange={(e) => setTargetSeats(parseInt(e.target.value))}
-              className="w-full accent-purple-600 h-3 bg-gray-200 rounded-full appearance-none cursor-pointer"
-            />
-            <div className="flex justify-between text-xs font-bold text-gray-400 mt-2">
-              <span>Min: {activeMembersCount}</span>
-              <span>Maks: 50</span>
-            </div>
-          </div>
-        )}
-      </div>
-
+      {/* ALT BAR (ÖDEME) */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.1)]">
-        <div className="max-w-4xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex-1 w-full">
-            <div className="flex justify-between text-sm mb-1">
-              <span className="text-gray-500 font-bold">Ödenecek Tutar</span>
-              {profile.organization?.credits > 0 && (
-                <span className="text-green-600 font-bold">
-                  Kredi İndirimi: -
-                  {Math.min(
-                    profile.organization.credits,
-                    calculateTotal() + profile.organization.credits
-                  )}{' '}
-                  TL
-                </span>
-              )}
+        <div className="max-w-4xl mx-auto flex justify-between items-center">
+          <div>
+            <div className="text-xs text-gray-400 font-bold uppercase">
+              Toplam Tutar
             </div>
-            <div className="text-4xl font-black text-gray-900">
+            <div className="text-3xl font-black text-gray-900">
               {calculateTotal()} TL
+            </div>
+            <div className="text-xs text-green-600 font-bold">
+              {purchaseType === 'subscription' && selectedPlan === 'corporate'
+                ? '(Tüm Ekip Dahil)'
+                : '(Tek Seferlik Ödeme)'}
             </div>
           </div>
           <button
             onClick={initiatePurchase}
             disabled={processing}
-            className="w-full md:w-auto px-10 py-4 rounded-2xl font-bold text-white text-lg shadow-xl bg-gray-900 hover:bg-black transition flex items-center justify-center gap-2"
+            className={`px-8 py-3 rounded-xl font-bold text-white text-lg shadow-lg transition flex items-center gap-2 ${
+              selectedPlan === 'corporate' && purchaseType === 'subscription'
+                ? 'bg-purple-600 hover:bg-purple-700'
+                : 'bg-blue-600 hover:bg-blue-700'
+            }`}
           >
             {processing ? (
               'İşleniyor...'
             ) : (
               <>
-                <CreditCard /> Ödeme Sistemi (Yakında)
+                <CreditCard /> Ödeme Sistemi (Yakında) <ChevronRight />
               </>
             )}
           </button>
         </div>
       </div>
+
+      {/* MODALLAR */}
+      {showLeaveWarning && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-fadeIn">
+            <div className="bg-orange-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+              <LogOut className="text-orange-600" size={32} />
+            </div>
+            <h3 className="text-xl font-bold text-center text-gray-900 mb-2">
+              Şirketten Ayrılma Onayı
+            </h3>
+            <p className="text-gray-600 text-center mb-6">
+              Şu anda <b>{profile?.organization?.name}</b> şirketine bağlısınız.
+              <br />
+              <br />
+              Bireysel paket alımına devam ederseniz{' '}
+              <b>şirketten ayrılacaksınız.</b> Onaylıyor musunuz?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowLeaveWarning(false)}
+                className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition"
+              >
+                İptal
+              </button>
+              <button
+                onClick={executePurchaseMock}
+                className="flex-1 py-3 rounded-xl font-bold text-white bg-orange-600 hover:bg-orange-700 transition"
+              >
+                Evet, Ayrılıyorum
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showIndToCorpWarning && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-fadeIn">
+            <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+              <ShieldAlert className="text-purple-600" size={32} />
+            </div>
+            <h3 className="text-xl font-bold text-center text-gray-900 mb-2">
+              Süre Sıfırlama Uyarısı
+            </h3>
+            <p className="text-gray-600 text-center mb-6">
+              Bireysel premiumun süresi bitmeden kurumsal paket alırsanız{' '}
+              <b>mevcut premium üyelik süresi sıfırlanır.</b>
+              <br />
+              <br />
+              Devam etmek istiyor musunuz?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowIndToCorpWarning(false)}
+                className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition"
+              >
+                İptal
+              </button>
+              <button
+                onClick={executePurchaseMock}
+                className="flex-1 py-3 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-700 transition"
+              >
+                Anladım, Devam Et
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
