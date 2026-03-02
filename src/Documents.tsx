@@ -25,7 +25,11 @@ import {
   Building,
   Share2,
   Send,
+  Sparkles,
+  Brain,
+  Info,
 } from 'lucide-react';
+import { getDocTypeInfo } from './aiService';
 
 export default function Documents() {
   const navigate = useNavigate();
@@ -75,6 +79,12 @@ export default function Documents() {
   const [forwardTarget, setForwardTarget] = useState('general');
   const [forwardNote, setForwardNote] = useState('');
   const [sendingForward, setSendingForward] = useState(false);
+
+  // AI Destek State'leri
+  const [aiSupportModalOpen, setAiSupportModalOpen] = useState(false);
+  const [aiSupportData, setAiSupportData] = useState<any>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [selectedDocType, setSelectedDocType] = useState('');
 
   useEffect(() => {
     fetchDocuments();
@@ -406,6 +416,21 @@ export default function Documents() {
     }
   };
 
+  const handleOpenAiSupport = async (docType: string) => {
+    setSelectedDocType(docType);
+    setAiSupportModalOpen(true);
+    setAiLoading(true);
+    setAiSupportData(null);
+    try {
+      const info = await getDocTypeInfo(docType);
+      setAiSupportData(info);
+    } catch (error) {
+      console.error('AI Destek Hatası:', error);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const canForward = (doc: any) => {
     if (!doc.organization_id) return false;
     if (
@@ -541,19 +566,19 @@ export default function Documents() {
           {(userRole === 'premium_corporate' ||
             userRole === 'admin' ||
             userRole === 'corporate_chief') && (
-            <select
-              className="bg-gray-50 border px-3 py-2 rounded text-sm outline-none font-bold text-blue-800"
-              value={filterUser}
-              onChange={(e) => setFilterUser(e.target.value)}
-            >
-              <option value="">Tüm Personel</option>
-              {uniqueUsers.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          )}
+              <select
+                className="bg-gray-50 border px-3 py-2 rounded text-sm outline-none font-bold text-blue-800"
+                value={filterUser}
+                onChange={(e) => setFilterUser(e.target.value)}
+              >
+                <option value="">Tüm Personel</option>
+                {uniqueUsers.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
+                  </option>
+                ))}
+              </select>
+            )}
         </div>
       </div>
 
@@ -632,11 +657,10 @@ export default function Documents() {
                       </div>
                       <div className="mt-2 flex items-center gap-2 flex-wrap">
                         <span
-                          className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border ${
-                            isCorporate
-                              ? 'bg-blue-50 text-blue-700'
-                              : 'bg-purple-50 text-purple-700'
-                          }`}
+                          className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border ${isCorporate
+                            ? 'bg-blue-50 text-blue-700'
+                            : 'bg-purple-50 text-purple-700'
+                            }`}
                         >
                           {isCorporate ? 'KURUMSAL' : 'ŞAHSİ'}
                         </span>
@@ -682,6 +706,15 @@ export default function Documents() {
                             <Share2 size={16} />
                           </button>
                         )}
+
+                        {/* AI DESTEK BUTONU */}
+                        <button
+                          onClick={() => handleOpenAiSupport(doc.type_def?.label || 'Genel')}
+                          className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200 rounded transition"
+                          title="AI Destek (Mevzuat & Bilgi)"
+                        >
+                          <Sparkles size={16} />
+                        </button>
 
                         <button
                           onClick={() => handleOpenArchive(doc)}
@@ -1000,6 +1033,77 @@ export default function Documents() {
                 )}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* AI DESTEK MODALI */}
+      {aiSupportModalOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-fadeIn">
+            <div className="p-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <Brain size={28} />
+                <div>
+                  <h3 className="font-bold text-lg">AI Mevzuat Asistanı</h3>
+                  <p className="text-xs text-indigo-100 uppercase">{selectedDocType}</p>
+                </div>
+              </div>
+              <button onClick={() => setAiSupportModalOpen(false)} className="hover:rotate-90 transition-transform">
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {aiLoading ? (
+                <div className="flex flex-col items-center justify-center py-10 gap-4">
+                  <RefreshCw size={32} className="animate-spin text-indigo-600" />
+                  <p className="text-gray-500 font-medium">Bilgiler AI tarafından hazırlanıyor...</p>
+                </div>
+              ) : aiSupportData ? (
+                <>
+                  <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                    <div className="flex items-center gap-2 font-bold text-indigo-800 mb-2">
+                      <Info size={16} /> Nedir?
+                    </div>
+                    <p className="text-sm text-gray-700 leading-relaxed">{aiSupportData.description}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-green-50 p-3 rounded-xl border border-green-100">
+                      <div className="text-[10px] font-bold text-green-600 uppercase mb-1">Geçerlilik</div>
+                      <div className="text-sm font-bold text-gray-800">{aiSupportData.validity}</div>
+                    </div>
+                    <div className="bg-orange-50 p-3 rounded-xl border border-orange-100">
+                      <div className="text-[10px] font-bold text-orange-600 uppercase mb-1">Yenileme</div>
+                      <div className="text-sm font-bold text-gray-800">{aiSupportData.renewal}</div>
+                    </div>
+                  </div>
+
+                  <div className="bg-red-50 p-4 rounded-xl border border-red-100">
+                    <div className="flex items-center gap-2 font-bold text-red-800 mb-2">
+                      <AlertCircle size={16} /> Neden Önemli?
+                    </div>
+                    <p className="text-sm text-gray-700">{aiSupportData.importance}</p>
+                  </div>
+
+                  <div className="text-center pt-2">
+                    <p className="text-[10px] text-gray-400">
+                      * Bu bilgiler genel mevzuat bilgilendirmesi amaçlıdır. Güncel resmi kuralları kontrol ediniz.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <p className="text-center text-gray-500 py-10">Bilgi getirilemedi.</p>
+              )}
+
+              <button
+                onClick={() => setAiSupportModalOpen(false)}
+                className="w-full bg-gray-900 text-white py-3 rounded-xl font-bold hover:bg-black transition shadow-lg"
+              >
+                Anladım
+              </button>
+            </div>
           </div>
         </div>
       )}
