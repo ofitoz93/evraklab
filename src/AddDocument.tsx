@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   Upload,
   ArrowLeft,
@@ -788,7 +788,7 @@ export default function AddDocument() {
                           </div>
                         ) : (
                           <div className="mt-3 space-y-3">
-                            <div className="grid grid-cols-2 gap-2 text-[10px]">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
                               <div className="bg-gray-50 p-2 rounded">
                                 <span className="text-gray-400 block">Tür:</span>
                                 <span className="font-bold text-gray-700 uppercase line-clamp-1">
@@ -796,8 +796,20 @@ export default function AddDocument() {
                                 </span>
                               </div>
                               <div className="bg-gray-50 p-2 rounded">
-                                <span className="text-gray-400 block">Bitiş:</span>
-                                <span className="font-bold text-red-600">{result.expiryDate || (result.isIndefinite ? 'SÜRESİZ' : '-')}</span>
+                                <span className="text-gray-400 block">Bitiş Tarihi:</span>
+                                <span className="font-bold text-red-600">
+                                  {result.expiryDate || (result.isIndefinite ? 'SÜRESİZ' : '-')}
+                                </span>
+                              </div>
+                              <div className="bg-orange-50 p-2 rounded border border-orange-100">
+                                <span className="text-orange-500 block font-semibold flex items-center gap-1">
+                                  Son Başvuru:
+                                </span>
+                                <span className="font-bold text-orange-700">
+                                  {result.applicationDeadline
+                                    ? <>{result.applicationDeadline} <span className="text-[8px] font-normal">({result.renewalPeriodMonths} ay önce)</span></>
+                                    : '-'}
+                                </span>
                               </div>
                             </div>
 
