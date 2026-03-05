@@ -1,21 +1,20 @@
-const ACCOUNT_ID = '7a88dcc4e4b277ad4577316f3c65a764';
-const API_TOKEN = '9Ye-gt9NEL6JmcRJJSKPobz55J4Yl3Hx2rkn86O8';
-// vite.config.ts üzerinde tanımladığımız proxy sayesinde CORS sorununu aşmak için '/cf-api' kullanıyoruz
-const CLOUDFLARE_BASE_URL = `/cf-api/client/v4/accounts/${ACCOUNT_ID}/ai/v1/chat/completions`;
+const GEMINI_API_KEY = 'AIzaSyCWNqV60aZjQIuCVKuh-k_OR62lMSHXEFo';
 
-async function callCloudflareAI(model: string, messages: any[], temperature = 0.2, max_tokens = 1024) {
+async function callGemini(model: string, contents: any[], temperature = 0.2, maxOutputTokens = 1024) {
     try {
-        const response = await fetch(CLOUDFLARE_BASE_URL, {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const response = await fetch(url, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${API_TOKEN}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model,
-                messages,
-                temperature,
-                max_tokens
+                contents,
+                generationConfig: {
+                    temperature,
+                    maxOutputTokens,
+                    responseMimeType: "application/json"
+                }
             })
         });
 
@@ -25,9 +24,9 @@ async function callCloudflareAI(model: string, messages: any[], temperature = 0.
         }
 
         const data = await response.json();
-        return data.choices[0]?.message?.content || "";
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     } catch (error: any) {
-        throw new Error(`Cloudflare Bağlantı Hatası: ${error.message}`);
+        throw new Error(`Gemini Bağlantı Hatası: ${error.message}`);
     }
 }
 
@@ -64,53 +63,15 @@ export interface AIAnalysisResult {
     confidence: 'high' | 'medium' | 'low';
 }
 
-function calculateApplicationDeadline(expiryDateStr: string | null, docType: string): { deadline: string | null, periodMonths: number | null, suggestedValidity: number | null } {
-    if (!expiryDateStr) return { deadline: null, periodMonths: null, suggestedValidity: null };
 
-    const expiryDate = new Date(expiryDateStr);
-    if (isNaN(expiryDate.getTime())) return { deadline: null, periodMonths: null, suggestedValidity: null };
 
-    let periodMonths = null;
-    let suggestedValidity = null;
-
-    // Bilgi bankasında eşleşme ara
-    const key = Object.keys(DOCUMENT_KNOWLEDGE_BASE).find(k =>
-        docType.toLowerCase().includes(k.toLowerCase()) ||
-        k.toLowerCase().includes(docType.toLowerCase())
-    );
-
-    if (key) {
-        if (key === 'Çevre İzni') {
-            periodMonths = 6;
-            suggestedValidity = 5;
-        } else if (key === 'Kapasite Raporu') {
-            periodMonths = 2;
-            suggestedValidity = 2;
-        } else if (key === 'İSG Eğitimi') {
-            periodMonths = 1;
-            suggestedValidity = 1; // Ortalama
-        }
-    }
-
-    if (periodMonths) {
-        const deadlineDate = new Date(expiryDate);
-        deadlineDate.setMonth(deadlineDate.getMonth() - periodMonths);
-        return {
-            deadline: deadlineDate.toISOString().split('T')[0],
-            periodMonths,
-            suggestedValidity
-        };
-    }
-
-    return { deadline: null, periodMonths: null, suggestedValidity: null };
-}
-
-async function fileToBase64Url(file: File): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
+async function fileToBase64(file: File): Promise<{ mimeType: string, data: string }> {
+    return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
-            // result string şeklinde data:image/png;base64,... döner
-            resolve(reader.result as string);
+            const result = reader.result as string;
+            const base64Data = result.split(',')[1];
+            resolve({ mimeType: file.type, data: base64Data });
         };
         reader.onerror = reject;
         reader.readAsDataURL(file);
@@ -118,91 +79,113 @@ async function fileToBase64Url(file: File): Promise<string> {
 }
 
 // PDF dosyalarını düz metin olarak okumak için yardımcı fonksiyon (eğer PDF-Lib ile metin çıkarımı yapılsaydı)
-// Şu an Groq Vision (Llama 3.2 Vision) sadece resim formatlarını (png, jpeg, webp, heic, heif) destekler
-// Bu örnek resim yüklemeleri için tam çalışacak.
+// Şu an görüntü olarak atıyoruz
 export async function analyzeDocumentWithAI(file: File): Promise<AIAnalysisResult> {
     try {
         const prompt = `
-      Sen bir profesyonel evrak analiz asistanısın. SADECE BELGEDEKİ METNİ OKU VE İSTENEN BİLGİLERİ OBJEKTİF OLARAK ÇIKAR.
-      Hesaplama VEYA mantık yürütme YAPMA. Görevin sadece belgede ne yazıyorsa onu bulmak.
+      Sen Türkiye mevzuatlarına hakim profesyonel bir evrak analiz asistanısın. Belgedeki metni oku ve istenilen bilgileri çıkar.
+      Eğer belgede bitiş tarihi açıkça yazmıyorsa, evrak türünün (örneğin "Çevre İzni", "Kapasite Raporu", "İtfaiye Raporu" vb.) Türkiye Cumhuriyeti yasalarındaki genel geçerlilik süresini (yıl olarak) ve bu belgenin bitmeden ne kadar süre önce (ay olarak) yenilenmesi için başvurulması gerektiğini kendi bilgi birikiminden bularak ekle.
       
-      Lütfen şu 3 bilgiyi bul:
-      1. Evrak Türü (Örn: Çevre İzni belgesi, Kapasite Raporu, İSG Sertifikası, vb.)
+      Çıkarman gereken bilgiler:
+      1. Evrak Türü (Örn: Çevre İzni belgesi, Kapasite Raporu, İSG Sertifikası vb.)
       2. Alınma Tarihi (Düzenleme Tarihi)
-      3. Bitiş Tarihi (Geçerlilik Sonu - SADECE BELGEDE YAZIYORSA)
+      3. Bitiş Tarihi (Geçerlilik Sonu - Belgede yazıyorsa ekle, yazmıyorsa null dön)
+      4. Önerilen Geçerlilik Yılı (Örn: Çevre İzni genelde 5 yıldır. Sayısal olarak dön, bilmiyorsan null)
+      5. Yenileme Başvuru Süresi Ay (Örn: Çevre izni için belge bitimine 6 ay kala başvurulur. Sayısal olarak dön, bilmiyorsan null)
       
       KURALLAR:
       - Tarihleri kesinlikle YYYY-MM-DD formatına çevir.
-      - Belgede bitiş tarihi açıkça yazmıyorsa 'expiryDate' alanını null bırak.
+      - Belgede açıkça bitiş tarihi yoksa 'expiryDate' alanını 'null' bırak, fakat 'suggestedValidityYears' ve 'renewalPeriodMonths' alanlarını evrak türüne göre kendi uzmanlığınla mantıklı bir sayı ile doldur. (Örn: Çevre izni için suggestedValidityYears: 5, renewalPeriodMonths: 6)
       
       ÇIKTIYI SADECE AŞAĞIDAKİ JSON FORMATINDA VER (Bunun dışına çıkma):
       {
         "docType": "Bulunan Belge Türü",
-        "acquisitionDate": "YYYY-MM-DD",
+        "acquisitionDate": "YYYY-MM-DD" veya null,
         "expiryDate": "YYYY-MM-DD" veya null,
         "isIndefinite": true/false (Süresiz yazıyorsa true),
-        "reasoning": "Evrak türünü ve tarihleri belgenin neresinden bulduğunu kısaca açıkla",
+        "suggestedValidityYears": 5, // (Örnek)
+        "renewalPeriodMonths": 6, // (Örnek)
+        "reasoning": "Tarihleri ve evrak türünü nereden buldun? Süreleri nasıl hesapladın? Kısaca açıkla.",
         "confidence": "high/medium/low"
       }
     `;
 
-        let contentObj: any = prompt;
+        let contentParts: any[] = [{ text: prompt }];
 
-        // Sadece desteklenen resim formatlarını vision modele yolla (jpeg, png, webp vb)
-        const isImage = file.type.startsWith('image/');
+        // Gemini 2.5 Flash destekleyen formatlar: jpeg, png, webp, heic, pdf vb.
+        const isSupported = file.type.startsWith('image/') || file.type === 'application/pdf';
 
-        if (isImage) {
-            const base64Url = await fileToBase64Url(file);
-            contentObj = [
-                { type: "text", text: prompt },
-                { type: "image_url", image_url: { url: base64Url } }
-            ];
+        if (isSupported) {
+            const fileData = await fileToBase64(file);
+            contentParts.push({
+                inlineData: {
+                    mimeType: fileData.mimeType,
+                    data: fileData.data
+                }
+            });
         } else {
-            // Placeholder for PDF. Cloudflare Llama-3.1-8B modeli array kabul etmez (sadece string)
-            contentObj = `${prompt}\n\nEk Bilgi: Bu bir '${file.type}' dosyası, adı: '${file.name}'. Görüntü analizi şu an sadece resimler için aktif, belgenin isminden yola çıkarak mantıklı bir tahminde bulun.`;
+            // Desteklenmeyen dosyalar için
+            contentParts = [{ text: `${prompt}\n\nEk Bilgi: Bu bir '${file.type}' dosyası, adı: '${file.name}'. Görüntü analizi şu an sadece resimler ve PDF dosyaları için aktif, belgenin isminden yola çıkarak mantıklı bir tahminde bulun. Eğer okumak gerekiyorsa sonucu düşük doğrulukla (confidence: low) dönebilirsin.` }];
         }
 
-        const selectedModel = isImage ? "@cf/meta/llama-3.2-11b-vision-instruct" : "@cf/meta/llama-3.1-8b-instruct";
-        const text = await callCloudflareAI(selectedModel, [{ role: "user", content: contentObj }], 0.2, 1024);
+        const selectedModel = "gemini-2.0-flash";
+        const text = await callGemini(selectedModel, [{ role: "user", parts: contentParts }], 0.2, 1024);
 
-        // JSON temizleme 
+        // JSON temizleme
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('AI geçerli bir JSON yanıtı oluşturamadı.');
 
         const rawResult = JSON.parse(jsonMatch[0]);
 
-        // 2. AŞAMA: Kodsal Kesin Hesaplama
-        // Eğer AI bitiş tarihi bulamadıysa ama bizim veritabanımızda geçerlilik yılı varsa, bitiş tarihini kendimiz ekleyelim (acquisitionDate + validityYears)
-        let finalExpiryDate = rawResult.expiryDate;
-        let suggestedValidity = null;
+        // 2. AŞAMA: Kodsal Kesin Hesaplama ve Fallback
+        let finalExpiryDate = rawResult.expiryDate === "null" || !rawResult.expiryDate ? null : rawResult.expiryDate;
+        let finalAcquisitionDate = rawResult.acquisitionDate === "null" || !rawResult.acquisitionDate ? null : rawResult.acquisitionDate;
 
+        // AI'ın bulduğu geçerlilik yılı bilgisi
+        let suggestedValidity = rawResult.suggestedValidityYears || null;
+        let renewalMonths = rawResult.renewalPeriodMonths || null;
+
+        const docTypeStr = String(rawResult.docType || "");
+
+        // Kendi listemiz AI'dan daha öncelikli olsun (Eğer kendi listemizde tanımlıysa)
         const key = Object.keys(DOCUMENT_KNOWLEDGE_BASE).find(k =>
-            rawResult.docType.toLowerCase().includes(k.toLowerCase()) ||
-            k.toLowerCase().includes(rawResult.docType.toLowerCase())
+            docTypeStr.toLowerCase().includes(k.toLowerCase()) ||
+            k.toLowerCase().includes(docTypeStr.toLowerCase())
         );
 
-        if (key && !finalExpiryDate && rawResult.acquisitionDate) {
-            if (key === 'Çevre İzni') suggestedValidity = 5;
-            if (key === 'Kapasite Raporu') suggestedValidity = 2;
-            if (key === 'İSG Eğitimi') suggestedValidity = 1;
+        if (key) {
+            if (key === 'Çevre İzni') { suggestedValidity = 5; renewalMonths = 6; }
+            if (key === 'Kapasite Raporu') { suggestedValidity = 2; renewalMonths = 2; }
+            if (key === 'İSG Eğitimi') { suggestedValidity = 1; renewalMonths = 1; }
+        }
 
-            if (suggestedValidity) {
-                const acqDate = new Date(rawResult.acquisitionDate);
-                acqDate.setFullYear(acqDate.getFullYear() + suggestedValidity);
+        // Bitiş tarihi eksikse, alınma tarihi + suggestedValidity üzerinden hesapla
+        if (!finalExpiryDate && finalAcquisitionDate && suggestedValidity) {
+            const acqDate = new Date(finalAcquisitionDate);
+            if (!isNaN(acqDate.getTime())) {
+                acqDate.setFullYear(acqDate.getFullYear() + Number(suggestedValidity));
                 finalExpiryDate = acqDate.toISOString().split('T')[0];
             }
         }
 
-        const calculated = calculateApplicationDeadline(finalExpiryDate, rawResult.docType);
+        // Başvuru yenileme tarihi hesaplama
+        let applicationDeadline = null;
+        if (finalExpiryDate && renewalMonths) {
+            const expiry = new Date(finalExpiryDate);
+            if (!isNaN(expiry.getTime())) {
+                expiry.setMonth(expiry.getMonth() - Number(renewalMonths));
+                applicationDeadline = expiry.toISOString().split('T')[0];
+            }
+        }
 
         return {
-            docType: rawResult.docType,
-            acquisitionDate: rawResult.acquisitionDate,
+            docType: docTypeStr,
+            acquisitionDate: finalAcquisitionDate,
             expiryDate: finalExpiryDate,
-            applicationDeadline: calculated.deadline,
+            applicationDeadline: applicationDeadline,
             isIndefinite: rawResult.isIndefinite || false,
-            suggestedValidityYears: calculated.suggestedValidity || suggestedValidity,
-            renewalPeriodMonths: calculated.periodMonths,
+            suggestedValidityYears: suggestedValidity,
+            renewalPeriodMonths: renewalMonths,
             reasoning: rawResult.reasoning,
             confidence: rawResult.confidence
         } as AIAnalysisResult;
@@ -221,15 +204,37 @@ export async function getDocTypeInfo(docType: string): Promise<any> {
     if (key) return DOCUMENT_KNOWLEDGE_BASE[key];
 
     try {
-        const prompt = `"${docType}" isimli evrak türü hakkında Türkiye'deki yasal mevzuata göre kısa bir özet (tanım, geçerlilik süresi ve yenileme zamanı) ver. 
-    Lütfen şu formatta sadece JSON dön: 
-    { "description": "...", "validity": "...", "renewal": "...", "importance": "..." }`;
+        const prompt = `"${docType}" isimli evrak türü hakkında Türkiye Cumhuriyeti yasal mevzuatına göre kısa ve öz bilgi ver. 
+        Lütfen cevabı SADECE aşağıdaki JSON yapısında dön:
+        {
+          "description": "Bu evrak nedir ve ne işe yarar?",
+          "validity": "Genel geçerlilik süresi nedir? (Örn: 2 yıl)",
+          "renewal": "Yenilemek için bitişten kaç ay önce başvurulmalıdır?",
+          "importance": "Bu evrağın eksikliği durumunda ne gibi yaptırımlar uygulanır?"
+        }`;
 
-        const responseText = await callCloudflareAI("@cf/meta/llama-3.1-8b-instruct", [{ role: "user", content: prompt }], 0.1, 512);
+        const responseText = await callGemini("gemini-2.0-flash", [{ role: "user", parts: [{ text: prompt }] }], 0.1, 512);
 
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        return jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-    } catch {
+        if (!responseText) {
+            console.warn("Gemini'den boş yanıt geldi (Mevzuat Analizi)");
+            return null;
+        }
+
+        // JSON temizleme (Markdown bloklarını temizleyelim)
+        let cleanedText = responseText.trim();
+        if (cleanedText.startsWith('```')) {
+            cleanedText = cleanedText.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+
+        const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+            console.error("AI Yanıtında JSON bulunamadı:", cleanedText);
+            return null;
+        }
+
+        return JSON.parse(jsonMatch[0]);
+    } catch (error: any) {
+        console.error("getDocTypeInfo AI Hatası:", error?.message || error);
         return null;
     }
 }
