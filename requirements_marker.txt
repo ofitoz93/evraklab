@@ -1,0 +1,6 @@
+marker-pdf
+fastapi
+uvicorn
+python-multipart
+torch
+transformers

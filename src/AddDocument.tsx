@@ -18,8 +18,9 @@ import {
   Globe,
   Info,
   XCircle,
+  FileCheck,
 } from 'lucide-react';
-import { analyzeDocumentWithAI } from './aiService';
+import { analyzeDocumentLocally } from './aiService';
 
 export default function AddDocument() {
   const navigate = useNavigate();
@@ -228,7 +229,8 @@ export default function AddDocument() {
 
       setAnalyzingIndexes(prev => [...prev, i]);
       try {
-        const result = await analyzeDocumentWithAI(currentFile);
+        const result = await analyzeDocumentLocally(currentFile);
+          
         const analysisData = {
           fileName: currentFile.name,
           ...result,
@@ -314,7 +316,8 @@ export default function AddDocument() {
     setAnalyzingIndexes(prev => [...prev, idx]);
 
     try {
-      const result = await analyzeDocumentWithAI(fileToAnalyze);
+      const result = await analyzeDocumentLocally(fileToAnalyze);
+        
       const analysisData = {
         fileName: fileToAnalyze.name,
         ...result,
@@ -477,12 +480,12 @@ export default function AddDocument() {
               : 'border-gray-100 bg-white hover:border-gray-300'
               }`}
           >
-            <div className={`p-2 rounded-lg ${uploadMode === 'ai' ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
-              <Brain size={24} />
+            <div className={`p-2 rounded-lg ${uploadMode === 'ai' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}`}>
+              <Sparkles size={24} />
             </div>
             <div className="text-center">
-              <div className={`font-bold text-sm ${uploadMode === 'ai' ? 'text-purple-800' : 'text-gray-600'}`}>Yapay Zeka Modu</div>
-              <div className="text-[10px] text-gray-400">Hızlı & Otomatik (Önerilen)</div>
+              <div className={`font-bold text-sm ${uploadMode === 'ai' ? 'text-blue-800' : 'text-gray-600'}`}>Otomatik Tarama</div>
+              <div className="text-[10px] text-gray-400">Veri Ayıklama (Internet Gerekmez)</div>
             </div>
           </button>
           <button
