@@ -2,7 +2,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 
 // Vite-style worker path
 // @ts-ignore
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 if (typeof window !== 'undefined' && 'GlobalWorkerOptions' in pdfjsLib) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;

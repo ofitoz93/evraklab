@@ -10,34 +10,17 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => {
-    // 1. Önce localStorage kontrol et
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark' || savedTheme === 'light') return savedTheme;
-
-    // 2. Yoksa sistem tercihine bak (Sadece ilk açılışta)
-    if (window.matchMedia('(prefers-color-scheme: dark)').matches)
-      return 'dark';
-
-    return 'light';
-  });
+  const [theme, setTheme] = useState<Theme>('light');
 
   useEffect(() => {
     const root = window.document.documentElement;
-
-    // Tailwind'in 'dark' sınıfını ekle/çıkar
-    if (theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-
-    // Tercihi kaydet
-    localStorage.setItem('theme', theme);
-  }, [theme]);
+    // Daima light mod kalsın (geçici olarak)
+    root.classList.remove('dark');
+  }, []);
 
   const toggleTheme = () => {
-    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+    // Geçici olarak devre dışı
+    console.log('Karanlık mod geçici olarak devre dışı bırakıldı.');
   };
 
   return (

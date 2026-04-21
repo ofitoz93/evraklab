@@ -1,4 +1,3 @@
-import React from 'react';
 import {
   HelpCircle,
   FileText,
@@ -9,7 +8,6 @@ import {
   Trash2,
   Bell,
   Download,
-  Upload,
   CheckCircle,
   AlertTriangle,
   Clock,
@@ -116,37 +114,32 @@ export default function HelpPage() {
             </h3>
             <ul className="space-y-4 text-gray-600 relative z-10">
               <li className="flex gap-3">
-                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">
-                  1
-                </span>
-                <span>
-                  <strong className="text-gray-800">Belge Yükleme:</strong>{' '}
-                  "Evraklar" sayfasındaki{' '}
-                  <span className="font-bold text-blue-600">+ Yeni Belge</span>{' '}
-                  butonuna tıklayın. Dosyanızı sürükleyin, belge türünü ve{' '}
-                  <u>son geçerlilik tarihini</u> seçin.
-                </span>
+                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">1</span>
+                <div>
+                  <strong className="text-gray-800">Belge Yükleme ve AI Analizi:</strong><br/>
+                  "Yeni Belge Ekle" butonunu kullanarak belgelerinizi sürükleyip bırakın. <b>Otomatik (AI)</b> modu, belgelerin türünü ve tarihlerini otomatik olarak algılayarak iş yükünüzü azaltır.
+                </div>
               </li>
               <li className="flex gap-3">
-                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">
-                  2
-                </span>
-                <span>
-                  <strong className="text-gray-800">Otomatik Takip:</strong>{' '}
-                  Sistem, girdiğiniz tarihi baz alarak geri sayım başlatır.
-                  Süresi yaklaşan evraklar listede sarı, geçenler kırmızı ile
-                  işaretlenir.
-                </span>
+                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">2</span>
+                <div>
+                  <strong className="text-gray-800">Bireysel Bildirim Ayarı:</strong><br/>
+                  Her evrak için kaç gün kala bildirim almak istediğinizi (ödeme, yenileme vb.) belirleyebilirsiniz. Premium üyeler bu tarihlerde otomatik mail uyarısı alırlar.
+                </div>
               </li>
               <li className="flex gap-3">
-                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">
-                  3
-                </span>
-                <span>
-                  <strong className="text-gray-800">Arşivleme:</strong> İşi
-                  biten ama silmek istemediğiniz belgeleri "Arşivle" seçeneği
-                  ile ana listenizden kaldırabilirsiniz.
-                </span>
+                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">3</span>
+                <div>
+                  <strong className="text-gray-800">Dinamik Lokasyon Yönetimi:</strong><br/>
+                  Belgelerinizi fiziksel veya dijital konumlarına göre sınıflandırın. Yükleme anında "+ Yeni Lokasyon Ekle" seçeneğiyle anlık tanımlamalar yapabilirsiniz.
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="bg-blue-100 text-blue-700 font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs flex-shrink-0">4</span>
+                <div>
+                  <strong className="text-gray-800">Arşivleme ve Versiyonlama:</strong><br/>
+                  İşi biten veya yenilenen belgeleri arşivleyerek ana listenizi düzenli tutun. Arşivlenen belgelere dilediğiniz zaman "Arşiv" sekmesinden ulaşabilirsiniz.
+                </div>
               </li>
             </ul>
           </div>
@@ -184,23 +177,23 @@ export default function HelpPage() {
         </div>
 
         {/* 3. ÜYELİK TİPLERİ VE FARKLARI */}
-        <div className="bg-gray-900 text-white p-8 rounded-3xl shadow-xl relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-blue-600 rounded-full -mr-20 -mt-20 blur-3xl opacity-20"></div>
-          <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-600 rounded-full -ml-20 -mb-20 blur-3xl opacity-20"></div>
+        <div className="bg-white text-gray-800 p-8 rounded-3xl shadow-xl border border-gray-100 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-blue-50 rounded-full -mr-20 -mt-20 blur-3xl opacity-50"></div>
+          <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-50 rounded-full -ml-20 -mb-20 blur-3xl opacity-50"></div>
 
           <h3 className="text-2xl font-bold mb-6 flex items-center gap-2 relative z-10">
-            <Crown className="text-yellow-400" /> Üyelik Tipleri ve Farklar
+            <Crown className="text-yellow-600" /> Üyelik Tipleri ve Farklar
           </h3>
 
           <div className="space-y-6 relative z-10">
             {/* Normal */}
-            <div className="flex gap-4 border-b border-gray-700 pb-4">
-              <div className="bg-gray-700 p-2 rounded-lg h-fit">
-                <Users className="text-gray-300" />
+            <div className="flex gap-4 border-b border-gray-100 pb-4">
+              <div className="bg-gray-100 p-2 rounded-lg h-fit">
+                <Users className="text-gray-600" />
               </div>
               <div>
-                <h4 className="font-bold text-lg">Normal Kullanıcı</h4>
-                <p className="text-gray-400 text-sm mt-1">
+                <h4 className="font-bold text-lg text-gray-800">Normal Kullanıcı</h4>
+                <p className="text-gray-500 text-sm mt-1">
                   Sistemi denemek için temel özellikler. Sınırlı sayıda belge
                   yükleme hakkı vardır. Hatırlatmalar sadece panel üzerinden
                   yapılır.
@@ -209,15 +202,15 @@ export default function HelpPage() {
             </div>
 
             {/* Bireysel Premium */}
-            <div className="flex gap-4 border-b border-gray-700 pb-4">
-              <div className="bg-blue-900/50 p-2 rounded-lg h-fit">
-                <Star className="text-blue-400" />
+            <div className="flex gap-4 border-b border-gray-100 pb-4">
+              <div className="bg-blue-100 p-2 rounded-lg h-fit">
+                <Star className="text-blue-600" />
               </div>
               <div>
-                <h4 className="font-bold text-lg text-blue-400">
+                <h4 className="font-bold text-lg text-blue-600">
                   Bireysel Premium
                 </h4>
-                <p className="text-gray-300 text-sm mt-1">
+                <p className="text-gray-600 text-sm mt-1">
                   Sınırsız belge yükleme hakkı. E-posta ve SMS ile gelişmiş
                   hatırlatma servisi. Öncelıklı destek hizmeti. Bireysel çalışan
                   profesyoneller içindir.
@@ -227,14 +220,14 @@ export default function HelpPage() {
 
             {/* Kurumsal Premium */}
             <div className="flex gap-4">
-              <div className="bg-purple-900/50 p-2 rounded-lg h-fit">
-                <Building className="text-purple-400" />
+              <div className="bg-purple-100 p-2 rounded-lg h-fit">
+                <Building className="text-purple-600" />
               </div>
               <div>
-                <h4 className="font-bold text-lg text-purple-400">
+                <h4 className="font-bold text-lg text-purple-600">
                   Kurumsal (Şirket)
                 </h4>
-                <p className="text-gray-300 text-sm mt-1">
+                <p className="text-gray-600 text-sm mt-1">
                   Kendi dijital ofisinizi kurun. Personel ekleyebilir, görev
                   atayabilir ve tüm ekibin belgelerini tek panelden
                   yönetebilirsiniz. Şirket içi özel sohbet modülü açılır.

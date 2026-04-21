@@ -11,7 +11,6 @@ import {
   Clock,
   Eye,
   XCircle,
-  CheckCircle,
   HelpCircle,
   ChevronDown,
   ChevronUp,
@@ -408,33 +407,16 @@ export default function Support() {
         <div className="lg:col-span-1 space-y-6">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
             <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <HelpCircle size={20} className="text-purple-600" /> Sıkça
-              Sorulanlar
+              <HelpCircle size={20} className="text-purple-600" /> Sıkça Sorulanlar
             </h3>
             <div className="space-y-2">
               {faqs.map((f) => (
-                <div
-                  key={f.id}
-                  className="border border-gray-100 rounded-lg overflow-hidden"
-                >
-                  <button
-                    onClick={() => setOpenFaq(openFaq === f.id ? null : f.id)}
-                    className="w-full flex justify-between items-center p-3 text-left bg-gray-50 hover:bg-gray-100 transition"
-                  >
-                    <span className="text-sm font-bold text-gray-700">
-                      {f.q}
-                    </span>
-                    {openFaq === f.id ? (
-                      <ChevronUp size={16} className="text-gray-400" />
-                    ) : (
-                      <ChevronDown size={16} className="text-gray-400" />
-                    )}
+                <div key={f.id} className="border border-gray-100 rounded-lg overflow-hidden">
+                  <button onClick={() => setOpenFaq(openFaq === f.id ? null : f.id)} className="w-full flex justify-between items-center p-3 text-left bg-gray-50 hover:bg-gray-100 transition">
+                    <span className="text-sm font-bold text-gray-700">{f.q}</span>
+                    {openFaq === f.id ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
                   </button>
-                  {openFaq === f.id && (
-                    <div className="p-3 text-xs text-gray-600 bg-white leading-relaxed">
-                      {f.a}
-                    </div>
-                  )}
+                  {openFaq === f.id && <div className="p-3 text-xs text-gray-600 bg-white leading-relaxed">{f.a}</div>}
                 </div>
               ))}
             </div>
@@ -446,30 +428,16 @@ export default function Support() {
             </h3>
             <div className="space-y-3">
               {pastTickets.length === 0 && (
-                <div className="text-gray-400 text-sm italic text-center py-4">
-                  Geçmiş talep bulunamadı.
-                </div>
+                <div className="text-gray-400 text-sm italic text-center py-4">Geçmiş talep bulunamadı.</div>
               )}
               {pastTickets.map((t) => (
-                <div
-                  key={t.id}
-                  className="p-4 border border-gray-100 rounded-xl hover:border-blue-200 transition group bg-gray-50"
-                >
+                <div key={t.id} className="p-4 border border-gray-100 rounded-xl hover:border-blue-200 transition group bg-gray-50">
                   <div className="flex justify-between items-start mb-2">
-                    <h4 className="font-bold text-gray-800 text-sm group-hover:text-blue-600 transition">
-                      {t.subject}
-                    </h4>
-                    <span className="bg-gray-200 text-gray-600 text-[10px] px-2 py-0.5 rounded font-bold uppercase">
-                      Kapalı
-                    </span>
+                    <h4 className="font-bold text-gray-800 text-sm group-hover:text-blue-600 transition">{t.subject}</h4>
+                    <span className="bg-gray-200 text-gray-600 text-[10px] px-2 py-0.5 rounded font-bold uppercase">Kapalı</span>
                   </div>
-                  <div className="text-xs text-gray-400 mb-3">
-                    {new Date(t.created_at).toLocaleDateString()}
-                  </div>
-                  <button
-                    onClick={() => openPastTicketModal(t)}
-                    className="w-full text-xs bg-white border border-gray-200 py-2 rounded-lg font-bold text-gray-600 hover:text-blue-600 hover:border-blue-200 transition flex items-center justify-center gap-1"
-                  >
+                  <div className="text-xs text-gray-400 mb-3">{new Date(t.created_at).toLocaleDateString()}</div>
+                  <button onClick={() => openPastTicketModal(t)} className="w-full text-xs bg-white border border-gray-200 py-2 rounded-lg font-bold text-gray-600 hover:text-blue-600 transition flex items-center justify-center gap-1">
                     <Eye size={12} /> İncele
                   </button>
                 </div>
@@ -481,88 +449,42 @@ export default function Support() {
 
       {viewTicket && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-2xl h-[80vh] flex flex-col shadow-2xl animate-fadeIn">
+          <div className="bg-white rounded-2xl w-full max-w-2xl h-[80vh] flex flex-col shadow-2xl">
             <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
               <div>
-                <div className="text-xs text-gray-500 font-bold uppercase mb-1">
-                  Geçmiş Talep
-                </div>
-                <h3 className="text-lg font-bold text-gray-800">
-                  {viewTicket.subject}
-                </h3>
+                <div className="text-xs text-gray-500 font-bold uppercase mb-1">Geçmiş Talep</div>
+                <h3 className="text-lg font-bold text-gray-800">{viewTicket.subject}</h3>
               </div>
-              <button
-                onClick={() => setViewTicket(null)}
-                className="text-gray-400 hover:text-red-500 transition"
-              >
+              <button onClick={() => setViewTicket(null)} className="text-gray-400 hover:text-red-500 transition">
                 <XCircle size={28} />
               </button>
             </div>
 
             <div className="flex-1 p-6 overflow-y-auto bg-white space-y-4">
-              {/* Başlangıç Mesajı */}
               {viewTicket.message && (
                 <div className="flex justify-start">
                   <div className="bg-gray-100 p-4 rounded-2xl rounded-tl-none border border-gray-200 max-w-[85%]">
-                    <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">
-                      Başlangıç Mesajı
-                    </div>
-                    <p className="text-sm text-gray-700 whitespace-pre-wrap">
-                      {viewTicket.message}
-                    </p>
+                    <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">Başlangıç Mesajı</div>
+                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{viewTicket.message}</p>
                   </div>
                 </div>
               )}
-
               {viewMessages.map((msg) => {
                 const isAdmin = msg.sender_role === 'admin';
                 return (
-                  <div
-                    key={msg.id}
-                    className={`flex ${
-                      isAdmin ? 'justify-start' : 'justify-end'
-                    }`}
-                  >
-                    <div
-                      className={`p-4 rounded-2xl text-sm max-w-[85%] ${
-                        isAdmin
-                          ? 'bg-green-50 border border-green-200 text-green-900 rounded-tl-none'
-                          : 'bg-gray-100 text-gray-700 rounded-tr-none'
-                      }`}
-                    >
-                      <div
-                        className={`font-bold text-[10px] mb-1 uppercase ${
-                          isAdmin ? 'text-green-600' : 'text-gray-400'
-                        }`}
-                      >
-                        {isAdmin ? 'Destek Ekibi (Çözüm)' : 'Siz'} •{' '}
-                        {new Date(msg.created_at).toLocaleDateString()}
+                  <div key={msg.id} className={`flex ${isAdmin ? 'justify-start' : 'justify-end'}`}>
+                    <div className={`p-4 rounded-2xl text-sm max-w-[85%] ${isAdmin ? 'bg-green-50 border border-green-200 text-green-900 rounded-tl-none' : 'bg-gray-100 text-gray-700 rounded-tr-none'}`}>
+                      <div className={`font-bold text-[10px] mb-1 uppercase ${isAdmin ? 'text-green-600' : 'text-gray-400'}`}>
+                        {isAdmin ? 'Destek Ekibi' : 'Siz'} • {new Date(msg.created_at).toLocaleDateString()}
                       </div>
-                      <p className="whitespace-pre-wrap leading-relaxed">
-                        {msg.message}
-                      </p>
+                      <p className="whitespace-pre-wrap">{msg.message}</p>
                     </div>
                   </div>
                 );
               })}
-
-              {viewTicket.admin_reply && viewMessages.length === 0 && (
-                <div className="flex justify-start">
-                  <div className="bg-green-50 p-4 rounded-2xl border border-green-200 max-w-[85%]">
-                    <div className="font-bold text-green-700 text-xs mb-2 flex items-center gap-1">
-                      <CheckCircle size={12} /> Admin Sonucu:
-                    </div>
-                    <p className="text-sm text-green-900 whitespace-pre-wrap">
-                      {viewTicket.admin_reply}
-                    </p>
-                  </div>
-                </div>
-              )}
             </div>
-
             <div className="p-4 border-t bg-gray-50 text-center text-xs text-gray-500 rounded-b-2xl">
-              <Lock size={12} className="inline mr-1" /> Bu talep kapatılmıştır,
-              işlem yapılamaz.
+              <Lock size={12} className="inline mr-1" /> Bu talep kapatılmıştır, işlem yapılamaz.
             </div>
           </div>
         </div>

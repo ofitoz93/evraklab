@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { Link } from 'react-router-dom';
 import {
@@ -88,7 +88,7 @@ export default function Dashboard() {
           }
 
           const limit = isCorp
-            ? profile.organization?.storage_limit
+            ? (profile.organization as any)?.storage_limit
             : profile.storage_limit;
           const finalLimit = limit || (isCorp ? 1073741824 : 10485760);
 
@@ -279,52 +279,57 @@ export default function Dashboard() {
         </div>
 
         {/* DEPOLAMA KARTI */}
-        <div className="bg-gradient-to-br from-slate-800 to-slate-900 dark:from-slate-900 dark:to-black p-6 rounded-2xl shadow-lg text-white flex flex-col justify-between relative overflow-hidden ring-1 ring-white/10">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col justify-between relative overflow-hidden transition hover:shadow-md group">
           <Cloud
-            className="absolute -right-4 -top-4 text-white opacity-5"
-            size={100}
+            className="absolute -right-4 -top-4 text-blue-600 dark:text-white opacity-[0.03] dark:opacity-5 transition-transform group-hover:scale-110"
+            size={120}
           />
           <div className="flex justify-between items-start mb-4 relative z-10">
-            <div className="p-3 bg-white/10 rounded-xl backdrop-blur-sm border border-white/10">
-              <HardDrive size={24} className="text-blue-300" />
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-xl">
+              <HardDrive size={24} />
             </div>
             <Link
               to="/pricing"
-              className="text-xs font-bold bg-blue-600/90 hover:bg-blue-600 px-3 py-1.5 rounded-lg transition shadow-lg"
+              className="text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg transition shadow-lg shadow-blue-600/20"
             >
               Yükselt
             </Link>
           </div>
           <div className="relative z-10">
-            <div className="flex justify-between items-end mb-2">
+            <div className="flex justify-between items-end mb-3">
               <div>
-                <h3 className="text-xl font-bold tracking-tight">
+                <h3 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">
                   {formatBytes(storage.used)}
                 </h3>
-                <p className="text-xs text-slate-400 font-medium">
+                <p className="text-xs text-gray-500 dark:text-gray-400 font-bold uppercase tracking-wider">
                   Kullanılan Alan
                 </p>
               </div>
               <div className="text-right">
-                <span className="text-xs text-slate-400 block">Limit</span>
-                <span className="text-sm font-bold">
+                <span className="text-[10px] text-gray-400 dark:text-gray-500 font-bold uppercase block mb-0.5">
+                  Limit
+                </span>
+                <span className="text-sm font-black text-gray-700 dark:text-gray-200">
                   {formatBytes(storage.limit)}
                 </span>
               </div>
             </div>
-            <div className="w-full bg-slate-700/50 rounded-full h-2 overflow-hidden border border-white/5">
+            {/* PROGRESS BAR */}
+            <div className="w-full bg-gray-100 dark:bg-slate-700/50 rounded-full h-2.5 overflow-hidden border border-gray-200/50 dark:border-white/5">
               <div
-                className={`h-full rounded-full transition-all duration-1000 shadow-[0_0_10px_rgba(59,130,246,0.5)] ${getStorageColor()}`}
+                className={`h-full rounded-full transition-all duration-1000 shadow-sm ${getStorageColor()}`}
                 style={{ width: `${storage.percent}%` }}
               ></div>
             </div>
-            <div className="text-[10px] text-right mt-2 text-slate-400 font-medium flex items-center justify-end gap-1">
+            <div className="text-[10px] text-right mt-3 text-gray-400 dark:text-gray-500 font-bold flex items-center justify-end gap-1.5">
               {storage.isCorporate ? (
-                <Building size={10} />
+                <Building size={12} className="text-gray-400 dark:text-gray-500" />
               ) : (
-                <User size={10} />
+                <User size={12} className="text-gray-400 dark:text-gray-500" />
               )}
-              {storage.isCorporate ? 'Şirket Kotası' : 'Bireysel Kota'}
+              <span className="uppercase tracking-tighter">
+                {storage.isCorporate ? 'Şirket Kotası' : 'Bireysel Kota'}
+              </span>
             </div>
           </div>
         </div>

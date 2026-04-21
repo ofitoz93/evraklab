@@ -21,8 +21,6 @@ import {
   Building,
   MessageCircle,
   MessageSquare,
-  Sun,
-  Moon,
   HelpCircle,
   Menu,
   X,
@@ -61,19 +59,16 @@ export function useTheme() {
   return context;
 }
 function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark' || savedTheme === 'light') return savedTheme;
-    return 'light';
-  });
+  const [theme, setTheme] = useState<Theme>('light');
   useEffect(() => {
     const root = window.document.documentElement;
-    root.classList.remove('light', 'dark');
-    root.classList.add(theme);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
+    root.classList.remove('dark');
+    root.classList.add('light');
+    localStorage.setItem('theme', 'light');
+  }, []);
   const toggleTheme = () => {
-    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+    // Geçici olarak devre dışı
+    console.log('Karanlık mod geçici olarak devre dışı.');
   };
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
@@ -298,12 +293,7 @@ function NavBarContent({
         </div>
 
         <div className="flex items-center gap-3 md:gap-4">
-          <button
-            onClick={toggleTheme}
-            className="p-2 rounded-full transition shadow-sm border bg-gray-100 text-gray-600 hover:bg-gray-200 border-transparent dark:bg-slate-800 dark:text-yellow-400 dark:hover:bg-slate-700 dark:border-slate-700"
-          >
-            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+{/* Karanlık mod butonu geçici olarak kaldırıldı */}
 
           {!isPremium && (
             <Link

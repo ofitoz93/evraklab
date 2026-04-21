@@ -48,24 +48,24 @@ export default function Login() {
   };
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-50 p-4">
-      <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-100">
+    <div className="flex items-center justify-center min-h-screen bg-gray-50 dark:bg-slate-900 p-4 transition-colors duration-300">
+      <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-100 dark:border-slate-700">
         {/* Üst Kısım: Logo ve Başlık */}
         <div className="text-center mb-8">
-          <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600">
+          <div className="bg-blue-100 dark:bg-blue-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600 dark:text-blue-400">
             <Shield size={32} />
           </div>
-          <h2 className="text-2xl font-extrabold text-gray-800">
+          <h2 className="text-2xl font-extrabold text-gray-800 dark:text-white">
             Hoş Geldiniz
           </h2>
-          <p className="text-gray-500 text-sm mt-2">Hesabınıza giriş yapın</p>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-2">Hesabınıza giriş yapın</p>
         </div>
 
         {/* Google Giriş Butonu */}
         <button
           onClick={handleGoogleLogin}
           type="button"
-          className="w-full mb-6 flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 font-semibold py-2.5 rounded-xl hover:bg-gray-50 transition-colors"
+          className="w-full mb-6 flex items-center justify-center gap-2 bg-white dark:bg-slate-700 border border-gray-300 dark:border-slate-600 text-gray-700 dark:text-gray-200 font-semibold py-2.5 rounded-xl hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors"
         >
           {/* Google Logosu SVG */}
           <svg className="w-5 h-5" viewBox="0 0 24 24">
@@ -91,10 +91,10 @@ export default function Login() {
 
         <div className="relative mb-6">
           <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-gray-200"></div>
+            <div className="w-full border-t border-gray-200 dark:border-slate-700"></div>
           </div>
           <div className="relative flex justify-center text-sm">
-            <span className="px-2 bg-white text-gray-500">
+            <span className="px-2 bg-white dark:bg-slate-800 text-gray-500 dark:text-gray-400">
               veya e-posta ile
             </span>
           </div>
@@ -103,15 +103,15 @@ export default function Login() {
         {/* E-posta Giriş Formu */}
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-gray-600 mb-1">
+            <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1 uppercase tracking-wider">
               E-Posta
             </label>
             <div className="relative">
-              <Mail size={20} className="absolute left-3 top-3 text-gray-400" />
+              <Mail size={20} className="absolute left-3 top-3 text-gray-400 dark:text-gray-500" />
               <input
                 type="email"
                 placeholder="ornek@email.com"
-                className="w-full pl-10 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full pl-10 p-3 border border-gray-200 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-slate-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 transition-colors"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -120,15 +120,15 @@ export default function Login() {
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-gray-600 mb-1">
+            <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1 uppercase tracking-wider">
               Şifre
             </label>
             <div className="relative">
-              <Lock size={20} className="absolute left-3 top-3 text-gray-400" />
+              <Lock size={20} className="absolute left-3 top-3 text-gray-400 dark:text-gray-500" />
               <input
                 type="password"
                 placeholder="******"
-                className="w-full pl-10 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full pl-10 p-3 border border-gray-200 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-slate-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 transition-colors"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -138,19 +138,18 @@ export default function Login() {
 
           <button
             disabled={loading}
-            className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition duration-200 flex items-center justify-center gap-2 disabled:opacity-70"
+            className="w-full bg-blue-600 dark:bg-blue-500 text-white font-bold py-3 rounded-xl hover:bg-blue-700 dark:hover:bg-blue-600 transition duration-200 flex items-center justify-center gap-2 disabled:opacity-70 shadow-lg shadow-blue-600/20"
           >
             {loading ? 'Giriş Yapılıyor...' : 'Giriş Yap'} <LogIn size={18} />
           </button>
         </form>
 
         {/* Kayıt Ol Linki */}
-        <div className="mt-6 text-center text-sm">
+        <div className="mt-6 text-center text-sm text-gray-600 dark:text-gray-400 font-medium">
           Hesabın yok mu?{' '}
-          {/* BURASI DEĞİŞTİ: Artık /register sayfasına yönlendiriyor */}
           <Link
             to="/register"
-            className="text-blue-600 font-bold hover:underline flex items-center justify-center gap-1 mt-2"
+            className="text-blue-600 dark:text-blue-400 font-bold hover:underline inline-flex items-center gap-1 transition-all hover:gap-2 ml-1"
           >
             Hemen Kayıt Ol <ArrowRight size={14} />
           </Link>

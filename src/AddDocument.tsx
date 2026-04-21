@@ -18,7 +18,7 @@ import {
   Globe,
   Info,
   XCircle,
-  FileCheck,
+  AlertCircle,
 } from 'lucide-react';
 import { analyzeDocumentLocally } from './aiService';
 
@@ -52,7 +52,8 @@ export default function AddDocument() {
   const [expiryDate, setExpiryDate] = useState('');
   const [appDeadline, setAppDeadline] = useState('');
   const [isIndefinite, setIsIndefinite] = useState(false);
-  const [reminderDays] = useState(30);
+  const [reminderDays, setReminderDays] = useState(30);
+  const [bulkReminderDays, setBulkReminderDays] = useState<number | ''>(30);
   const reminderBase = 'expiry';
 
   // Toplu Analiz Sonuçları
@@ -236,6 +237,7 @@ export default function AddDocument() {
           ...result,
           selectedTypeId: '',
           selectedLocId: selectedLocId,
+          reminderDays: bulkReminderDays === '' ? 30 : bulkReminderDays,
           error: null
         };
 
@@ -409,6 +411,19 @@ export default function AddDocument() {
           publicUrl = data.publicUrl;
         }
 
+        // YENİ LOKASYON KONTROLÜ (Manuel veya Toplu)
+        let finalLocId = (doc.selectedLocId && doc.selectedLocId !== 'NEW_LOC') ? doc.selectedLocId : (selectedLocId !== 'NEW_LOC' ? selectedLocId : null);
+        const manualLocName = uploadMode === 'ai' ? doc.manualLoc : (window as any).tempManualLoc;
+
+        if ((doc.selectedLocId === 'NEW_LOC' || selectedLocId === 'NEW_LOC') && manualLocName) {
+          const { data: newLoc } = await supabase
+            .from('user_definitions')
+            .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
+            .select()
+            .single();
+          if (newLoc) finalLocId = newLoc.id;
+        }
+
         const { error } = await supabase.from('documents').insert([
           {
             organization_id: finalOrgId,
@@ -416,12 +431,12 @@ export default function AddDocument() {
             title: doc.title || doc.fileName || (file ? file.name : 'Dosyasız Kayıt'),
             description: doc.description || desc || null,
             type_def_id: (doc.selectedTypeId && doc.selectedTypeId !== '') ? doc.selectedTypeId : (selectedTypeId !== '' ? selectedTypeId : null),
-            location_def_id: (doc.selectedLocId && doc.selectedLocId !== '') ? doc.selectedLocId : (selectedLocId !== '' ? selectedLocId : null),
+            location_def_id: finalLocId || null,
             acquisition_date: doc.acquisitionDate || acquisitionDate,
             expiry_date: (doc.isIndefinite || isIndefinite) ? null : (doc.expiryDate || expiryDate || null),
             application_deadline: (doc.isIndefinite || isIndefinite) ? null : (doc.appDeadline || appDeadline || doc.expiryDate || expiryDate || null),
             is_indefinite: doc.isIndefinite || isIndefinite || false,
-            reminder_days: isPremium ? reminderDays : 0,
+            reminder_days: isPremium ? (uploadMode === 'ai' ? (doc.reminderDays || (bulkReminderDays === '' ? 30 : bulkReminderDays)) : reminderDays) : 0,
             reminder_based_on: reminderBase,
             is_archived: false,
             file_url: publicUrl,
@@ -619,13 +634,23 @@ export default function AddDocument() {
                     value={selectedLocId}
                     onChange={(e) => setSelectedLocId(e.target.value)}
                   >
-                    <option value="">(Belirtilmemiş)</option>
+                    <option value="">(Lokasyon Seçiniz...)</option>
                     {locOptions.map((l) => (
                       <option key={l.id} value={l.id}>
                         {l.label}
                       </option>
                     ))}
+                    <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
                   </select>
+                  {selectedLocId === 'NEW_LOC' && (
+                    <input
+                      type="text"
+                      className="w-full mt-2 p-2 border rounded border-blue-300 bg-blue-50 text-sm font-bold"
+                      placeholder="Yeni lokasyon ismini yazın..."
+                      autoFocus
+                      onChange={(e) => (window as any).tempManualLoc = e.target.value}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -677,6 +702,31 @@ export default function AddDocument() {
                   </div>
                 )}
               </div>
+
+              {isPremium && (
+                <div className="bg-orange-50/50 p-4 rounded-xl border border-orange-100 flex flex-col gap-2">
+                  <label className="text-xs font-bold text-orange-800 uppercase flex items-center gap-2">
+                    <Sparkles size={14} className="text-orange-500" /> Bildirim Ayarı (Premium)
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1">
+                      <p className="text-[10px] text-orange-700 mb-2 leading-relaxed">
+                        Belge bitiş tarihine kaç gün kala her gün e-posta bildirimi almak istersiniz?
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="0"
+                          className="w-24 p-2 border rounded border-orange-200 bg-white font-bold text-orange-900"
+                          value={reminderDays}
+                          onChange={(e) => setReminderDays(Math.max(0, parseInt(e.target.value) || 0))}
+                        />
+                        <span className="text-sm font-bold text-orange-800">Gün Kala Başla</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="md:col-span-2">
                 <label className="block text-sm font-bold text-gray-700 mb-1">
@@ -749,6 +799,14 @@ export default function AddDocument() {
                 </button>
               </div>
 
+              {/* UYARI MESAJI */}
+              <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg flex items-start gap-3">
+                <AlertCircle size={18} className="text-orange-600 shrink-0 mt-0.5" />
+                <p className="text-xs text-orange-800 font-medium">
+                  Analiz hata yapabilir, belge tarihlerini yüklemeden sonra kontrol edin ya da manuel yüklemeyi tercih edebilirsiniz.
+                </p>
+              </div>
+
               <div className="grid grid-cols-1 gap-3">
                 {files.map((f, idx) => {
                   const result = bulkAnalysisResults.find(r => r.fileName === f.name);
@@ -791,21 +849,51 @@ export default function AddDocument() {
                           </div>
                         ) : (
                           <div className="mt-3 space-y-3">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
-                              <div className="bg-gray-50 p-2 rounded">
-                                <span className="text-gray-400 block">Tür:</span>
-                                <span className="font-bold text-gray-700 uppercase line-clamp-1">
-                                  {typeOptions.find(t => t.id === result.selectedTypeId)?.label || result.docType}
-                                </span>
+                            {/* BELGE BAŞLIĞI - MANUEL DÜZENLENEBİLİR */}
+                            <div className="bg-gray-50 p-2 rounded border border-gray-100">
+                              <label className="block text-[10px] font-bold text-gray-500 mb-1">📝 Belge Başlığı</label>
+                              <input
+                                type="text"
+                                className="w-full text-xs bg-transparent border-none outline-none font-bold text-blue-700"
+                                value={result.title || result.fileName}
+                                onChange={(e) => {
+                                  const newResults = bulkAnalysisResults.map(r =>
+                                    r.fileName === f.name ? { ...r, title: e.target.value } : r
+                                  );
+                                  setBulkAnalysisResults(newResults);
+                                }}
+                                placeholder="Belge başlığını girin..."
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[10px]">
+                              <div className="bg-gray-50 p-2 rounded border border-gray-100">
+                                <label className="block text-[10px] font-bold text-gray-500 mb-1">📂 Belge Türü</label>
+                                <select
+                                  className="w-full text-xs bg-transparent border-none outline-none font-bold text-gray-700 uppercase"
+                                  value={result.selectedTypeId}
+                                  onChange={(e) => {
+                                    const newResults = bulkAnalysisResults.map(r =>
+                                      r.fileName === f.name ? { ...r, selectedTypeId: e.target.value } : r
+                                    );
+                                    setBulkAnalysisResults(newResults);
+                                  }}
+                                >
+                                  <option value="">Tür Seçin...</option>
+                                  {typeOptions.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                                </select>
                               </div>
-                              <div className="bg-gray-50 p-2 rounded">
-                                <span className="text-gray-400 block">Bitiş Tarihi:</span>
+                              <div className="bg-gray-50 p-2 rounded border border-gray-100">
+                                <span className="text-gray-400 block font-bold">📅 Bitiş Tarihi:</span>
                                 <span className="font-bold text-red-600">
                                   {result.expiryDate || (result.isIndefinite ? 'SÜRESİZ' : '-')}
                                 </span>
                               </div>
-                              <div className="bg-orange-50 p-2 rounded border border-orange-100">
-                                <span className="text-orange-500 block font-semibold flex items-center gap-1">
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <div className="bg-orange-50 p-2 rounded border border-orange-100 text-[10px]">
+                                <span className="text-orange-500 block font-bold flex items-center gap-1 uppercase">
                                   Son Başvuru:
                                 </span>
                                 <span className="font-bold text-orange-700">
@@ -814,24 +902,63 @@ export default function AddDocument() {
                                     : '-'}
                                 </span>
                               </div>
+
+                              <div className="bg-purple-50 p-2 rounded border border-purple-100">
+                                <label className="block text-[10px] font-bold text-purple-700 mb-1 uppercase">📍 Lokasyon</label>
+                                <select
+                                  className="w-full text-xs bg-transparent border-none outline-none font-bold text-purple-800"
+                                  value={result.selectedLocId}
+                                  onChange={(e) => {
+                                    const newResults = bulkAnalysisResults.map(r =>
+                                      r.fileName === f.name ? { ...r, selectedLocId: e.target.value } : r
+                                    );
+                                    setBulkAnalysisResults(newResults);
+                                  }}
+                                >
+                                  <option value="">Lokasyon Seçilmedi</option>
+                                  {locOptions.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
+                                  <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
+                                </select>
+                                {result.selectedLocId === 'NEW_LOC' && (
+                                  <input
+                                    type="text"
+                                    className="w-full mt-1 p-1 border rounded bg-white text-[10px] font-bold"
+                                    placeholder="Yeni lokasyon ismini girin..."
+                                    autoFocus
+                                    onChange={(e) => {
+                                      const newResults = bulkAnalysisResults.map(r =>
+                                        r.fileName === f.name ? { ...r, manualLoc: e.target.value } : r
+                                      );
+                                      setBulkAnalysisResults(newResults);
+                                    }}
+                                  />
+                                )}
+                              </div>
                             </div>
 
-                            <div className="bg-purple-50 p-2 rounded border border-purple-100">
-                              <label className="block text-[10px] font-bold text-purple-700 mb-1">📍 Lokasyon Seçin</label>
-                              <select
-                                className="w-full text-xs bg-transparent border-none outline-none font-medium"
-                                value={result.selectedLocId}
-                                onChange={(e) => {
-                                  const newResults = bulkAnalysisResults.map(r =>
-                                    r.fileName === f.name ? { ...r, selectedLocId: e.target.value } : r
-                                  );
-                                  setBulkAnalysisResults(newResults);
-                                }}
-                              >
-                                <option value="">Lokasyon Seçilmedi</option>
-                                {locOptions.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-                              </select>
-                            </div>
+                            {/* BİREYSEL BİLDİRİM AYARI */}
+                            {isPremium && (
+                              <div className="bg-orange-50/50 p-2 rounded-xl border border-orange-100 flex items-center justify-between">
+                                <label className="text-[10px] font-bold text-orange-800 uppercase flex items-center gap-2">
+                                  <Sparkles size={12} className="text-orange-500" /> Bildirim Ayarı
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    className="w-16 p-1 border rounded border-orange-200 bg-white text-[10px] font-bold text-center text-orange-900"
+                                    value={result.reminderDays !== undefined ? result.reminderDays : (bulkReminderDays === '' ? 30 : bulkReminderDays)}
+                                    onChange={(e) => {
+                                      const newResults = bulkAnalysisResults.map(r =>
+                                        r.fileName === f.name ? { ...r, reminderDays: Math.max(0, parseInt(e.target.value) || 0) } : r
+                                      );
+                                      setBulkAnalysisResults(newResults);
+                                    }}
+                                  />
+                                  <span className="text-[10px] font-bold text-orange-700">GÜN KALA</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )
                       ) : (
@@ -853,6 +980,26 @@ export default function AddDocument() {
             {uploading ? <Loader size={20} className="animate-spin" /> : <Save size={20} />}
             {uploading ? 'Belgeler Kaydediliyor...' : (uploadMode === 'ai' ? 'Tüm Belgeleri Sisteme Kaydet' : 'Belgeyi Kaydet')}
           </button>
+
+          {uploadMode === 'ai' && isPremium && files.length > 0 && (
+            <div className="mt-4 p-4 bg-orange-50 rounded-xl border border-orange-100 flex flex-col items-center gap-3">
+              <div className="text-center">
+                <p className="text-xs font-bold text-orange-800">Toplu Bildirim Ayarı</p>
+                <p className="text-[10px] text-orange-600 mt-0.5">Yüklenecek tüm belgeler için geçerli olacak gün sayısı</p>
+              </div>
+              <div className="flex items-center gap-3 bg-white p-2 rounded-lg border border-orange-200">
+                <input
+                  type="number"
+                  min="0"
+                  className="w-16 border-none text-center font-bold text-orange-900 outline-none"
+                  value={bulkReminderDays}
+                  onChange={(e) => setBulkReminderDays(e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0))}
+                  placeholder="30"
+                />
+                <span className="text-xs font-bold text-orange-800 pr-2">Gün Kala</span>
+              </div>
+            </div>
+          )}
         </form >
       </div >
 

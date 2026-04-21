@@ -10,7 +10,6 @@ import {
   Trash2,
   Plus,
   MessageSquare,
-  CheckCircle,
   XCircle,
   Send,
   Lock,
@@ -55,6 +54,8 @@ export default function AdminPanel() {
   const [compName, setCompName] = useState('');
   const [compLimit, setCompLimit] = useState(0);
   const [compDate, setCompDate] = useState('');
+  const [userQuotaMB, setUserQuotaMB] = useState(0);
+  const [companyQuotaMB, setCompanyQuotaMB] = useState(0);
 
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
   const [teamList, setTeamList] = useState<any[]>([]);
@@ -278,6 +279,7 @@ export default function AdminPanel() {
     setNewEndDate(date ? new Date(date).toISOString().split('T')[0] : '');
     setSelectedOrgId(user.organization_id || '');
     setNewOrgNameForUser('');
+    setUserQuotaMB(Math.round((user.storage_limit || 0) / 1048576));
     await fetchCompanies();
   };
 
@@ -337,6 +339,9 @@ export default function AdminPanel() {
         updates.subscription_end_date = null;
       }
 
+      // Kota Güncellemesi (Byte çevrimi)
+      updates.storage_limit = userQuotaMB * 1048576;
+
       const { error } = await supabase
         .from('profiles')
         .update(updates)
@@ -359,6 +364,7 @@ export default function AdminPanel() {
         ? new Date(comp.subscription_end_date).toISOString().split('T')[0]
         : ''
     );
+    setCompanyQuotaMB(Math.round((comp.storage_limit || 0) / 1048576));
   };
 
   const handleSaveCompany = async () => {
@@ -374,6 +380,7 @@ export default function AdminPanel() {
           name: compName,
           member_limit: compLimit,
           subscription_end_date: finalDate,
+          storage_limit: companyQuotaMB * 1048576,
         })
         .eq('id', editingCompany.id);
       setEditingCompany(null);
@@ -1032,6 +1039,25 @@ export default function AdminPanel() {
                   />
                 </div>
               )}
+
+              <div className="bg-blue-50 p-3 rounded border border-blue-200">
+                <label className="block text-xs font-bold text-blue-900 mb-1 flex items-center gap-2">
+                  <Shield size={12} /> Özel Depolama Kotası (MB)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    className="w-full border p-2 rounded bg-white"
+                    value={userQuotaMB}
+                    onChange={(e) => setUserQuotaMB(parseInt(e.target.value) || 0)}
+                  />
+                  <span className="text-xs font-bold text-blue-700">MB</span>
+                </div>
+                <p className="text-[10px] text-blue-500 mt-1 italic">
+                  * Admin tarafından belirlenen özel limit.
+                </p>
+              </div>
               <div className="flex gap-2 pt-4 border-t">
                 <button
                   onClick={handleSaveUser}
@@ -1084,6 +1110,19 @@ export default function AdminPanel() {
                   value={compDate}
                   onChange={(e) => setCompDate(e.target.value)}
                 />
+              </div>
+              <div>
+                <label className="block text-xs font-bold mb-1">Şirket Kotası (MB)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    className="w-full border p-2 rounded"
+                    value={companyQuotaMB}
+                    onChange={(e) => setCompanyQuotaMB(parseInt(e.target.value) || 0)}
+                  />
+                  <span className="text-xs font-bold text-purple-700">MB</span>
+                </div>
               </div>
               <div className="flex gap-2 pt-4 border-t">
                 <button
