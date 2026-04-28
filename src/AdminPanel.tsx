@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import {
   Shield,
@@ -443,6 +444,12 @@ export default function AdminPanel() {
             <Shield size={24} /> Admin Yönetim Paneli
           </h1>
         </div>
+        <Link 
+          to="/admin/regulations" 
+          className="bg-white text-red-700 border border-red-200 px-4 py-2 rounded-lg font-bold hover:bg-red-100 transition shadow-sm"
+        >
+          Mevzuat Yönetimi
+        </Link>
       </div>
 
       <div className="flex gap-4 border-b bg-white px-4 rounded-t-xl overflow-x-auto">

@@ -7,4 +7,13 @@ export default defineConfig({
   optimizeDeps: {
     include: ['pdfjs-dist'],
   },
+  server: {
+    proxy: {
+      '/marker-api': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/marker-api/, '')
+      }
+    }
+  }
 })

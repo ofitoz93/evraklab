@@ -25,6 +25,7 @@ import {
   Menu,
   X,
   Wrench, // <--- YENİ İKON (İngiliz Anahtarı)
+  Scale, // Mevzuat ikonu
 } from 'lucide-react';
 
 // Sayfa Importları
@@ -44,6 +45,8 @@ import Dashboard from './Dashboard';
 import TeamChat from './TeamChat';
 import HelpPage from './HelpPage';
 import Tools from './Tools'; // <--- YENİ ARAÇLAR SAYFASI
+import AdminRegulations from './AdminRegulations';
+import Regulations from './Regulations';
 
 // --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
@@ -237,6 +240,14 @@ function NavBarContent({
               <Wrench size={16} /> Araçlar
             </Link>
 
+            {/* --- MEVZUAT LİNKİ --- */}
+            <Link
+              to="/regulations"
+              className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
+            >
+              <Scale size={16} /> Mevzuat
+            </Link>
+
             {hasCompany && (
               <Link
                 to="/chat"
@@ -400,6 +411,14 @@ function NavBarContent({
               className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
             >
               <Wrench size={20} /> Araçlar
+            </Link>
+
+            {/* Mobil Menüye Mevzuat Eklendi */}
+            <Link
+              to="/regulations"
+              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+            >
+              <Scale size={20} /> Mevzuat
             </Link>
 
             {hasCompany && (
@@ -594,7 +613,14 @@ function AppContent() {
                 <Route path="/support" element={<Support />} />
                 <Route path="/help" element={<HelpPage />} />
                 <Route path="/tools" element={<Tools />} />{' '}
-                {/* <--- YENİ ROTA */}
+                {/* <--- YENİ ROTAlar */}
+                <Route path="/regulations" element={<Regulations />} />
+                <Route
+                  path="/admin/regulations"
+                  element={
+                    userRole === 'admin' ? <AdminRegulations /> : <Navigate to="/" />
+                  }
+                />
                 <Route
                   path="/admin"
                   element={
