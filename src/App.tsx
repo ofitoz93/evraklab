@@ -90,6 +90,7 @@ function NavBarContent({
   subEndDate,
   hasCompany,
   userOrgId,
+  canViewRegulations,
 }: any) {
   const location = useLocation();
   const [unreadCount, setUnreadCount] = useState(0);
@@ -240,13 +241,14 @@ function NavBarContent({
               <Wrench size={16} /> Araçlar
             </Link>
 
-            {/* --- MEVZUAT LİNKİ --- */}
-            <Link
-              to="/regulations"
-              className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
-            >
-              <Scale size={16} /> Mevzuat
-            </Link>
+            {(userRole === 'admin' || canViewRegulations) && (
+              <Link
+                to="/regulations"
+                className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
+              >
+                <Scale size={16} /> Mevzuat
+              </Link>
+            )}
 
             {hasCompany && (
               <Link
@@ -414,12 +416,14 @@ function NavBarContent({
             </Link>
 
             {/* Mobil Menüye Mevzuat Eklendi */}
-            <Link
-              to="/regulations"
-              className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
-            >
-              <Scale size={20} /> Mevzuat
-            </Link>
+            {(userRole === 'admin' || canViewRegulations) && (
+              <Link
+                to="/regulations"
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+              >
+                <Scale size={20} /> Mevzuat
+              </Link>
+            )}
 
             {hasCompany && (
               <Link
@@ -507,6 +511,7 @@ function AppContent() {
   const [subEndDate, setSubEndDate] = useState<string | null>(null);
   const [isPremium, setIsPremium] = useState(false);
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
+  const [canViewRegulations, setCanViewRegulations] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -530,28 +535,100 @@ function AppContent() {
   }, []);
 
   const fetchUserData = async (userId: string) => {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select(
-        'role, organization_id, subscription_end_date, organization:organizations(subscription_end_date)'
-      )
-      .eq('id', userId)
-      .single();
-    if (profile) {
-      setUserRole(profile.role);
-      setUserOrgId(profile.organization_id);
-      let finalDate = null;
-      if (profile.organization)
-        finalDate = profile.organization.subscription_end_date;
-      else finalDate = profile.subscription_end_date;
-      setSubEndDate(finalDate);
-      const now = new Date();
-      let active = false;
-      if (profile.role === 'admin') active = true;
-      else if (finalDate && new Date(finalDate) > now) active = true;
-      setIsPremium(active);
+    try {
+      // Profili doğrudan çek (join kullanmadan - veritabanında FK tanımlanmamış)
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role, organization_id, subscription_end_date, can_view_regulations, can_manage_regulations')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        // Fallback: En temel sütunlar
+        console.warn('Profil çekilemedi, temel sorgu deneniyor:', error.message);
+        const { data: basic, error: e2 } = await supabase
+          .from('profiles')
+          .select('role, organization_id, subscription_end_date')
+          .eq('id', userId)
+          .single();
+        if (e2) throw e2;
+        if (basic) {
+          setUserRole(basic.role || 'normal');
+          setUserOrgId(basic.organization_id);
+          const role = basic.role || 'normal';
+          const now = new Date();
+          let active = false;
+          if (role === 'admin' || role === 'system_admin') active = true;
+          else if (basic.subscription_end_date && new Date(basic.subscription_end_date) > now) active = true;
+          setIsPremium(active);
+          setSubEndDate(basic.subscription_end_date);
+        }
+        return;
+      }
+
+      if (profile) {
+        const role = profile.role || 'normal';
+        setUserRole(role);
+        setUserOrgId(profile.organization_id);
+
+        // Abonelik tarihini belirle
+        let finalDate: string | null = profile.subscription_end_date || null;
+
+        // Şirket çalışanı/yöneticisi ise şirketin abonelik tarihini kullan
+        if (profile.organization_id) {
+          const { data: company, error: compErr } = await supabase
+            .from('companies')
+            .select('subscription_end_date, name')
+            .eq('id', profile.organization_id)
+            .single();
+          
+          console.log('Şirket verisi:', company, 'Hata:', compErr?.message);
+          
+          if (company?.subscription_end_date) {
+            finalDate = company.subscription_end_date;
+          }
+        }
+
+        console.log('--- KULLANICI BİLGİSİ ---');
+        console.log('Rol:', role);
+        console.log('organization_id:', profile.organization_id);
+        console.log('Abonelik tarihi (final):', finalDate);
+
+        setSubEndDate(finalDate);
+
+        // Premium durumu
+        const now = new Date();
+        let active = false;
+        const isCorporateRole = ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(role);
+
+        if (role === 'admin' || role === 'system_admin') {
+          active = true;
+        } else if (finalDate && new Date(finalDate) > now) {
+          active = true;
+        } else if (isCorporateRole && profile.organization_id) {
+          // Şirket tablosuna erişilemese bile, kurumsal role sahip kullanıcılar
+          // admin tarafından atandığı için premium kabul edilir
+          active = true;
+        }
+        setIsPremium(active);
+        console.log('Premium:', active);
+
+        // Mevzuat yetkisi
+        let hasRegAccess = !!(profile as any).can_view_regulations;
+        if (!hasRegAccess && profile.organization_id) {
+          const { count } = await supabase
+            .from('company_pdf_regulations')
+            .select('*', { count: 'exact', head: true })
+            .eq('company_id', profile.organization_id);
+          if (count && count > 0) hasRegAccess = true;
+        }
+        setCanViewRegulations(hasRegAccess);
+      }
+    } catch (err: any) {
+      console.error('Kullanıcı verisi yüklenirken hata:', err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleLogout = async () => {
@@ -588,6 +665,7 @@ function AppContent() {
             subEndDate={subEndDate}
             hasCompany={!!userOrgId}
             userOrgId={userOrgId}
+            canViewRegulations={canViewRegulations}
           />
         )}
         <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
@@ -614,17 +692,20 @@ function AppContent() {
                 <Route path="/help" element={<HelpPage />} />
                 <Route path="/tools" element={<Tools />} />{' '}
                 {/* <--- YENİ ROTAlar */}
-                <Route path="/regulations" element={<Regulations />} />
                 <Route
-                  path="/admin/regulations"
+                  path="/regulations"
                   element={
-                    userRole === 'admin' ? <AdminRegulations /> : <Navigate to="/" />
+                    userRole === 'admin' || canViewRegulations ? (
+                      <Regulations />
+                    ) : (
+                      <Navigate to="/" />
+                    )
                   }
                 />
                 <Route
                   path="/admin"
                   element={
-                    userRole === 'admin' ? <AdminPanel /> : <Navigate to="/" />
+                    (userRole === 'admin' || userRole === 'system_admin') ? <AdminPanel /> : <Navigate to="/" />
                   }
                 />
                 <Route path="*" element={<Navigate to="/" />} />

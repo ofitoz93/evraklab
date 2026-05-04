@@ -12,9 +12,11 @@ if (typeof window !== 'undefined') {
 }
 
 
-export default function AdminRegulations() {
+export default function AdminRegulations({ restrictedOrgId }: { restrictedOrgId?: string }) {
   const [regulations, setRegulations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [companyEmployees, setCompanyEmployees] = useState<any[]>([]);
+  const [isAllCompanyAssigned, setIsAllCompanyAssigned] = useState(false);
   
   // Modals & States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -43,19 +45,46 @@ export default function AdminRegulations() {
 
   useEffect(() => {
     fetchRegulations();
-    fetchOrganizations();
-  }, []);
+    if (restrictedOrgId) {
+      fetchCompanyEmployees();
+    } else {
+      fetchOrganizations();
+    }
+  }, [restrictedOrgId]);
 
   const fetchRegulations = async () => {
     setLoading(true);
-    const { data, error } = await supabase.from('regulations').select('*').order('created_at', { ascending: false });
-    if (!error && data) setRegulations(data);
+    try {
+      let query = supabase.from('pdf_regulations').select('*').order('created_at', { ascending: false });
+      
+      if (restrictedOrgId) {
+        query = query.eq('organization_id', restrictedOrgId);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setRegulations(data || []);
+    } catch (err: any) {
+      console.warn("Mevzuat listesi çekilemedi, sade liste deneniyor...", err.message);
+      const { data: basicData } = await supabase.from('pdf_regulations').select('*');
+      setRegulations(basicData || []);
+    }
     setLoading(false);
+  };
+
+  const fetchCompanyEmployees = async () => {
+    if (!restrictedOrgId) return;
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .eq('organization_id', restrictedOrgId)
+      .order('full_name');
+    setCompanyEmployees(data || []);
   };
 
   const fetchOrganizations = async () => {
     const { data, error } = await supabase
-      .from('organizations')
+      .from('companies')
       .select('id, name')
       .order('name', { ascending: true });
     
@@ -66,28 +95,44 @@ export default function AdminRegulations() {
 
   const handleSaveRegulation = async () => {
     if (!formData.title) return alert('Başlık zorunludur!');
+    const { data: { session } } = await supabase.auth.getSession();
     const payload = {
       title: formData.title,
       publication_date: formData.publication_date || null,
       rg_no: formData.rg_no || null,
       rg_date: formData.rg_date || null,
-      effective_date: formData.effective_date || null
+      effective_date: formData.effective_date || null,
+      company_id: restrictedOrgId || null,
+      created_by: session?.user?.id || null
     };
 
-    const { error } = await supabase.from('regulations').insert([payload]);
-    if (!error) {
+    const { data: savedReg, error } = await supabase
+      .from('pdf_regulations')
+      .insert([payload])
+      .select()
+      .single();
+
+    if (!error && savedReg) {
+      // Şirket yöneticisi ekledi → kendine otomatik ata (çalışanlar göremez, sadece yönetici)
+      if (restrictedOrgId && session?.user?.id) {
+        await supabase.from('user_pdf_regulations').insert([{
+          user_id: session.user.id,
+          regulation_id: savedReg.id,
+          assigned_by: session.user.id
+        }]);
+      }
       alert('Mevzuat başarıyla eklendi.');
       setIsAddModalOpen(false);
       setFormData({ title: '', publication_date: '', rg_no: '', rg_date: '', effective_date: '' });
       fetchRegulations();
     } else {
-      alert('Hata oluştu: ' + error.message);
+      alert('Hata oluştu: ' + (error?.message || 'Bilinmeyen hata'));
     }
   };
 
   const deleteRegulation = async (id: string) => {
     if (!window.confirm('Bu mevzuatı silmek istediğinize emin misiniz?')) return;
-    await supabase.from('regulations').delete().eq('id', id);
+    await supabase.from('pdf_regulations').delete().eq('id', id);
     fetchRegulations();
   };
 
@@ -99,17 +144,13 @@ export default function AdminRegulations() {
   };
 
   const fetchArticles = async (regId: string) => {
-    const { data, error } = await supabase
-      .from('regulation_articles')
-      .select('*')
-      .eq('regulation_id', regId)
-      .order('order_index', { ascending: true });
-    if (!error && data) setArticles(data);
+    const { data } = await supabase.from('pdf_articles').select('*').eq('regulation_id', regId).order('order_index', { ascending: true });
+    setArticles(data || []);
   };
 
   const handleAddArticle = async () => {
     if(!newArticleData.content) return alert('İçerik boş olamaz');
-    const { error } = await supabase.from('regulation_articles').insert([{
+    const { error } = await supabase.from('pdf_articles').insert([{
       regulation_id: selectedRegulation.id,
       ...newArticleData,
       order_index: articles.length
@@ -121,11 +162,10 @@ export default function AdminRegulations() {
   };
 
   const deleteArticle = async (id: string) => {
-    await supabase.from('regulation_articles').delete().eq('id', id);
-    fetchArticles(selectedRegulation.id);
+    await supabase.from('pdf_articles').delete().eq('id', id);
+    if (selectedRegulation) fetchArticles(selectedRegulation.id);
   };
 
-  // --- PDF PARSING (BROWSER-BASED) ---
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -133,100 +173,155 @@ export default function AdminRegulations() {
     setIsUploadingPdf(true);
 
     try {
-      // 1. Tarayıcı içinde PDF Dosyasını Oku
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
-      let fullText = '';
-      
-      // 2. Tüm Sayfalardaki Metinleri Çıkar
+      // Tüm sayfaları satır bazlı çek (y pozisyonuna göre sırala)
+      let lines: string[] = [];
       for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          
-          // Satır boşluklarını ve kelimeleri makul şekilde birleştir
-          const pageText = textContent.items.map((item: any) => item.str).join(' ');
-          fullText += pageText + '\n\n';
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        
+        // Y koordinatına göre grupla (aynı satırdaki itemlar)
+        const lineMap = new Map<number, string[]>();
+        textContent.items.forEach((item: any) => {
+          const y = Math.round(item.transform[5]);
+          if (!lineMap.has(y)) lineMap.set(y, []);
+          lineMap.get(y)!.push(item.str);
+        });
+        
+        // Y'ye göre ters sırala (üstten alta)
+        const sortedYs = Array.from(lineMap.keys()).sort((a, b) => b - a);
+        sortedYs.forEach(y => {
+          const lineText = lineMap.get(y)!.join(' ').trim();
+          if (lineText) lines.push(lineText);
+        });
       }
 
-      // 3. Yüksek Zekalı Mevzuat Ayrıştırma Modeli
-      // Kompleks Lookahead Regex: BÖLÜM, MADDE, GEÇİCİ MADDE, EK MADDE ve KISIM'ları yakalar
-      const rgx = /(?=(?:BİRİNCİ|İKİNCİ|ÜÇÜNCÜ|DÖRDÜNCÜ|BEŞİNCİ|ALTINCI|YEDİNCİ|SEKİZİNCİ|DOKUZUNCU|ONUNCU)\s+(?:BÖLÜM|KISIM)|\bGEÇİCİ\s+MADDE\s+\d+|\bEK\s+MADDE\s+\d+|\bMADDE\s+\d+)/gi;
-      const blocks = fullText.split(rgx);
-      
+      // Madde başlığı regex'i
+      const ARTICLE_REGEX = /^((?:GEÇİCİ\s+|EK\s+)?MADDE\s+\d+)\s*[–\-—.]?\s*(.*)?$/i;
+      const SECTION_REGEX = /^((?:BİRİNCİ|İKİNCİ|ÜÇÜNCÜ|DÖRDÜNCÜ|BEŞİNCİ|ALTINCI|YEDİNCİ|SEKİZİNCİ|DOKUZUNCU|ONUNCU)\s+(?:BÖLÜM|KISIM))\s*(.*)$/i;
+
       const parsedArticles: any[] = [];
       let ord = 0;
+      let currentNo = 'GİRİŞ';
+      let currentTitle = 'Giriş';
+      let currentContent: string[] = [];
+      let pendingTitle = ''; // Bir sonraki maddenin başlığı (genellikle madde numarasından önceki satırda olur)
 
-      blocks.forEach((block) => {
-         const txt = block.trim();
-         if (txt.length < 3) return;
+      const flushCurrent = () => {
+        const fullContent = currentContent.join('\n').trim();
+        if (fullContent.length < 5) {
+          currentContent = [];
+          return;
+        }
 
-         let no = '';
-         let title = '';
-         let content = txt;
+        // Madde içeriğini bentlere ayır (a), b), 1), 2) gibi)
+        // Regex: Satır başında "a)" veya "1)" gibi ifadeleri yakalar
+        const BENT_REGEX = /^(\s*(?:[a-zçğıöşuü])\)|(?:\d+)\))\s+(.*)$/im;
+        const parts = fullContent.split(/^(\s*(?:[a-zçğıöşuü])\)|(?:\d+)\))\s+/im);
+        
+        if (parts.length > 1) {
+          // İlk parça maddenin ana metni (varsa)
+          if (parts[0].trim().length > 5) {
+            parsedArticles.push({
+              regulation_id: selectedRegulation.id,
+              article_no: currentNo,
+              title: currentTitle,
+              content: parts[0].trim(),
+              order_index: ord++
+            });
+          }
 
-         // Bölüm Kısım kontrolü
-         const isSection = txt.match(/^((?:BİRİNCİ|İKİNCİ|ÜÇÜNCÜ|DÖRDÜNCÜ|BEŞİNCİ|ALTINCI|YEDİNCİ|SEKİZİNCİ|DOKUZUNCU|ONUNCU)\s+(?:BÖLÜM|KISIM))(.*?)$/is);
-         const isArticle = txt.match(/^((?:GEÇİCİ\s+|EK\s+)?MADDE\s+\d+)(.*?)(?:-|\.|–|\n)(.*?)$/is);
-
-         if (isSection) {
-             no = 'BÖLÜM';
-             const lines = txt.split('\n');
-             title = lines[0].trim();
-             if (lines.length > 1 && lines[1].length < 150) title += ' - ' + lines[1].trim(); 
-             content = txt;
-         } else if (isArticle) {
-             no = isArticle[1].trim().toUpperCase(); // örn: GEÇİCİ MADDE 1
-             title = no; // Geçici olarak atayalım, başlığı önceki bloktan çekeceğiz
-             content = txt;
-
-             // Önceki Bloktan (veya satırdan) Gizli Başlığı Çekme Algoritması
-             if (parsedArticles.length > 0) {
-                 const prev = parsedArticles[parsedArticles.length - 1];
-                 const prevLines = prev.content.split('\n');
-                 if (prevLines.length > 1) {
-                     const lastLine = prevLines[prevLines.length - 1].trim();
-                     // Eğer son satır kısa bir başlıksa ve içinde doğrudan Madde geçmiyorsa
-                     if (lastLine.length > 2 && lastLine.length < 150 && !lastLine.toUpperCase().includes('MADDE')) {
-                         title = lastLine;
-                         // Önceki maddenin içeriğinden başlığı temizle
-                         prev.content = prevLines.slice(0, prevLines.length - 1).join('\n').trim();
-                     }
-                 }
-             }
-         } else {
-             no = parsedArticles.length === 0 ? 'GİRİŞ' : 'METİN';
-             title = parsedArticles.length === 0 ? 'Amaç, Kapsam ve Dayanak' : 'Ek Metin';
-             content = txt;
-         }
-
-         parsedArticles.push({
+          // Sonraki parçalar (bentler)
+          for (let k = 1; k < parts.length; k += 2) {
+            const bentNo = parts[k].trim();
+            const bentContent = parts[k+1]?.trim() || '';
+            if (bentContent) {
+              parsedArticles.push({
+                regulation_id: selectedRegulation.id,
+                article_no: `${currentNo} / ${bentNo}`,
+                title: `${currentTitle} (${bentNo})`,
+                content: bentContent,
+                order_index: ord++
+              });
+            }
+          }
+        } else {
+          // Bent yoksa düz kaydet
+          parsedArticles.push({
             regulation_id: selectedRegulation.id,
-            article_no: no,
-            title: title.length > 150 ? title.substring(0,150)+'...' : title,
-            content: content,
+            article_no: currentNo,
+            title: currentTitle.length > 200 ? currentTitle.substring(0, 200) : currentTitle,
+            content: fullContent,
             order_index: ord++
-         });
-      });
+          });
+        }
+        currentContent = [];
+      };
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const sectionMatch = line.match(SECTION_REGEX);
+        const articleMatch = line.match(ARTICLE_REGEX);
+
+        if (sectionMatch) {
+          flushCurrent();
+          currentNo = 'BÖLÜM';
+          currentTitle = sectionMatch[1].trim() + (sectionMatch[2] ? ' - ' + sectionMatch[2].trim() : '');
+          pendingTitle = '';
+          currentContent = [];
+        } else if (articleMatch) {
+          flushCurrent();
+          currentNo = articleMatch[1].trim().toUpperCase();
+          // Başlık: eğer pending varsa kullan, yoksa madde numarasının yanındaki metni al
+          const inlineTitle = articleMatch[2]?.trim() || '';
+          if (pendingTitle && pendingTitle.length < 150) {
+            currentTitle = pendingTitle;
+          } else if (inlineTitle && inlineTitle.length < 150) {
+            currentTitle = inlineTitle;
+          } else {
+            currentTitle = currentNo;
+          }
+          pendingTitle = '';
+          // Maddede inline içerik varsa ekle
+          if (inlineTitle && inlineTitle !== currentTitle) {
+            currentContent.push(inlineTitle);
+          }
+        } else {
+          // Bu satır bir sonraki maddenin başlığı mı? (kısa ve büyük harf ağırlıklı)
+          const isLikelyTitle = line.length < 100 && line === line.toUpperCase() && !/\d/.test(line.slice(-1));
+          if (isLikelyTitle) {
+            pendingTitle = line;
+          }
+          currentContent.push(line);
+        }
+      }
+      // Son maddeyi flush et
+      flushCurrent();
+
+
 
       if (parsedArticles.length > 0) {
         // En fazla 50 şer 50 şer atalım ki Supabase payload limiti aşılmasın
         const batchSize = 50;
         for (let i = 0; i < parsedArticles.length; i += batchSize) {
            const batch = parsedArticles.slice(i, i + batchSize);
-           await supabase.from('regulation_articles').insert(batch);
+           await supabase.from('pdf_articles').insert(batch);
         }
         
         alert(`Tarayıcı ile PDF başarıyla okundu! ${parsedArticles.length} madde çıkarıldı.`);
         fetchArticles(selectedRegulation.id);
       } else {
-        alert('Regex hiçbir madde yakalayamadı. Mevzuat formatı uygun olmayabilir, düz metin eklendi.');
-        // Yedek olarak tüm metni tek bir madde olarak at
-        await supabase.from('regulation_articles').insert([{
+        alert('PDF tam metin olarak eklendi.');
+        const allText = lines.join(' ').substring(0, 30000);
+        await supabase.from('pdf_articles').insert([{
            regulation_id: selectedRegulation.id,
            article_no: 'TÜMÜ',
            title: 'PDF Tam Metin',
-           content: fullText.substring(0, 30000), // Max text sınırı vs
+           content: allText,
            order_index: articles.length
         }]);
         fetchArticles(selectedRegulation.id);
@@ -244,24 +339,54 @@ export default function AdminRegulations() {
   // --- ASSIGNMENTS ---
   const openAssignModal = async (regulation: any) => {
     setSelectedRegulation(regulation);
-    setIsAssignModalOpen(true);
-    const { data } = await supabase.from('company_regulations').select('*').eq('regulation_id', regulation.id);
-    if(data) {
-       setAssignedOrgs(data.map(d => d.organization_id));
+    
+    if (restrictedOrgId) {
+      // Firma içindeki atamaları kontrol et
+      const { data: users } = await supabase.from('user_pdf_regulations').select('user_id').eq('regulation_id', regulation.id);
+      setAssignedOrgs(users?.map(u => u.user_id) || []);
+      
+      const { data: comp } = await supabase.from('company_pdf_regulations').select('*').eq('regulation_id', regulation.id).eq('company_id', restrictedOrgId);
+      setIsAllCompanyAssigned(!!(comp && comp.length > 0));
+    } else {
+      const { data } = await supabase.from('company_pdf_regulations').select('company_id').eq('regulation_id', regulation.id);
+      setAssignedOrgs(data?.map(d => d.company_id) || []);
     }
+    
+    setIsAssignModalOpen(true);
   };
 
-  const toggleOrgAssignment = async (orgId: string) => {
-     if (assignedOrgs.includes(orgId)) {
-        await supabase.from('company_regulations').delete().eq('regulation_id', selectedRegulation.id).eq('organization_id', orgId);
-        setAssignedOrgs(assignedOrgs.filter(id => id !== orgId));
-     } else {
-        const {data: {user}} = await supabase.auth.getUser();
-        await supabase.from('company_regulations').insert([{ regulation_id: selectedRegulation.id, organization_id: orgId, assigned_by: user?.id }]);
-        setAssignedOrgs([...assignedOrgs, orgId]);
-     }
+  const handleToggleAssign = async (targetId: string) => {
+    const isCurrentlyAssigned = assignedOrgs.includes(targetId);
+    
+    if (restrictedOrgId) {
+      // User level assignment
+      if (isCurrentlyAssigned) {
+        await supabase.from('user_pdf_regulations').delete().eq('regulation_id', selectedRegulation.id).eq('user_id', targetId);
+      } else {
+        await supabase.from('user_pdf_regulations').insert([{ regulation_id: selectedRegulation.id, user_id: targetId }]);
+      }
+    } else {
+      // Company level assignment
+      if (isCurrentlyAssigned) {
+        await supabase.from('company_pdf_regulations').delete().eq('regulation_id', selectedRegulation.id).eq('company_id', targetId);
+      } else {
+        await supabase.from('company_pdf_regulations').insert([{ regulation_id: selectedRegulation.id, company_id: targetId }]);
+      }
+    }
+    
+    openAssignModal(selectedRegulation);
   };
 
+  const toggleAllCompanyAccess = async () => {
+    if (!restrictedOrgId || !selectedRegulation) return;
+    
+    if (isAllCompanyAssigned) {
+      await supabase.from('company_pdf_regulations').delete().eq('regulation_id', selectedRegulation.id).eq('company_id', restrictedOrgId);
+    } else {
+      await supabase.from('company_pdf_regulations').insert([{ regulation_id: selectedRegulation.id, company_id: restrictedOrgId }]);
+    }
+    openAssignModal(selectedRegulation);
+  };
 
   if (loading) return <div className="p-8">Yükleniyor...</div>;
 
@@ -305,7 +430,7 @@ export default function AdminRegulations() {
                       <FileText size={14} /> Maddeler
                     </button>
                     <button onClick={() => openAssignModal(reg)} className="text-sm bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400 px-3 py-1 rounded hover:bg-green-100 transition flex items-center gap-1">
-                      <Building size={14} /> Firmalara Ata
+                      {restrictedOrgId ? <><Users size={14} /> Çalışanlara Ata</> : <><Building size={14} /> Firmalara Ata</>}
                     </button>
                     <button onClick={() => deleteRegulation(reg.id)} className="text-sm bg-red-50 text-red-600 px-3 py-1 rounded hover:bg-red-100 transition">
                       <Trash2 size={14} />
@@ -440,28 +565,66 @@ export default function AdminRegulations() {
           <div className="bg-white dark:bg-slate-800 rounded-xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold flex items-center gap-2">
-                  <Building size={20} /> Firmalara Ata
+                  {restrictedOrgId ? <Users size={20} /> : <Building size={20} />} 
+                  {restrictedOrgId ? 'Çalışanlara Ata' : 'Firmalara Ata'}
               </h2>
               <button onClick={() => setIsAssignModalOpen(false)}><X size={24} className="text-gray-500" /></button>
             </div>
             
-            <p className="text-sm mb-4"><strong>{selectedRegulation.title}</strong> mevzuatını aşağıdaki organizasyonlara tanımlayabilirsiniz.</p>
+            <p className="text-sm mb-4"><strong>{selectedRegulation.title}</strong> mevzuatını aşağıdaki {restrictedOrgId ? 'çalışanlara' : 'organizasyonlara'} tanımlayabilirsiniz.</p>
             
+            {restrictedOrgId && (
+              <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="w-5 h-5" 
+                    checked={isAllCompanyAssigned}
+                    onChange={toggleAllCompanyAccess}
+                  />
+                  <div>
+                    <span className="font-bold text-sm block">Tüm Şirkete Yayınla</span>
+                    <span className="text-[10px] text-gray-500">İşaretlerseniz tüm çalışanlar otomatik olarak görebilir.</span>
+                  </div>
+                </label>
+              </div>
+            )}
+
             <div className="space-y-2 max-h-80 overflow-y-auto">
-               {organizations.map(org => {
+              {restrictedOrgId ? (
+                companyEmployees.map(emp => {
+                  const isAssigned = assignedOrgs.includes(emp.id);
+                  return (
+                    <div key={emp.id} className="flex items-center justify-between border border-gray-200 dark:border-slate-700 p-3 rounded hover:bg-gray-50 dark:hover:bg-slate-700">
+                      <div className="text-sm">
+                        <div className="font-bold">{emp.full_name}</div>
+                        <div className="text-[10px] text-gray-500">{emp.email}</div>
+                      </div>
+                      <button 
+                         onClick={() => handleToggleAssign(emp.id)}
+                         className={`px-3 py-1 text-xs font-bold rounded transition ${isAssigned ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                       >
+                          {isAssigned ? 'Tanımlı (Kaldır)' : 'Ata'}
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                organizations.map(org => {
                   const isAssigned = assignedOrgs.includes(org.id);
                   return (
-                      <div key={org.id} className="flex items-center justify-between border border-gray-200 dark:border-slate-700 p-3 rounded hover:bg-gray-50 dark:hover:bg-slate-700">
-                          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{org.name}</span>
-                          <button 
-                             onClick={() => toggleOrgAssignment(org.id)}
-                             className={`px-3 py-1 text-sm font-bold rounded transiton ${isAssigned ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                           >
-                              {isAssigned ? 'Tanımlı (Kaldır)' : 'Ata'}
-                          </button>
-                      </div>
+                    <div key={org.id} className="flex items-center justify-between border border-gray-200 dark:border-slate-700 p-3 rounded hover:bg-gray-50 dark:hover:bg-slate-700">
+                      <span className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{org.name}</span>
+                      <button 
+                         onClick={() => handleToggleAssign(org.id)}
+                         className={`px-3 py-1 text-xs font-bold rounded transition ${isAssigned ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                       >
+                          {isAssigned ? 'Tanımlı (Kaldır)' : 'Ata'}
+                      </button>
+                    </div>
                   );
-               })}
+                })
+              )}
             </div>
           </div>
         </div>

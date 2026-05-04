@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import { Scale, FileText, ChevronRight, Users, CheckSquare, Square, X, MessageCircle, Send, PlusCircle, Trash2, Edit, Save, XCircle } from 'lucide-react';
+import { Scale, FileText, ChevronRight, Users, CheckSquare, Square, X, MessageCircle, Send, PlusCircle, Trash2, Edit, Save, XCircle, Settings, Shield } from 'lucide-react';
+import AdminRegulations from './AdminRegulations';
 
 export default function Regulations() {
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -27,6 +28,9 @@ export default function Regulations() {
   const [companyRegulations, setCompanyRegulations] = useState<any[]>([]);
   // user => [reg_id, reg_id]
   const [userAssignedRegs, setUserAssignedRegs] = useState<Record<string, string[]>>({});
+  
+  // Yönetim Modu (Şirket Yetkilileri İçin)
+  const [isManagementMode, setIsManagementMode] = useState(false);
 
   useEffect(() => {
     checkUser();
@@ -43,36 +47,66 @@ export default function Regulations() {
   };
 
   const fetchAllowedRegulations = async (prof: any) => {
-     setLoading(true);
-     if (prof?.role === 'admin') {
-         // Sistem yöneticisi hepsini görebilir
-         const { data } = await supabase.from('regulations').select('*');
-         setRegulations(data || []);
-     } 
-     else if (prof?.role === 'premium_corporate' || prof?.role === 'corporate_chief') {
-         // Firma yöneticisi firmaya atanmışları görür
-         const { data, error } = await supabase
-            .from('company_regulations')
-            .select('regulation_id, regulations(*) ')
-            .eq('organization_id', prof.organization_id);
-            
-         if (error) console.error("Firma mevzuat hatası:", error);
-         if (data) setRegulations(data.map((d: any) => d.regulations));
-     } 
-     else {
-         // Normal kullanıcı kendine atanmış olanları görür
-         const { data } = await supabase
-            .from('user_regulations')
-            .select('regulation_id, regulations(*) ')
-            .eq('user_id', prof?.id);
-         if (data) setRegulations(data.map((d: any) => d.regulations));
-     }
-     setLoading(false);
+    setLoading(true);
+    try {
+      if (prof?.role === 'admin' || prof?.role === 'system_admin') {
+        const { data } = await supabase.from('pdf_regulations').select('*');
+        setRegulations(data || []);
+        setLoading(false);
+        return;
+      }
+
+      const regIdSet = new Set<string>();
+
+      // 1. Kullanıcıya bireysel atanmış mevzuatlar (ID'lerini çek)
+      const { data: userRegLinks } = await supabase
+        .from('user_pdf_regulations')
+        .select('regulation_id')
+        .eq('user_id', prof?.id);
+      (userRegLinks || []).forEach((r: any) => regIdSet.add(r.regulation_id));
+
+      // 2. Şirket yöneticisi DEĞİLSE → şirkete atananları da göster
+      const isManager = prof?.can_manage_regulations || prof?.role === 'premium_corporate';
+      if (!isManager && prof?.organization_id) {
+        const { data: compRegLinks } = await supabase
+          .from('company_pdf_regulations')
+          .select('regulation_id')
+          .eq('company_id', prof.organization_id);
+        (compRegLinks || []).forEach((r: any) => regIdSet.add(r.regulation_id));
+      }
+
+      // 3. Yönetici kendi oluşturduklarını da görebilsin (created_by)
+      if (isManager) {
+        const { data: createdRegs } = await supabase
+          .from('pdf_regulations')
+          .select('id')
+          .eq('created_by', prof?.id);
+        (createdRegs || []).forEach((r: any) => regIdSet.add(r.id));
+      }
+
+      // 4. ID listesinden gerçek mevzuatları çek
+      if (regIdSet.size === 0) {
+        setRegulations([]);
+        setLoading(false);
+        return;
+      }
+
+      const { data: regs } = await supabase
+        .from('pdf_regulations')
+        .select('*')
+        .in('id', Array.from(regIdSet));
+
+      setRegulations(regs || []);
+    } catch (err) {
+      console.error('Mevzuat yükleme hatası:', err);
+      setRegulations([]);
+    }
+    setLoading(false);
   };
 
   const openReadingMode = async (regId: string) => {
       setSelectedRegId(regId);
-      const { data } = await supabase.from('regulation_articles').select('*').eq('regulation_id', regId).order('order_index', { ascending: true });
+      const { data } = await supabase.from('pdf_articles').select('*').eq('regulation_id', regId).order('order_index', { ascending: true });
       setArticles(data || []);
       
       // Yorumları Çek
@@ -80,7 +114,7 @@ export default function Regulations() {
           const { data: comms, error } = await supabase.from('regulation_comments')
                .select('*')
                .eq('regulation_id', regId)
-               .eq('organization_id', profile.organization_id)
+               .eq('company_id', profile.organization_id)
                .order('created_at', { ascending: true });
           
           if (error) console.error("Yorum çekme hatası:", error);
@@ -103,7 +137,7 @@ export default function Regulations() {
   const handleSendComment = async (articleId: string | null) => {
       if(!commentText.trim()) return;
       const { error } = await supabase.from('regulation_comments').insert([{
-           organization_id: profile.organization_id,
+           company_id: profile.organization_id,
            regulation_id: selectedRegId,
            article_id: articleId,
            user_id: currentUser.id,
@@ -154,12 +188,12 @@ export default function Regulations() {
       setCompanyUsers(users || []);
 
       // Şirkete atanmış mevzuatları al
-      const { data: cRegs } = await supabase.from('company_regulations').select('regulation_id, regulations(*)').eq('organization_id', profile.organization_id);
-      const allCRegs = cRegs?.map((d:any) => d.regulations) || [];
+      const { data: cRegs } = await supabase.from('company_pdf_regulations').select('regulation_id, pdf_regulations:pdf_regulations(*)').eq('company_id', profile.organization_id);
+      const allCRegs = cRegs?.map((d:any) => d.pdf_regulations) || [];
       setCompanyRegulations(allCRegs);
 
       // Mevcut atamaları al
-      const { data: uRegs } = await supabase.from('user_regulations');
+      const { data: uRegs } = await supabase.from('user_pdf_regulations').select('*');
       
       const mapping: Record<string, string[]> = {};
       if(users) {
@@ -181,14 +215,14 @@ export default function Regulations() {
 
       if (hasIt) {
           // Sil
-          await supabase.from('user_regulations').delete().eq('user_id', userId).eq('regulation_id', regId);
+          await supabase.from('user_pdf_regulations').delete().eq('user_id', userId).eq('regulation_id', regId);
           setUserAssignedRegs({
               ...userAssignedRegs, 
               [userId]: assigned.filter(r => r !== regId)
           });
       } else {
           // Ekle
-          await supabase.from('user_regulations').insert([{ user_id: userId, regulation_id: regId, assigned_by: currentUser.id }]);
+          await supabase.from('user_pdf_regulations').insert([{ user_id: userId, regulation_id: regId, assigned_by: currentUser.id }]);
           setUserAssignedRegs({
               ...userAssignedRegs,
               [userId]: [...assigned, regId]
@@ -203,28 +237,56 @@ export default function Regulations() {
 
   return (
     <div className="p-4 md:p-6 mb-20 md:mb-0 max-w-5xl mx-auto animate-fadeIn">
-       
-       <div className="flex justify-between items-center mb-6 border-b pb-4 dark:border-slate-800">
-           <div className="flex items-center gap-3">
-               <div className="p-2 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg">
-                  <Scale size={28} />
-               </div>
-               <div>
-                  <h1 className="text-2xl font-bold">Mevzuat Takibi</h1>
-                  <p className="text-gray-500 text-sm">Size tanımlı olan güncel yönetmelik ve standartları buradan inceleyebilirsiniz.</p>
-               </div>
-           </div>
-           
-           {isManager && (
-               <button onClick={openDelegationModal} className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition text-sm font-bold shadow">
-                   <Users size={18} /> Çalışan Yetkileri
-               </button>
-           )}
-       </div>
+      {/* Üst Bar */}
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white flex items-center gap-3">
+            <Scale className="text-blue-600" size={36} /> Mevzuat Havuzu
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">İşletmenize özel yönetmelikler ve maddeler.</p>
+        </div>
+        
+        <div className="flex gap-2">
+          {(profile?.can_manage_regulations || profile?.role === 'premium_corporate') && (
+            <button 
+              onClick={() => {
+                setIsManagementMode(!isManagementMode);
+                setSelectedRegId(null);
+              }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold transition shadow-sm ${isManagementMode ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-orange-600 text-white hover:bg-orange-700'}`}
+            >
+              {isManagementMode ? <X size={20} /> : <PlusCircle size={20} />}
+              {isManagementMode ? 'Yönetimden Çık' : 'Mevzuat Ekle/Yönet'}
+            </button>
+          )}
 
-       {/* LİSTELEME MODU */}
-       {!selectedRegId && (
-           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {!isManagementMode && (isManager || profile?.role === 'admin') && (
+            <button 
+              onClick={openDelegationModal}
+              className="flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-2 rounded-xl font-bold hover:bg-blue-100 transition border border-blue-100"
+            >
+              <Users size={20} /> Çalışan Yetkileri
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isManagementMode ? (
+        <div className="animate-fadeIn">
+          <div className="bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800 p-4 rounded-xl mb-6 flex items-center gap-3">
+            <Shield className="text-orange-600" size={24} />
+            <div>
+              <h3 className="font-bold text-orange-800 dark:text-orange-400">Şirket Mevzuat Yönetimi</h3>
+              <p className="text-sm text-orange-600 dark:text-orange-500">Buradan eklediğiniz mevzuatları sadece şirketinizin çalışanları görebilir.</p>
+            </div>
+          </div>
+          <AdminRegulations restrictedOrgId={profile?.organization_id} />
+        </div>
+      ) : (
+        <>
+          {/* LİSTELEME MODU */}
+          {!selectedRegId && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                {regulations.map((reg) => (
                    <div key={reg.id} className="bg-white dark:bg-slate-800 border dark:border-slate-700 rounded-xl p-5 shadow-sm hover:shadow-md transition flex flex-col justify-between">
                        <div>
@@ -386,7 +448,8 @@ export default function Regulations() {
                </div>
            </div>
        )}
-
+      </>
+    )}
 
        {/* YETKİLENDİRME MODALI (Firmalar İçin) */}
        {isDelegateModalOpen && (

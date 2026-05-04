@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from './supabaseClient';
+import AdminRegulations from './AdminRegulations';
 import {
   Shield,
   Search,
@@ -16,12 +17,13 @@ import {
   Lock,
   Bell, // Bildirim İkonu
   Loader,
+  Scale,
 } from 'lucide-react';
 
 export default function AdminPanel() {
   // YENİ: 'notifications' sekmesi eklendi
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications'
+    'users' | 'companies' | 'regulations' | 'tickets' | 'notifications'
   >('tickets');
 
   const [users, setUsers] = useState<any[]>([]);
@@ -44,6 +46,11 @@ export default function AdminPanel() {
   const [sendingNotif, setSendingNotif] = useState(false);
 
   // --- Kullanıcı ve Şirket State'leri ---
+  const [newCanViewRegulations, setNewCanViewRegulations] = useState(false);
+  const [newCanManageRegulations, setNewCanManageRegulations] = useState(false);
+  const [userQuotaMB, setUserQuotaMB] = useState(0);
+  const [companyQuotaMB, setCompanyQuotaMB] = useState(0);
+  
   const [editingUser, setEditingUser] = useState<any>(null);
   const [newRole, setNewRole] = useState('');
   const [newEndDate, setNewEndDate] = useState('');
@@ -55,8 +62,7 @@ export default function AdminPanel() {
   const [compName, setCompName] = useState('');
   const [compLimit, setCompLimit] = useState(0);
   const [compDate, setCompDate] = useState('');
-  const [userQuotaMB, setUserQuotaMB] = useState(0);
-  const [companyQuotaMB, setCompanyQuotaMB] = useState(0);
+  const [orgsWithRegs, setOrgsWithRegs] = useState<Set<string>>(new Set());
 
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
   const [teamList, setTeamList] = useState<any[]>([]);
@@ -69,6 +75,7 @@ export default function AdminPanel() {
     corporate_chief: 'Şef',
     corporate_staff: 'Personel',
     admin: 'Admin',
+    system_admin: 'Sistem Admin',
   };
   const isCorporateRole = (r: string) =>
     ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(r);
@@ -85,21 +92,62 @@ export default function AdminPanel() {
 
   const fetchUsers = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('profiles')
-      .select('*, organization:organizations(id, name, subscription_end_date)')
-      .order('created_at', { ascending: false });
-    setUsers(data || []);
+    try {
+      // 1. Kullanıcıları ve Şirketleri ayrı ayrı çek (İlişki hatasını baypas etmek için manuel join)
+      const { data: profs, error: pErr } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
+      const { data: comps, error: cErr } = await supabase.from('companies').select('id, name, subscription_end_date');
+      
+      if (pErr) throw pErr;
+
+      // Manuel Map ile birleştir
+      const companyMap = new Map();
+      if(comps) comps.forEach(c => companyMap.set(c.id, c));
+
+      const mergedUsers = (profs || []).map(u => ({
+          ...u,
+          organization: companyMap.get(u.organization_id) || null
+      }));
+
+      // Firmalara atanmış mevzuatları çek
+      const { data: compRegs } = await supabase.from('company_pdf_regulations').select('company_id');
+      const orgSet = new Set<string>((compRegs || []).map(r => r.company_id));
+      setOrgsWithRegs(orgSet);
+
+      setUsers(mergedUsers);
+    } catch (err: any) {
+      console.error("Kullanıcı listesi çekilirken hata:", err.message);
+      setUsers([]);
+    }
     setLoading(false);
   };
 
+  const [companyFetchError, setCompanyFetchError] = useState<string | null>(null);
+
   const fetchCompanies = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('organizations')
-      .select('*')
-      .order('created_at', { ascending: false });
-    setCompanies(data || []);
+    setCompanyFetchError(null);
+    try {
+      // 1. Deneme: 'companies' tablosu
+      const { data, error } = await supabase
+        .from('companies')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      setCompanies(data || []);
+    } catch (err: any) {
+      console.warn("Şirket listesi 'companies' tablosundan çekilemedi:", err.message);
+      
+      try {
+        // 2. Deneme: 'organizations' tablosu (Eski isim)
+        const { data: orgData, error: orgError } = await supabase.from('organizations').select('*');
+        if (orgError) throw orgError;
+        setCompanies(orgData || []);
+      } catch (err2: any) {
+        setCompanyFetchError(`Tablo bulunamadı: ${err.message}`);
+        console.error("Tüm tablo denemeleri başarısız oldu.");
+      }
+    }
     setLoading(false);
   };
 
@@ -129,7 +177,7 @@ export default function AdminPanel() {
           user_id: u.id,
           title: notifTitle,
           message: notifMessage,
-          type: 'admin_announcement',
+          type: 'system_admin_announcement',
           is_read: false,
         }));
       } else {
@@ -139,7 +187,7 @@ export default function AdminPanel() {
             user_id: targetUser,
             title: notifTitle,
             message: notifMessage,
-            type: 'admin_msg',
+            type: 'system_admin_msg',
             is_read: false,
           },
         ];
@@ -281,6 +329,8 @@ export default function AdminPanel() {
     setSelectedOrgId(user.organization_id || '');
     setNewOrgNameForUser('');
     setUserQuotaMB(Math.round((user.storage_limit || 0) / 1048576));
+    setNewCanViewRegulations(!!user.can_view_regulations || !!(user.organization_id && orgsWithRegs.has(user.organization_id)));
+    setNewCanManageRegulations(!!user.can_manage_regulations);
     await fetchCompanies();
   };
 
@@ -306,7 +356,7 @@ export default function AdminPanel() {
         if (selectedOrgId === 'new') {
           if (!newOrgNameForUser.trim()) return alert('Şirket adı giriniz.');
           const { data: newOrg, error } = await supabase
-            .from('organizations')
+            .from('companies')
             .insert([
               {
                 name: newOrgNameForUser,
@@ -322,13 +372,18 @@ export default function AdminPanel() {
           targetOrgId = selectedOrgId;
           if (finalDate)
             await supabase
-              .from('organizations')
+              .from('companies')
               .update({ subscription_end_date: finalDate })
               .eq('id', targetOrgId);
         } else return alert('Şirket seçmelisiniz.');
       }
 
-      const updates: any = { role: newRole };
+      const updates: any = { 
+        role: newRole,
+        can_view_regulations: newCanViewRegulations,
+        can_manage_regulations: newCanManageRegulations,
+        storage_limit: userQuotaMB * 1048576,
+      };
       if (isCorporateRole(newRole)) {
         updates.organization_id = targetOrgId;
         updates.subscription_end_date = null;
@@ -339,9 +394,6 @@ export default function AdminPanel() {
         updates.organization_id = null;
         updates.subscription_end_date = null;
       }
-
-      // Kota Güncellemesi (Byte çevrimi)
-      updates.storage_limit = userQuotaMB * 1048576;
 
       const { error } = await supabase
         .from('profiles')
@@ -444,12 +496,6 @@ export default function AdminPanel() {
             <Shield size={24} /> Admin Yönetim Paneli
           </h1>
         </div>
-        <Link 
-          to="/admin/regulations" 
-          className="bg-white text-red-700 border border-red-200 px-4 py-2 rounded-lg font-bold hover:bg-red-100 transition shadow-sm"
-        >
-          Mevzuat Yönetimi
-        </Link>
       </div>
 
       <div className="flex gap-4 border-b bg-white px-4 rounded-t-xl overflow-x-auto">
@@ -472,6 +518,16 @@ export default function AdminPanel() {
           }`}
         >
           Şirketler
+        </button>
+        <button
+          onClick={() => setActiveTab('regulations')}
+          className={`py-3 px-4 font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'regulations'
+              ? 'text-red-600 border-red-600'
+              : 'text-gray-500 border-transparent'
+          }`}
+        >
+          <Scale size={16} /> Mevzuat Yönetimi
         </button>
         <button
           onClick={() => setActiveTab('tickets')}
@@ -543,9 +599,16 @@ export default function AdminPanel() {
                       )}
                     </td>
                     <td className="p-3">
-                      <span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold border">
-                        {roleLabels[user.role] || user.role}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold border w-fit">
+                          {roleLabels[user.role] || user.role}
+                        </span>
+                        {(user.can_view_regulations || (user.organization_id && orgsWithRegs.has(user.organization_id)) || user.role === 'admin' || user.role === 'system_admin') && (
+                          <span className="flex items-center gap-1 text-[10px] font-bold text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 w-fit">
+                            <Scale size={10} /> Mevzuat Yetkili
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="p-3 text-xs font-mono">
                       {displayDate
@@ -580,7 +643,13 @@ export default function AdminPanel() {
 
         {/* COMPANIES TAB */}
         {activeTab === 'companies' && (
-          <table className="w-full text-left border-collapse">
+          <div className="animate-fadeIn">
+            {companyFetchError && (
+              <div className="mb-4 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-sm font-bold flex items-center gap-2">
+                 <AlertTriangle size={18} /> {companyFetchError}
+              </div>
+            )}
+            <table className="w-full text-left border-collapse">
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
               <tr>
                 <th className="p-3">Şirket Ünvanı</th>
@@ -590,61 +659,72 @@ export default function AdminPanel() {
               </tr>
             </thead>
             <tbody className="text-sm divide-y">
-              {filteredCompanies.map((comp) => (
-                <tr key={comp.id} className="hover:bg-gray-50">
-                  <td className="p-3 font-bold text-gray-800 flex items-center gap-2">
-                    <Building size={16} className="text-purple-600" />{' '}
-                    {comp.name}
-                  </td>
-                  <td className="p-3">
-                    <span className="bg-purple-50 text-purple-700 px-2 py-1 rounded font-bold text-xs">
-                      {comp.member_limit} Kişi
-                    </span>
-                  </td>
-                  <td className="p-3">
-                    <div className="text-sm">
-                      {comp.subscription_end_date
-                        ? new Date(
-                            comp.subscription_end_date
-                          ).toLocaleDateString()
-                        : '-'}
-                    </div>
-                    <div
-                      className={`text-xs font-bold ${
-                        new Date(comp.subscription_end_date) < new Date()
-                          ? 'text-red-500'
-                          : 'text-green-500'
-                      }`}
-                    >
-                      ({calculateDaysLeft(comp.subscription_end_date)})
-                    </div>
-                  </td>
-                  <td className="p-3 text-right">
-                    <div className="flex gap-2 justify-end">
-                      <button
-                        onClick={() => openTeamModal(comp)}
-                        className="text-blue-600 font-bold text-xs border p-1.5 rounded hover:bg-blue-50 flex items-center gap-1"
-                      >
-                        <Users size={12} /> Ekip
-                      </button>
-                      <button
-                        onClick={() => openCompanyModal(comp)}
-                        className="text-purple-600 font-bold text-xs border p-1.5 rounded hover:bg-purple-50 flex items-center gap-1"
-                      >
-                        <Edit size={12} /> Düzenle
-                      </button>
-                      <button
-                        onClick={() => handleDeleteCompany(comp.id, comp.name)}
-                        className="text-red-600 font-bold text-xs border border-red-200 p-1.5 rounded hover:bg-red-50 flex items-center gap-1"
-                      >
-                        <Trash2 size={12} /> Sil
-                      </button>
-                    </div>
-                  </td>
+              {filteredCompanies.length > 0 ? (
+                filteredCompanies.map((comp) => (
+                  <tr key={comp.id} className="hover:bg-gray-50 transition">
+                    <td className="p-3 font-bold text-gray-800 flex items-center gap-2">
+                      <div className="w-8 h-8 rounded bg-purple-100 text-purple-700 flex items-center justify-center text-xs">
+                        {(comp.name || comp.title || 'Ş').substring(0,1).toUpperCase()}
+                      </div>
+                      {comp.name || comp.title || 'İsimsiz Şirket'}
+                    </td>
+                    <td className="p-3">
+                      <span className="bg-purple-50 text-purple-700 px-2 py-1 rounded font-bold text-[10px] border border-purple-100">
+                        {comp.member_limit || comp.user_limit || comp.limit || '0'} Kişi
+                      </span>
+                    </td>
+                    <td className="p-3">
+                      <div className="text-sm">
+                        {comp.subscription_end_date
+                          ? new Date(comp.subscription_end_date).toLocaleDateString()
+                          : '-'}
+                      </div>
+                      {comp.subscription_end_date && (
+                        <div
+                          className={`text-[10px] font-bold ${
+                            new Date(comp.subscription_end_date) < new Date()
+                              ? 'text-red-500'
+                              : 'text-green-500'
+                          }`}
+                        >
+                          ({calculateDaysLeft(comp.subscription_end_date)})
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-3 text-right">
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => openTeamModal(comp)}
+                          className="text-blue-600 font-bold text-[10px] border p-1.5 rounded-lg hover:bg-blue-50 flex items-center gap-1"
+                        >
+                          <Users size={12} /> Ekip
+                        </button>
+                        <button
+                          onClick={() => openCompanyModal(comp)}
+                          className="text-purple-600 font-bold text-[10px] border p-1.5 rounded-lg hover:bg-purple-50 flex items-center gap-1"
+                        >
+                          <Edit size={12} /> Düzenle
+                        </button>
+                        <button
+                          onClick={() => handleDeleteCompany(comp.id, comp.name || comp.title)}
+                          className="text-red-600 font-bold text-[10px] border border-red-200 p-1.5 rounded-lg hover:bg-red-50 flex items-center gap-1"
+                        >
+                          <Trash2 size={12} /> Sil
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                   <td colSpan={4} className="p-10 text-center text-gray-400 italic">
+                      Henüz sisteme kayıtlı şirket bulunamadı.
+                   </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
+          </div>
         )}
 
         {/* --- YENİ TAB: NOTIFICATIONS (BİLDİRİM GÖNDERME) --- */}
@@ -719,6 +799,13 @@ export default function AdminPanel() {
                 {sendingNotif ? 'Gönderiliyor...' : 'Bildirimi Gönder'}
               </button>
             </form>
+          </div>
+        )}
+
+        {/* --- YENİ TAB: MEVZUAT YÖNETİMİ --- */}
+        {activeTab === 'regulations' && (
+          <div className="animate-fadeIn">
+            <AdminRegulations />
           </div>
         )}
 
@@ -1064,6 +1151,49 @@ export default function AdminPanel() {
                 <p className="text-[10px] text-blue-500 mt-1 italic">
                   * Admin tarafından belirlenen özel limit.
                 </p>
+              </div>
+
+              <div className="bg-teal-50 p-3 rounded border border-teal-200">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500"
+                    checked={newCanViewRegulations}
+                    onChange={(e) => setNewCanViewRegulations(e.target.checked)}
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-teal-900 flex items-center gap-2">
+                      Mevzuat Erişimi
+                      {editingUser?.organization_id && orgsWithRegs.has(editingUser.organization_id) && (
+                        <span className="bg-teal-600 text-white text-[8px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 animate-pulse">
+                          <Building size={8} /> FİRMADAN AKTİF
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[10px] text-teal-600">
+                      Bu kullanıcı "Mevzuat" sayfasını görebilir mi?
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              <div className="bg-orange-50 p-3 rounded border border-orange-200">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
+                    checked={newCanManageRegulations}
+                    onChange={(e) => setNewCanManageRegulations(e.target.checked)}
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-orange-900 flex items-center gap-2">
+                      Mevzuat Yönetme Yetkisi
+                    </span>
+                    <span className="text-[10px] text-orange-600">
+                      Bu kullanıcı kendi şirketi için mevzuat ekleyebilir mi?
+                    </span>
+                  </div>
+                </label>
               </div>
               <div className="flex gap-2 pt-4 border-t">
                 <button
