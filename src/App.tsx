@@ -26,6 +26,8 @@ import {
   X,
   Wrench, // <--- YENİ İKON (İngiliz Anahtarı)
   Scale, // Mevzuat ikonu
+  Briefcase, // Danışmanlık ikonu
+  BarChart3,
 } from 'lucide-react';
 
 // Sayfa Importları
@@ -47,6 +49,11 @@ import HelpPage from './HelpPage';
 import Tools from './Tools'; // <--- YENİ ARAÇLAR SAYFASI
 import AdminRegulations from './AdminRegulations';
 import Regulations from './Regulations';
+import ConsultantPanel from './ConsultantPanel';
+import EnvReportForm from './EnvReportForm';
+import EnvReportView from './EnvReportView';
+import ExternalSignPage from './ExternalSignPage';
+import ComplianceDashboard from './ComplianceDashboard';
 
 // --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
@@ -91,6 +98,7 @@ function NavBarContent({
   hasCompany,
   userOrgId,
   canViewRegulations,
+  isEnvConsultant,
 }: any) {
   const location = useLocation();
   const [unreadCount, setUnreadCount] = useState(0);
@@ -247,6 +255,15 @@ function NavBarContent({
                 className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
               >
                 <Scale size={16} /> Mevzuat
+              </Link>
+            )}
+
+            {(userRole === 'admin' || (isPremium && isEnvConsultant)) && (
+              <Link
+                to="/consultant"
+                className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
+              >
+                <FileText size={16} /> Raporlar
               </Link>
             )}
 
@@ -425,6 +442,16 @@ function NavBarContent({
               </Link>
             )}
 
+            {(userRole === 'admin' || (isPremium && isEnvConsultant)) && (
+              <Link
+                to="/consultant"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
+              >
+                <FileText size={20} /> Raporlar
+              </Link>
+            )}
+
             {hasCompany && (
               <Link
                 to="/chat"
@@ -512,6 +539,7 @@ function AppContent() {
   const [isPremium, setIsPremium] = useState(false);
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
   const [canViewRegulations, setCanViewRegulations] = useState(false);
+  const [isEnvConsultant, setIsEnvConsultant] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -577,8 +605,8 @@ function AppContent() {
         // Şirket çalışanı/yöneticisi ise şirketin abonelik tarihini kullan
         if (profile.organization_id) {
           const { data: company, error: compErr } = await supabase
-            .from('companies')
-            .select('subscription_end_date, name')
+            .from('organizations')
+            .select('subscription_end_date, name, is_environmental_consultant')
             .eq('id', profile.organization_id)
             .single();
           
@@ -586,6 +614,9 @@ function AppContent() {
           
           if (company?.subscription_end_date) {
             finalDate = company.subscription_end_date;
+          }
+          if (company?.is_environmental_consultant) {
+            setIsEnvConsultant(true);
           }
         }
 
@@ -636,6 +667,7 @@ function AppContent() {
     setSession(null);
     setUserRole('normal');
     setIsPremium(false);
+    setIsEnvConsultant(false);
   };
   const getDaysLeft = () => {
     if (!subEndDate) return null;
@@ -666,6 +698,7 @@ function AppContent() {
             hasCompany={!!userOrgId}
             userOrgId={userOrgId}
             canViewRegulations={canViewRegulations}
+            isEnvConsultant={isEnvConsultant}
           />
         )}
         <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
@@ -674,6 +707,9 @@ function AppContent() {
               <>
                 <Route path="/" element={<Login />} />
                 <Route path="/register" element={<Register />} />
+                <Route path="/consultant/reports/:id" element={<EnvReportView />} />
+                <Route path="/consultant/compliance" element={<ComplianceDashboard />} />
+                <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             ) : (
@@ -703,11 +739,52 @@ function AppContent() {
                   }
                 />
                 <Route
+                  path="/consultant"
+                  element={
+                    userRole === 'admin' || (isPremium && isEnvConsultant) ? (
+                      <ConsultantPanel />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
+                />
+                <Route
+                  path="/consultant/reports/add"
+                  element={
+                    userRole === 'admin' || (isPremium && isEnvConsultant) ? (
+                      <EnvReportForm />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
+                />
+                <Route
+                  path="/consultant/reports/:id"
+                  element={
+                    userRole === 'admin' || (isPremium && isEnvConsultant) ? (
+                      <EnvReportView />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
+                />
+                <Route
+                  path="/consultant/compliance"
+                  element={
+                    userRole === 'admin' || (isPremium && isEnvConsultant && userRole !== 'corporate_staff') ? (
+                      <ComplianceDashboard />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
+                />
+                <Route
                   path="/admin"
                   element={
                     (userRole === 'admin' || userRole === 'system_admin') ? <AdminPanel /> : <Navigate to="/" />
                   }
                 />
+                <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             )}

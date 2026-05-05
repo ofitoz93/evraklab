@@ -62,6 +62,7 @@ export default function AdminPanel() {
   const [compName, setCompName] = useState('');
   const [compLimit, setCompLimit] = useState(0);
   const [compDate, setCompDate] = useState('');
+  const [compIsEnvConsultant, setCompIsEnvConsultant] = useState(false);
   const [orgsWithRegs, setOrgsWithRegs] = useState<Set<string>>(new Set());
 
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
@@ -417,6 +418,7 @@ export default function AdminPanel() {
         ? new Date(comp.subscription_end_date).toISOString().split('T')[0]
         : ''
     );
+    setCompIsEnvConsultant(!!comp.is_environmental_consultant);
     setCompanyQuotaMB(Math.round((comp.storage_limit || 0) / 1048576));
   };
 
@@ -434,6 +436,7 @@ export default function AdminPanel() {
           member_limit: compLimit,
           subscription_end_date: finalDate,
           storage_limit: companyQuotaMB * 1048576,
+          is_environmental_consultant: compIsEnvConsultant,
         })
         .eq('id', editingCompany.id);
       setEditingCompany(null);
@@ -1260,6 +1263,20 @@ export default function AdminPanel() {
                   />
                   <span className="text-xs font-bold text-purple-700">MB</span>
                 </div>
+              </div>
+              <div className="bg-blue-50 p-3 rounded border border-blue-200">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    checked={compIsEnvConsultant}
+                    onChange={(e) => setCompIsEnvConsultant(e.target.checked)}
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-blue-900">Raporlar Modülü</span>
+                    <span className="text-[10px] text-blue-600">Bu şirket için detaylı raporlama modülünü aktifleştir.</span>
+                  </div>
+                </label>
               </div>
               <div className="flex gap-2 pt-4 border-t">
                 <button

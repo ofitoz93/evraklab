@@ -1,0 +1,723 @@
+import React, { useState, useEffect } from 'react';
+import { supabase } from './supabaseClient';
+import {
+  Building,
+  Plus,
+  Edit2,
+  Trash2,
+  Users,
+  FileText,
+  Search,
+  Upload,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  Eye,
+  Settings as SettingsIcon,
+  BarChart3,
+} from 'lucide-react';
+import { Link } from 'react-router-dom';
+import ComplianceDashboard from './ComplianceDashboard';
+
+interface Client {
+  id: string;
+  name: string;
+  address: string;
+  tax_no: string;
+  phone: string;
+  logo_url: string;
+}
+
+interface Report {
+  id: string;
+  client_id: string;
+  report_type: 'monthly' | 'yearly';
+  report_date: string;
+  expires_at: string;
+  status: string;
+  client: { name: string };
+  creator: { full_name: string };
+  is_manual_upload: boolean;
+  file_url: string;
+}
+
+export default function ConsultantPanel() {
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'compliance'>('clients');
+  const [clients, setClients] = useState<Client[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [userRole, setUserRole] = useState('');
+  const [userId, setUserId] = useState('');
+  const [orgId, setOrgId] = useState('');
+
+  // Modals
+  const [showAddClient, setShowAddClient] = useState(false);
+  const [newClient, setNewClient] = useState({
+    name: '',
+    address: '',
+    tax_no: '',
+    phone: '',
+    logo_url: '',
+  });
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [orgData, setOrgData] = useState<any>(null);
+  const [savingOrg, setSavingOrg] = useState(false);
+
+  // Assignment Modal
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [selectedClient, setSelectedClient] = useState<any>(null);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [currentAssignments, setCurrentAssignments] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingLogo(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+      const filePath = `logos/${fileName}`;
+
+      // NOT: Supabase'de 'client_assets' adında public bir bucket oluşturulmuş olmalıdır.
+      const { error: uploadError } = await supabase.storage
+        .from('client_assets')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage
+        .from('client_assets')
+        .getPublicUrl(filePath);
+
+      setNewClient({ ...newClient, logo_url: data.publicUrl });
+    } catch (err: any) {
+      alert('Logo yüklenirken hata: ' + err.message + '\nLütfen Supabase panelinden "client_assets" adında public bir bucket oluşturduğunuzdan emin olun.');
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  const handleOrgLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingLogo(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `org_${Math.random()}.${fileExt}`;
+      const filePath = `logos/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('client_assets')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage
+        .from('client_assets')
+        .getPublicUrl(filePath);
+
+      setOrgData({ ...orgData, consultant_logo_url: data.publicUrl });
+    } catch (err: any) {
+      alert('Logo yüklenirken hata: ' + err.message);
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  const handleSaveOrg = async () => {
+    setSavingOrg(true);
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({
+          name: orgData.name,
+          consultant_logo_url: orgData.consultant_logo_url,
+        })
+        .eq('id', orgId);
+
+      if (error) throw error;
+      alert('Şirket ayarları başarıyla güncellendi!');
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingOrg(false);
+    }
+  };
+
+  const openAssignModal = async (client: any) => {
+    setSelectedClient(client);
+    setShowAssignModal(true);
+    
+    // Fetch team members of the consultant company
+    const { data: members } = await supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .eq('organization_id', orgId);
+    setTeamMembers(members || []);
+
+    // Fetch current assignments for this client
+    const { data: assigns } = await supabase
+      .from('consultant_assignments')
+      .select('user_id')
+      .eq('client_id', client.id);
+    setCurrentAssignments(assigns?.map(a => a.user_id) || []);
+  };
+
+  const handleToggleAssign = async (uId: string) => {
+    try {
+      if (currentAssignments.includes(uId)) {
+        // Remove assignment
+        const { error } = await supabase
+          .from('consultant_assignments')
+          .delete()
+          .eq('client_id', selectedClient.id)
+          .eq('user_id', uId);
+        if (error) throw error;
+        setCurrentAssignments(prev => prev.filter(id => id !== uId));
+      } else {
+        // Add assignment
+        const { error } = await supabase
+          .from('consultant_assignments')
+          .insert([{ client_id: selectedClient.id, user_id: uId }]);
+        if (error) throw error;
+        setCurrentAssignments(prev => [...prev, uId]);
+      }
+    } catch (err: any) {
+      alert('Atama yapılırken hata: ' + err.message);
+    }
+  };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      setUserId(session.user.id);
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('role, organization_id')
+        .eq('id', session.user.id)
+        .single();
+
+        if (profile) {
+        setUserRole(profile.role);
+        setOrgId(profile.organization_id);
+
+        if (profile.organization_id) {
+          const { data: org } = await supabase.from('organizations').select('*').eq('id', profile.organization_id).single();
+          setOrgData(org);
+        }
+
+        await Promise.all([
+          fetchClients(profile.organization_id, profile.role, session.user.id),
+          fetchReports(profile.organization_id, profile.role, session.user.id),
+        ]);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchClients = async (oId: string, role: string, uId: string) => {
+    let query = supabase.from('consultant_clients').select('*');
+    if (role === 'corporate_staff') {
+      // Sadece atandığı firmalar
+      const { data: assignments } = await supabase
+        .from('consultant_assignments')
+        .select('client_id')
+        .eq('user_id', uId);
+      const cIds = assignments?.map((a) => a.client_id) || [];
+      if (cIds.length > 0) {
+        query = query.in('id', cIds);
+      } else {
+        setClients([]);
+        return;
+      }
+    } else {
+      query = query.eq('consultant_company_id', oId);
+    }
+    const { data } = await query.order('created_at', { ascending: false });
+    if (data) setClients(data);
+  };
+
+  const fetchReports = async (oId: string, role: string, uId: string) => {
+    let query = supabase
+      .from('env_reports')
+      .select('*, client:client_id(name), creator:creator_id(full_name)');
+    
+    if (role === 'corporate_staff') {
+      // Sadece atandığı firmaların raporları
+      const { data: assignments } = await supabase
+        .from('consultant_assignments')
+        .select('client_id')
+        .eq('user_id', uId);
+      const cIds = assignments?.map((a) => a.client_id) || [];
+      if (cIds.length > 0) {
+        query = query.in('client_id', cIds);
+      } else {
+        setReports([]);
+        return;
+      }
+    } else {
+      query = query.eq('consultant_company_id', oId);
+    }
+    const { data } = await query.order('created_at', { ascending: false });
+    if (data) setReports(data as any);
+  };
+
+  const handleAddClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newClient.name) return;
+
+    try {
+      const { error } = await supabase.from('consultant_clients').insert([
+        {
+          consultant_company_id: orgId,
+          name: newClient.name,
+          address: newClient.address,
+          tax_no: newClient.tax_no,
+          phone: newClient.phone,
+          logo_url: newClient.logo_url,
+        },
+      ]);
+      if (error) throw error;
+      setShowAddClient(false);
+      setNewClient({ name: '', address: '', tax_no: '', phone: '', logo_url: '' });
+      fetchClients(orgId, userRole, userId);
+    } catch (err: any) {
+      alert('Firma eklenirken hata: ' + err.message);
+    }
+  };
+
+  const getReportStatusColor = (report: Report) => {
+    if (report.status !== 'completed' && !report.is_manual_upload) return 'bg-gray-100 text-gray-800 border-gray-200';
+
+    // Daha yeni bir rapor var mı?
+    const hasNewerReport = reports.some(r => 
+      r.client_id === report.client_id && 
+      r.report_type === report.report_type && 
+      new Date(r.report_date) > new Date(report.report_date)
+    );
+
+    if (hasNewerReport) return 'bg-green-100 text-green-800 border-green-200';
+
+    const expDate = new Date(report.expires_at);
+    const now = new Date();
+    const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
+
+    if (diffDays < 0) return 'bg-red-100 text-red-800 border-red-200'; 
+    if (diffDays <= 30) return 'bg-yellow-100 text-yellow-800 border-yellow-200'; 
+    return 'bg-green-100 text-green-800 border-green-200'; 
+  };
+
+  const getReportStatusText = (report: Report) => {
+    if (report.status !== 'completed' && !report.is_manual_upload) return 'Taslak';
+
+    // Daha yeni bir rapor var mı?
+    const hasNewerReport = reports.some(r => 
+      r.client_id === report.client_id && 
+      r.report_type === report.report_type && 
+      new Date(r.report_date) > new Date(report.report_date)
+    );
+
+    if (hasNewerReport) return 'Tamamlandı';
+
+    const expDate = new Date(report.expires_at);
+    const now = new Date();
+    const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
+
+    if (diffDays < 0) return 'Süresi Geçti';
+    if (diffDays <= 30) return `Son ${diffDays} Gün`;
+    return 'Geçerli Yüklendi';
+  };
+
+  if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
+
+  const isAdminOrChief = userRole === 'admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <FileText className="text-blue-600" /> Raporlar Paneli
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {isAdminOrChief && (
+            <button
+              onClick={() => setShowAddClient(true)}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
+            >
+              <Plus size={18} /> Yeni İşletme
+            </button>
+          )}
+          <Link
+            to="/consultant/reports/add"
+            className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
+          >
+            <FileText size={18} /> Rapor Oluştur
+          </Link>
+        </div>
+      </div>
+
+      <div className="flex border-b border-gray-200 dark:border-slate-700">
+        <button
+          onClick={() => setActiveTab('clients')}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'clients'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Building size={16} /> Hizmet Verilen İşletmeler
+        </button>
+        <button
+          onClick={() => setActiveTab('reports')}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'reports'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <FileText size={16} /> Raporlar
+        </button>
+        {userRole === 'premium_corporate' && (
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+              activeTab === 'settings'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <SettingsIcon size={16} /> Şirket Ayarları
+          </button>
+        )}
+        {userRole === 'premium_corporate' && (
+          <button
+            onClick={() => setActiveTab('compliance')}
+            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+              activeTab === 'compliance'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <BarChart3 size={16} /> Takip Paneli
+          </button>
+        )}
+      </div>
+
+      {activeTab === 'clients' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {clients.map((client) => (
+            <div
+              key={client.id}
+              className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 hover:shadow-md transition"
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  {client.logo_url ? (
+                    <img src={client.logo_url} alt="Logo" className="w-12 h-12 rounded-lg object-contain border" />
+                  ) : (
+                    <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400">
+                      <Building size={24} />
+                    </div>
+                  )}
+                  <div>
+                    <h3 className="font-bold text-gray-900 dark:text-white line-clamp-1">{client.name}</h3>
+                    <p className="text-xs text-gray-500">Vergi No: {client.tax_no || 'Belirtilmemiş'}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
+                <p className="line-clamp-2"><span className="font-medium">Adres:</span> {client.address}</p>
+                <p><span className="font-medium">Tel:</span> {client.phone}</p>
+              </div>
+              {isAdminOrChief && (
+                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
+                  <button 
+                    onClick={() => openAssignModal(client)}
+                    className="text-blue-600 hover:underline text-sm flex items-center gap-1"
+                  >
+                    <Users size={14} /> Personel Ata
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {clients.length === 0 && (
+            <div className="col-span-full p-8 text-center text-gray-500 border-2 border-dashed border-gray-300 rounded-xl">
+              Henüz bir işletme kaydı bulunmuyor.
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'reports' && (
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-slate-700 border-b border-gray-200 dark:border-slate-600">
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşletme</th>
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Rapor Türü</th>
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tarih</th>
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Oluşturan</th>
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Durum</th>
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşlemler</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                {reports.map((report) => (
+                  <tr key={report.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition">
+                    <td className="p-4 text-sm font-medium">{report.client?.name}</td>
+                    <td className="p-4 text-sm">
+                      {report.report_type === 'monthly' ? 'Aylık Değerlendirme' : 'Yıllık İç Tetkik'}
+                    </td>
+                    <td className="p-4 text-sm">
+                      {new Date(report.report_date).toLocaleDateString('tr-TR')}
+                    </td>
+                    <td className="p-4 text-sm">{report.creator?.full_name || 'Bilinmiyor'}</td>
+                    <td className="p-4">
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${getReportStatusColor(report)}`}>
+                        {getReportStatusColor(report).includes('green') && <CheckCircle size={12} />}
+                        {getReportStatusColor(report).includes('yellow') && <Clock size={12} />}
+                        {getReportStatusColor(report).includes('red') && <AlertCircle size={12} />}
+                        {getReportStatusText(report)}
+                      </span>
+                    </td>
+                    <td className="p-4">
+                      <Link
+                        to={`/consultant/reports/${report.id}`}
+                        className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg inline-flex"
+                      >
+                        <Eye size={18} />
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {reports.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="p-8 text-center text-gray-500">
+                      Rapor bulunamadı.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'settings' && orgData && (
+        <div className="max-w-2xl mx-auto bg-white dark:bg-slate-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 animate-fadeIn">
+          <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-600">
+            <Building size={20} /> Şirket Bilgileri ve Rapor Ayarları
+          </h2>
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-bold mb-2">Şirket Ünvanı (Raporlarda Görünen)</label>
+              <input
+                type="text"
+                value={orgData.name || ''}
+                onChange={(e) => setOrgData({ ...orgData, name: e.target.value })}
+                className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700"
+                placeholder="Örn: EvrakLab Danışmanlık Ltd. Şti."
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold mb-2">Şirket Logosu</label>
+              <p className="text-xs text-gray-500 mb-3">Raporların üst kısmında danışman firma logosu olarak görünecektir.</p>
+              <div className="flex items-center gap-6">
+                <div className="w-32 h-32 border rounded-xl overflow-hidden bg-gray-50 flex items-center justify-center">
+                  {orgData.consultant_logo_url ? (
+                    <img src={orgData.consultant_logo_url} alt="Logo" className="w-full h-full object-contain" />
+                  ) : (
+                    <Building size={48} className="text-gray-300" />
+                  )}
+                </div>
+                <div className="flex-1 space-y-2">
+                  <label className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg cursor-pointer transition text-sm font-bold">
+                    <Upload size={16} /> {uploadingLogo ? 'Yükleniyor...' : 'Logoyu Değiştir'}
+                    <input type="file" accept="image/*" className="hidden" onChange={handleOrgLogoUpload} disabled={uploadingLogo} />
+                  </label>
+                  <p className="text-[10px] text-gray-400">Önerilen boyut: 200x100px. Arka planı şeffaf PNG önerilir.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-6 border-t flex justify-end">
+              <button
+                onClick={handleSaveOrg}
+                disabled={savingOrg}
+                className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {savingOrg ? 'Kaydediliyor...' : 'Ayarları Kaydet'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'compliance' && (
+        <ComplianceDashboard />
+      )}
+
+      {/* Assign Personnel Modal */}
+      {showAssignModal && selectedClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white">
+              <div>
+                <h2 className="text-lg font-bold">Personel Ata</h2>
+                <p className="text-xs opacity-80">{selectedClient.name}</p>
+              </div>
+              <button onClick={() => setShowAssignModal(false)} className="hover:rotate-90 transition-transform">
+                <Plus size={24} className="rotate-45" />
+              </button>
+            </div>
+            <div className="p-6 max-h-[60vh] overflow-y-auto">
+              <p className="text-sm text-gray-500 mb-4">Bu işletmeden sorumlu olacak personelleri seçin:</p>
+              <div className="space-y-2">
+                {teamMembers.map(member => (
+                  <label key={member.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-100 hover:bg-gray-50 cursor-pointer transition">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs">
+                        {member.full_name?.charAt(0)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold">{member.full_name}</p>
+                        <p className="text-[10px] text-gray-400">{member.email}</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox" 
+                      className="w-5 h-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      checked={currentAssignments.includes(member.id)}
+                      onChange={() => handleToggleAssign(member.id)}
+                    />
+                  </label>
+                ))}
+                {teamMembers.length === 0 && (
+                  <p className="text-center text-gray-400 py-4 italic">Henüz ekip üyesi bulunmuyor.</p>
+                )}
+              </div>
+            </div>
+            <div className="p-4 bg-gray-50 dark:bg-slate-900 border-t flex justify-end">
+              <button 
+                onClick={() => setShowAssignModal(false)}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 transition"
+              >
+                Tamam
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Client Modal */}
+      {showAddClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+              <h2 className="text-xl font-bold">Yeni İşletme Ekle</h2>
+              <button onClick={() => setShowAddClient(false)} className="text-gray-400 hover:text-gray-600">
+                X
+              </button>
+            </div>
+            <form onSubmit={handleAddClient} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Ünvanı *</label>
+                <input
+                  type="text"
+                  required
+                  value={newClient.name}
+                  onChange={(e) => setNewClient({ ...newClient, name: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Vergi No</label>
+                <input
+                  type="text"
+                  value={newClient.tax_no}
+                  onChange={(e) => setNewClient({ ...newClient, tax_no: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Adres</label>
+                <textarea
+                  value={newClient.address}
+                  onChange={(e) => setNewClient({ ...newClient, address: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 h-20"
+                ></textarea>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Telefon</label>
+                <input
+                  type="text"
+                  value={newClient.phone}
+                  onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Firma Logosu (Opsiyonel)</label>
+                <div className="flex items-center gap-4">
+                  {newClient.logo_url ? (
+                    <div className="relative">
+                      <img src={newClient.logo_url} alt="Önizleme" className="w-16 h-16 rounded border object-contain bg-gray-50" />
+                      <button 
+                        type="button"
+                        onClick={() => setNewClient({...newClient, logo_url: ''})}
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition">
+                      <Upload className="text-gray-400 mb-2" size={24} />
+                      <span className="text-xs text-gray-500">{uploadingLogo ? 'Yükleniyor...' : 'Bilgisayardan Seç'}</span>
+                      <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} disabled={uploadingLogo} />
+                    </label>
+                  )}
+                </div>
+              </div>
+              <div className="pt-4 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAddClient(false)}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-gray-700"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium"
+                >
+                  Kaydet
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
