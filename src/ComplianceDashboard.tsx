@@ -38,33 +38,59 @@ export default function ComplianceDashboard() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('organization_id, role')
+        .select('id, organization_id, role, extra_permissions')
         .eq('id', session.user.id)
         .single();
 
       if (profile) {
         setOrgId(profile.organization_id);
+        const perms = profile.extra_permissions || {};
+        const isRestrictedRole = profile.role === 'corporate_staff' || profile.role === 'corporate_chief';
         
+        let assignedClientIds: string[] = [];
+        if (isRestrictedRole && !perms.can_view_all_clients) {
+          const { data: assigns } = await supabase
+            .from('consultant_assignments')
+            .select('client_id')
+            .eq('user_id', profile.id);
+          assignedClientIds = assigns?.map(a => a.client_id) || [];
+          if (assignedClientIds.length === 0) {
+            setClients([]);
+            setReports([]);
+            setLoading(false);
+            return;
+          }
+        }
+
         // 1. İşletmeleri çek
-        const { data: clientsData } = await supabase
+        let clientQuery = supabase
           .from('consultant_clients')
           .select('*')
-          .eq('consultant_company_id', profile.organization_id)
-          .order('name');
+          .eq('consultant_company_id', profile.organization_id);
         
+        if (assignedClientIds.length > 0) {
+          clientQuery = clientQuery.in('id', assignedClientIds);
+        }
+        
+        const { data: clientsData } = await clientQuery.order('name');
         setClients(clientsData || []);
 
         // 2. Bu yılın raporlarını çek
         const startDate = `${currentYear}-01-01`;
         const endDate = `${currentYear}-12-31`;
 
-        const { data: reportsData } = await supabase
+        let reportQuery = supabase
           .from('env_reports')
           .select('id, client_id, report_date, report_type, status')
           .eq('consultant_company_id', profile.organization_id)
           .gte('report_date', startDate)
           .lte('report_date', endDate);
         
+        if (assignedClientIds.length > 0) {
+          reportQuery = reportQuery.in('client_id', assignedClientIds);
+        }
+
+        const { data: reportsData } = await reportQuery;
         setReports(reportsData || []);
       }
     } catch (err) {
@@ -81,14 +107,14 @@ export default function ComplianceDashboard() {
     const isPastMonth = (currentYear < today.getFullYear()) || (currentYear === today.getFullYear() && month < currentMonth);
     const isCurrentMonth = currentYear === today.getFullYear() && month === currentMonth;
 
-    // Bu aya ait rapor var mı?
-    const report = reports.find(r => {
+    // Bu aya ait rapor(lar) var mı?
+    const monthlyReports = reports.filter(r => {
       const rDate = new Date(r.report_date);
       return r.client_id === clientId && r.report_type === 'monthly' && (rDate.getMonth() + 1) === month && rDate.getFullYear() === currentYear;
     });
 
-    if (report) {
-      return { status: 'completed', id: report.id };
+    if (monthlyReports.length > 0) {
+      return { status: 'completed', reports: monthlyReports };
     }
 
     if (isPastMonth) {
@@ -205,13 +231,23 @@ export default function ComplianceDashboard() {
                     return (
                       <td key={idx} className="p-2 text-center">
                         {result.status === 'completed' ? (
-                          <button 
-                            onClick={() => navigate(`/consultant/reports/${result.id}`)}
-                            className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center mx-auto hover:scale-110 transition shadow-sm border border-green-200"
-                            title="Raporu Gör"
-                          >
-                            <CheckCircle size={16} />
-                          </button>
+                          <div className="flex flex-wrap justify-center gap-1">
+                            {result.reports?.map((r: any, i: number) => (
+                              <button 
+                                key={r.id}
+                                onClick={() => navigate(`/consultant/reports/${r.id}`)}
+                                className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center hover:scale-110 transition shadow-sm border border-green-200 relative"
+                                title={`${i + 1}. Raporu Gör`}
+                              >
+                                <CheckCircle size={14} />
+                                {result.reports!.length > 1 && (
+                                  <span className="absolute -top-1 -right-1 bg-green-600 text-white text-[8px] rounded-full w-3 h-3 flex items-center justify-center font-bold">
+                                    {i + 1}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
                         ) : result.status === 'overdue' ? (
                           <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-900/30 text-red-600 flex items-center justify-center mx-auto animate-pulse border border-red-200" title="Süresi Geçti!">
                             <AlertCircle size={16} />

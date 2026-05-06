@@ -49,6 +49,7 @@ export default function ConsultantPanel() {
   const [userRole, setUserRole] = useState('');
   const [userId, setUserId] = useState('');
   const [orgId, setOrgId] = useState('');
+  const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
 
   // Modals
   const [showAddClient, setShowAddClient] = useState(false);
@@ -72,6 +73,20 @@ export default function ConsultantPanel() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'settings' && orgId) {
+      fetchTeamMembers();
+    }
+  }, [activeTab, orgId]);
+
+  const fetchTeamMembers = async () => {
+    const { data: members } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, extra_permissions')
+      .eq('organization_id', orgId);
+    setTeamMembers(members || []);
+  };
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -204,13 +219,14 @@ export default function ConsultantPanel() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role, organization_id')
+        .select('role, organization_id, extra_permissions')
         .eq('id', session.user.id)
         .single();
 
         if (profile) {
         setUserRole(profile.role);
         setOrgId(profile.organization_id);
+        setCurrentUserPerms(profile.extra_permissions || {});
 
         if (profile.organization_id) {
           const { data: org } = await supabase.from('organizations').select('*').eq('id', profile.organization_id).single();
@@ -218,8 +234,8 @@ export default function ConsultantPanel() {
         }
 
         await Promise.all([
-          fetchClients(profile.organization_id, profile.role, session.user.id),
-          fetchReports(profile.organization_id, profile.role, session.user.id),
+          fetchClients(profile.organization_id, profile.role, session.user.id, profile.extra_permissions),
+          fetchReports(profile.organization_id, profile.role, session.user.id, profile.extra_permissions),
         ]);
       }
     } catch (err) {
@@ -229,9 +245,14 @@ export default function ConsultantPanel() {
     }
   };
 
-  const fetchClients = async (oId: string, role: string, uId: string) => {
+  const fetchClients = async (oId: string, role: string, uId: string, perms?: any) => {
     let query = supabase.from('consultant_clients').select('*');
-    if (role === 'corporate_staff') {
+    
+    // Yalnızca Yönetici (premium_corporate) ve Admin her şeyi görür. 
+    // Diğerleri (Şef ve Personel) sadece atandıkları firmaları görür (perm yoksa).
+    const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
+
+    if (isRestrictedRole && !perms?.can_view_all_clients) {
       // Sadece atandığı firmalar
       const { data: assignments } = await supabase
         .from('consultant_assignments')
@@ -251,12 +272,14 @@ export default function ConsultantPanel() {
     if (data) setClients(data);
   };
 
-  const fetchReports = async (oId: string, role: string, uId: string) => {
+  const fetchReports = async (oId: string, role: string, uId: string, perms?: any) => {
     let query = supabase
       .from('env_reports')
       .select('*, client:client_id(name), creator:creator_id(full_name)');
     
-    if (role === 'corporate_staff') {
+    const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
+
+    if (isRestrictedRole && !perms?.can_view_all_clients) {
       // Sadece atandığı firmaların raporları
       const { data: assignments } = await supabase
         .from('consultant_assignments')
@@ -345,6 +368,8 @@ export default function ConsultantPanel() {
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
 
   const isAdminOrChief = userRole === 'admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
+  const isManager = userRole === 'premium_corporate';
+  const canViewCompliance = isManager || (currentUserPerms?.can_view_compliance);
 
   return (
     <div className="space-y-6">
@@ -355,15 +380,15 @@ export default function ConsultantPanel() {
           </h1>
           <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
         </div>
-        <div className="flex items-center gap-2">
-          {isAdminOrChief && (
-            <button
-              onClick={() => setShowAddClient(true)}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
-            >
-              <Plus size={18} /> Yeni İşletme
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {isManager && (
+              <button
+                onClick={() => setShowAddClient(true)}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
+              >
+                <Plus size={18} /> Yeni İşletme
+              </button>
+            )}
           <Link
             to="/consultant/reports/add"
             className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
@@ -406,7 +431,7 @@ export default function ConsultantPanel() {
             <SettingsIcon size={16} /> Şirket Ayarları
           </button>
         )}
-        {userRole === 'premium_corporate' && (
+        {canViewCompliance && (
           <button
             onClick={() => setActiveTab('compliance')}
             className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
@@ -446,7 +471,7 @@ export default function ConsultantPanel() {
                 <p className="line-clamp-2"><span className="font-medium">Adres:</span> {client.address}</p>
                 <p><span className="font-medium">Tel:</span> {client.phone}</p>
               </div>
-              {isAdminOrChief && (
+              {isManager && (
                 <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
                   <button 
                     onClick={() => openAssignModal(client)}
@@ -523,51 +548,123 @@ export default function ConsultantPanel() {
       )}
 
       {activeTab === 'settings' && orgData && (
-        <div className="max-w-2xl mx-auto bg-white dark:bg-slate-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 animate-fadeIn">
-          <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-600">
-            <Building size={20} /> Şirket Bilgileri ve Rapor Ayarları
-          </h2>
-          <div className="space-y-6">
-            <div>
-              <label className="block text-sm font-bold mb-2">Şirket Ünvanı (Raporlarda Görünen)</label>
-              <input
-                type="text"
-                value={orgData.name || ''}
-                onChange={(e) => setOrgData({ ...orgData, name: e.target.value })}
-                className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700"
-                placeholder="Örn: EvrakLab Danışmanlık Ltd. Şti."
-              />
-            </div>
+        <div className="max-w-4xl mx-auto space-y-6 animate-fadeIn">
+          {/* Şirket Bilgileri */}
+          <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-600">
+              <Building size={20} /> Şirket Bilgileri ve Rapor Ayarları
+            </h2>
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-bold mb-2">Şirket Ünvanı (Raporlarda Görünen)</label>
+                <input
+                  type="text"
+                  value={orgData.name || ''}
+                  onChange={(e) => setOrgData({ ...orgData, name: e.target.value })}
+                  className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700"
+                  placeholder="Örn: EvrakLab Danışmanlık Ltd. Şti."
+                />
+              </div>
 
-            <div>
-              <label className="block text-sm font-bold mb-2">Şirket Logosu</label>
-              <p className="text-xs text-gray-500 mb-3">Raporların üst kısmında danışman firma logosu olarak görünecektir.</p>
-              <div className="flex items-center gap-6">
-                <div className="w-32 h-32 border rounded-xl overflow-hidden bg-gray-50 flex items-center justify-center">
-                  {orgData.consultant_logo_url ? (
-                    <img src={orgData.consultant_logo_url} alt="Logo" className="w-full h-full object-contain" />
-                  ) : (
-                    <Building size={48} className="text-gray-300" />
-                  )}
-                </div>
-                <div className="flex-1 space-y-2">
-                  <label className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg cursor-pointer transition text-sm font-bold">
-                    <Upload size={16} /> {uploadingLogo ? 'Yükleniyor...' : 'Logoyu Değiştir'}
-                    <input type="file" accept="image/*" className="hidden" onChange={handleOrgLogoUpload} disabled={uploadingLogo} />
-                  </label>
-                  <p className="text-[10px] text-gray-400">Önerilen boyut: 200x100px. Arka planı şeffaf PNG önerilir.</p>
+              <div>
+                <label className="block text-sm font-bold mb-2">Şirket Logosu</label>
+                <p className="text-xs text-gray-500 mb-3">Raporların üst kısmında danışman firma logosu olarak görünecektir.</p>
+                <div className="flex items-center gap-6">
+                  <div className="w-32 h-32 border rounded-xl overflow-hidden bg-gray-50 flex items-center justify-center">
+                    {orgData.consultant_logo_url ? (
+                      <img src={orgData.consultant_logo_url} alt="Logo" className="w-full h-full object-contain" />
+                    ) : (
+                      <Building size={48} className="text-gray-300" />
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <label className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg cursor-pointer transition text-sm font-bold">
+                      <Upload size={16} /> {uploadingLogo ? 'Yükleniyor...' : 'Logoyu Değiştir'}
+                      <input type="file" accept="image/*" className="hidden" onChange={handleOrgLogoUpload} disabled={uploadingLogo} />
+                    </label>
+                    <p className="text-[10px] text-gray-400">Önerilen boyut: 200x100px. Arka planı şeffaf PNG önerilir.</p>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="pt-6 border-t flex justify-end">
-              <button
-                onClick={handleSaveOrg}
-                disabled={savingOrg}
-                className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg transition disabled:opacity-50 flex items-center gap-2"
-              >
-                {savingOrg ? 'Kaydediliyor...' : 'Ayarları Kaydet'}
-              </button>
+              <div className="pt-6 border-t flex justify-end">
+                <button
+                  onClick={handleSaveOrg}
+                  disabled={savingOrg}
+                  className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg transition disabled:opacity-50 flex items-center gap-2"
+                >
+                  {savingOrg ? 'Kaydediliyor...' : 'Ayarları Kaydet'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Ekip Yetki Yönetimi */}
+          <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-600">
+              <Users size={20} /> Ekip Yetki Yönetimi
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-xs text-gray-500 uppercase border-b">
+                    <th className="pb-3">Personel</th>
+                    <th className="pb-3">Tüm Firmaları Görebilir</th>
+                    <th className="pb-3">Takip Panelini Görebilir</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {teamMembers.filter(m => m.id !== userId).map(member => (
+                    <tr key={member.id}>
+                      <td className="py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs uppercase">
+                            {member.full_name?.charAt(0)}
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold">{member.full_name}</p>
+                            <p className="text-[10px] text-gray-400">{member.email}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-4">
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={member.extra_permissions?.can_view_all_clients || false}
+                            onChange={async (e) => {
+                              const newVal = e.target.checked;
+                              const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
+                              const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                              if (error) alert('Hata: ' + error.message);
+                              else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                            }}
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+                        </label>
+                      </td>
+                      <td className="py-4">
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={member.extra_permissions?.can_view_compliance || false}
+                            onChange={async (e) => {
+                              const newVal = e.target.checked;
+                              const updatedPerms = { ...(member.extra_permissions || {}), can_view_compliance: newVal };
+                              const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                              if (error) alert('Hata: ' + error.message);
+                              else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                            }}
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+                        </label>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
