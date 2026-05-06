@@ -343,43 +343,158 @@ export default function EnvReportForm() {
     <div className="space-y-6 animate-fadeIn">
       <h3 className="text-xl font-bold border-b pb-2">1 - İŞLETME BİLGİLERİ</h3>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {renderTextInput('Beldesi / İlçesi / İli', 'Y1_il_ilce')}
+        {renderTextInput('Vergi Dairesi ve Numarası', 'Y1_vergi_bilgisi')}
         {renderTextInput('Çevre Kimlik Numarası (ÇKN)', 'Y1_ckn')}
-        {renderTextInput('Açık/Kapalı/Toplam Alan (m²)', 'Y1_alan')}
+        {renderTextInput('Beldesi / İlçesi / İli', 'Y1_il_ilce')}
         {renderTextInput('Koordinat Bilgileri (UTM)', 'Y1_koordinat')}
-        {renderTextInput('Kurulu Olduğu Yer (OSB vb.)', 'Y1_kurulus_yeri')}
-        {renderTextInput('Personel Sayısı (İdari, İşçi Toplam)', 'Y1_personel')}
-        {renderTextInput('Çalışma Şekli (Sürekli/Mevsimlik)', 'Y1_calisma_sekli')}
+        {renderTextInput('Kurulu Olduğu Yer', 'Y1_kurulus_yeri', 'OSB, İOSB, Yerleşim alanı vb.')}
+        {renderTextInput('Çalışma Şekli', 'Y1_calisma_sekli', 'Sürekli / Mevsimlik')}
         {renderTextInput('Vardiya Sayısı', 'Y1_vardiya')}
-        {renderTextInput('NACE Kodu ve Adı', 'Y1_nace')}
         {renderTextInput('Üretim Konusu', 'Y1_uretim')}
-        {renderTextInput('Kapasite Raporu Bilgileri', 'Y1_kapasite', 'Güncel kapasite raporundaki miktarlar', true)}
       </div>
-      <h3 className="text-xl font-bold border-b pb-2 mt-6">2 - İŞLETME HAKKINDA GENEL BİLGİLER</h3>
-      {renderTextInput('Genel Bilgiler Metni', 'Y2_genel_bilgiler', 'Tapunun ... pafta ... parsel alanında yer almakta olup...', true)}
-      <h3 className="text-xl font-bold border-b pb-2 mt-6">3 & 4 - ÇED VE ÇEVRE İZNİ DURUMU</h3>
-      {renderTextInput('ÇED Yönetmeliğine Göre Durumu', 'Y3_ced')}
-      {renderTextInput('Çevre İzin ve Lisans Yönetmeliğine Göre Durumu', 'Y4_izin')}
-      {renderTextInput('İş Akım Şeması ve Proses Özeti', 'Y5_proses', '', true)}
+      
+      <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border mt-4">
+        <h5 className="font-bold text-sm mb-3">Alan Bilgileri (m²)</h5>
+        <div className="grid grid-cols-3 gap-4">
+          {renderTextInput('Açık Alan', 'Y1_alan_acik')}
+          {renderTextInput('Kapalı Alan', 'Y1_alan_kapali')}
+          {renderTextInput('Toplam Alan', 'Y1_alan_toplam')}
+        </div>
+      </div>
+
+      <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border mt-4">
+        <h5 className="font-bold text-sm mb-3">Personel Sayıları</h5>
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+          {renderTextInput('İdari', 'Y1_p_idari')}
+          {renderTextInput('Mühendis', 'Y1_p_muh')}
+          {renderTextInput('Teknisyen', 'Y1_p_tek')}
+          {renderTextInput('Usta', 'Y1_p_usta')}
+          {renderTextInput('İşçi', 'Y1_p_isci')}
+          {renderTextInput('Toplam', 'Y1_p_toplam')}
+        </div>
+      </div>
+
+      <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border mt-4">
+        <h5 className="font-bold text-sm mb-3">NACE Kodları</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {renderTextInput('NACE Kodu', 'Y1_nace_kod')}
+          {renderTextInput('NACE Adı', 'Y1_nace_adi')}
+        </div>
+      </div>
+
+      <h5 className="font-bold text-sm mt-6">Kapasite ve Belgeler</h5>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {renderTextInput('ÇED Kararı Yazısı', 'Y1_kap_ced')}
+        {renderTextInput('Çevre İzni/Lisansı', 'Y1_kap_izin')}
+        {renderTextInput('Kapasite Raporu', 'Y1_kap_rapor')}
+        {renderTextInput('Çevre Yönetim Sistemi Belgesi', 'Y1_cys_belge')}
+        {renderTextInput('Teşvik ve Ödüller', 'Y1_tesvik_odul')}
+      </div>
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-10">2 - İŞLETME HAKKINDA GENEL BİLGİLER</h3>
+      {renderTextInput('Genel Bilgiler', 'Y2_genel_bilgiler', 'Pafta, parsel, ada no ve mülkiyet durumu...', true)}
+      {renderTextInput('Faaliyet Sahibi Bilgisi', 'Y2_faaliyet_sahibi', 'Unvan değişikliği vb. bilgiler', true)}
     </div>
   );
 
   const renderYearlyStep3 = () => (
     <div className="space-y-6 animate-fadeIn">
-      <h3 className="text-xl font-bold border-b pb-2">6 - ÇEVRESEL ETKİLER VE ALINAN ÖNLEMLER</h3>
-      {renderTextInput('6.1 Su ve Atıksu Yönetimi', 'Y61_su')}
-      {renderTextInput('6.2 Hava Yönetimi', 'Y62_hava')}
-      {renderTextInput('6.3 Atık Yönetimi', 'Y63_atik', 'Atık kodları, miktarları, atık analizleri vb.', true)}
-      {renderTextInput('6.4 Gürültü ve 6.5 Toprak Kirliliği', 'Y64_gurultu_toprak')}
-      {renderTextInput('6.6 Kimyasallar ve 6.7 BEKRA', 'Y66_kimyasallar')}
-      {renderTextInput('6.11 Çevresel Yatırımlar ve İyileştirmeler', 'Y611_yatirimlar')}
+      <h3 className="text-xl font-bold border-b pb-2">3 - ÇED YÖNETMELİĞİNE GÖRE DURUMU</h3>
+      {renderTextInput('ÇED Değerlendirmesi', 'Y3_ced_durumu', 'ÇED Olumlu/Gerekli Değildir vb. resmi belgeler, tarih ve sayıları ile...', true, 'Son Kapasite Raporunda yer alan kapasiteye göre değerlendirilme yapılmalıdır.')}
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-8">4 - ÇEVRE İZİN VE LİSANS YÖNETMELİĞİNE (ÇİLY) GÖRE DURUMU</h3>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {renderTextInput('Ek Liste', 'Y4_ek_liste')}
+        {renderTextInput('Bölüm No', 'Y4_bolum_no')}
+        {renderTextInput('Faaliyet Adı', 'Y4_faaliyet_adi')}
+      </div>
+      {renderTextInput('İzin Konuları', 'Y4_izin_konulari', 'Hava emisyonu, atıksu deşarjı vb.')}
+      {renderTextInput('Geçici Faaliyet Belgesi İşlemleri', 'Y4_gfb_islemleri', 'Alındığı mercii, tarih, sayı ve konusu...', true)}
+      {renderTextInput('Çevre İzni / Lisans İşlemleri', 'Y4_izin_lisans_islemleri', 'Alındığı mercii, tarih, sayı ve konusu...', true)}
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-8">5 - İŞ AKIM ŞEMASI VE PROSES ÖZETİ</h3>
+      {renderTextInput('İş Akımı ve Proses', 'Y5_proses_ozeti', 'Faaliyet alanı, vaziyet planı, üretim süreçleri ve emisyon çıkışları...', true)}
+    </div>
+  );
+
+  const renderYearlyStep4 = () => (
+    <div className="space-y-6 animate-fadeIn">
+      <h3 className="text-xl font-bold border-b pb-2">6 - ÇEVRESEL ETKİLER VE ÖNLEMLER</h3>
+      <p className="text-xs text-amber-600 italic mb-4">Not: Rapor kontrol listesi şeklinde olmamalı, net ifadeler ve rakamlarla değerlendirme yapılmalıdır.</p>
       
-      <h3 className="text-xl font-bold border-b pb-2 mt-6">7, 8, 9, 10 - DİĞER BÖLÜMLER</h3>
-      {renderTextInput('Kaza, Kaçaklar, Arıza', 'Y7_kaza')}
-      {renderTextInput('Şikayetler', 'Y8_sikayetler')}
-      {renderTextInput('Eğitimler', 'Y9_egitimler')}
-      {renderTextInput('10. SONUÇ VE ÖNERİLER', 'Y10_sonuc', 'Olumsuzluk, eksiklik ve giderilmesine yönelik öneriler', true)}
-      {renderTextInput('11. EKLER', 'Y11_ekler', 'Toplantı tutanakları, kapasite raporu, ÇED belgesi yüklemeleri', true)}
+      {renderSectionHeader('6.1 - SU VE ATIKSU YÖNETİMİ')}
+      {renderTextInput('6.1.1 SU TÜKETİMİ', 'Y611_su_tuketimi', '', true, 'Temin edilen kaynaklar, tüketim miktarı ve kuyu izinleri.')}
+      {renderTextInput('6.1.2 EVSEL ATIKSU', 'Y612_evsel_atiksu', '', true, 'Miktar, kaynak, arıtma/kanal/vidanjör bilgileri.')}
+      {renderTextInput('6.1.3 ENDÜSTRİYEL ATIKSU', 'Y613_end_atiksu', '', true, 'Miktar, kaynak, arıtma/kanal/vidanjör bilgileri.')}
+      {renderTextInput('6.1.4 YAĞMUR VE YIKAMA SULARI', 'Y614_yagmur_suyu', '', true, 'Toplanması ve bertaraf yöntemi.')}
+      {renderTextInput('6.1.5 DİĞER ATIKSULAR', 'Y615_diger_atiksu', '', true, 'Soğutma suyu, blöf suyu vb.')}
+      {renderTextInput('6.1.6 ATIKSU ARITMA TESİSİ BİLGİSİ', 'Y616_aritma_bilgi', '', true, 'Kapasite, deşarj yeri, sürekli ölçüm, arıtma çamuru bertarafı.')}
+      {renderTextInput('6.1.7 İÇ İZLEME', 'Y617_ic_izleme', '', true, 'Numune alma periyotları ve analiz sonuçları tablosu.')}
+      {renderTextInput('6.1.8 YERALTI SUYU İZLEME', 'Y618_yeralti_izleme', '', true, 'Gözlem kuyuları ve ölçüm sonuçları.')}
+      {renderTextInput('6.1.9 DENİZ SUYU KALİTESİ', 'Y619_deniz_izleme', '', true, 'Ölçümler ve su kalitesi değişimi.')}
+
+      {renderSectionHeader('6.2 - HAVA YÖNETİMİ')}
+      {renderTextInput('6.2.1 EMİSYON KAYNAKLARI', 'Y621_emisyon_kaynaklari', '', true, 'Yakıt türleri, tüketim, emisyon azaltıcı tedbirler.')}
+      {renderTextInput('6.2.2 KONTROLSÜZ EMİSYONLAR', 'Y622_kontrolsuz_emisyon', '', true, 'Giderilmesi için alınan önlemler.')}
+      {renderTextInput('6.2.3 TEYİT ÖLÇÜMÜ', 'Y623_teyit_olcumu', '', true, 'Tarih ve sonuç değerlendirmesi.')}
+      {renderTextInput('6.2.4 SÜREKLİ EMİSYON ÖLÇÜMÜ', 'Y624_surekli_emisyon', '', true, 'SEÖS verilerinin değerlendirilmesi.')}
+      {renderTextInput('6.2.5 İÇ İZLEME ÖLÇÜMLERİ', 'Y625_hava_ic_izleme', '', true, 'Hava kalitesi ve baca gazı ölçümleri.')}
+      {renderTextInput('6.2.6 TESİS İÇİ YOLLAR', 'Y626_yollar', '', true, 'SKHKKY Ek-1 değerlendirmesi.')}
+      {renderTextInput('6.2.7 YIĞMA MALZEME', 'Y627_yigma_malzeme', '', true, 'Açıkta depolanan yığma malzeme önlemleri.')}
+    </div>
+  );
+
+  const renderYearlyStep5 = () => (
+    <div className="space-y-6 animate-fadeIn">
+      {renderSectionHeader('6.3 - ATIK YÖNETİMİ')}
+      {renderTextInput('6.3.1 GENEL ATIKLAR', 'Y631_genel_atiklar', '', true, 'Evsel, ambalaj vb. Atık kodları, miktarları ve bertarafçı bilgileri.')}
+      {renderTextInput('6.3.2 PROSES ATIKLARI', 'Y632_proses_atiklari', '', true, 'Tehlikeli/tehlikesiz, atık yağ vb. Kodlar ve bertaraf yöntemleri.')}
+      {renderTextInput('6.3.3 ATIK ANALİZLERİ', 'Y633_atik_analizleri', '', true)}
+      {renderTextInput('6.3.4 ATIK YÖNETİM PLANI', 'Y634_atik_plani', '', true, 'Onay tarihi ve karşılaştırmalı değerlendirme.')}
+      {renderTextInput('6.3.5 ATIK BEYANLARI', 'Y635_atik_beyanlari', '', true, 'MOTAT, Ambalaj vb. beyan bilgileri.')}
+      {renderTextInput('6.3.6 MALİ SORUMLULUK SİGORTASI', 'Y636_sigorta', 'Başlangıç ve bitiş tarihleri.')}
+      {renderTextInput('6.3.7 ATIK SÖZLEŞMELERİ', 'Y637_sozlesmeler', 'Bertaraf sözleşmeleri tarih ve tarafları.')}
+
+      {renderSectionHeader('6.4 - 6.12 DİĞER YÖNETİMLER')}
+      {renderTextInput('6.4 GÜRÜLTÜ YÖNETİMİ', 'Y64_gurultu', '', true)}
+      {renderTextInput('6.5 TOPRAK KİRLİLİĞİ', 'Y65_toprak', '', true)}
+      {renderTextInput('6.6 KİMYASALLAR YÖNETİMİ', 'Y66_kimyasallar', '', true)}
+      {renderTextInput('6.7 BÜYÜK ENDÜSTRİYEL KAZALAR (BEKRA)', 'Y67_bekra', '', true)}
+      {renderTextInput('6.8 KIYI TESİSLERİ', 'Y68_kiyi', '', true)}
+      {renderTextInput('6.9 MADENLER', 'Y69_maden', '', true)}
+      {renderTextInput('6.10 ÇEVRE DENETİMİ', 'Y610_denetim', 'Bakanlık/İl müdürlüğü denetimleri...', true)}
+      {renderTextInput('6.11 YATIRIMLAR VE İYİLEŞTİRMELER', 'Y611_yatirimlar', '', true)}
+      {renderTextInput('6.12 DİĞER', 'Y612_diger', '', true)}
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-8">7 - 8 - 9 BÖLÜMLER</h3>
+      {renderTextInput('7 - KAZA VE KAÇAKLAR / ARIZA BAKIM', 'Y7_kaza_ariza', '', true)}
+      {renderTextInput('8 - ŞİKAYETLER', 'Y8_sikayetler', '', true)}
+      {renderTextInput('9 - EĞİTİMLER VE BİLİNÇLENDİRME', 'Y9_egitimler', '', true)}
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-8 text-green-600">10 - SONUÇ VE ÖNERİLER</h3>
+      {renderTextInput('Sonuç ve Öneriler', 'Y10_sonuc_oneriler', 'Olumsuzluk, eksiklik ve giderilmesine yönelik öneriler.', true)}
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-8">11 - EKLER (BELGE LİSTESİ)</h3>
+      <div className="space-y-4">
+        <div className="flex flex-wrap gap-4">
+          {attachmentUrls.map((url, idx) => (
+            <div key={idx} className="relative group w-24 h-24 border rounded-lg overflow-hidden bg-gray-50">
+              <img src={url} alt="Ek" className="w-full h-full object-cover" />
+              <button 
+                onClick={() => setAttachmentUrls(prev => prev.filter((_, i) => i !== idx))}
+                className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+          <label className="w-24 h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:border-blue-500 hover:text-blue-500 cursor-pointer transition">
+            {uploading ? <RefreshCw size={20} className="animate-spin" /> : <Plus size={20} />}
+            <span className="text-[10px] font-bold mt-1">{uploading ? 'Yükleniyor' : 'Dosya Ekle'}</span>
+            <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, true)} disabled={uploading} />
+          </label>
+        </div>
+      </div>
     </div>
   );
 
@@ -534,12 +649,14 @@ export default function EnvReportForm() {
     } else {
       if (currentStep === 2) return renderYearlyStep2();
       if (currentStep === 3) return renderYearlyStep3();
+      if (currentStep === 4) return renderYearlyStep4();
+      if (currentStep === 5) return renderYearlyStep5();
     }
   };
 
   const getMaxSteps = () => {
     if (isManualUpload) return 1;
-    return reportType === 'monthly' ? 4 : 3;
+    return reportType === 'monthly' ? 4 : 5;
   };
 
   const handleNext = () => {

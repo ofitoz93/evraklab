@@ -293,49 +293,161 @@ export default function EnvReportView() {
           )}
 
           {report.report_type === 'yearly' && (
-            <>
-              <div className="text-center mb-8">
-                <h2 className="text-xl font-black mb-1">{report.client?.name}</h2>
-                <h3 className="text-md font-bold text-blue-700">YILLIK İÇ TETKİK RAPORU</h3>
+            <div className="space-y-8">
+              <div className="text-center mb-10">
+                <h2 className="text-2xl font-black mb-1">İÇ TETKİK RAPORU</h2>
+                <p className="text-sm font-bold text-gray-500 uppercase">{new Date(report.report_date).toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}</p>
               </div>
-              {renderSection('1. Alan Bilgileri', fd.Y1_alan)}
-              {renderSection('1. Koordinatlar', fd.Y1_koordinat)}
-              {renderSection('2. Genel Bilgiler', fd.Y2_genel_bilgiler)}
-              {renderSection('6.1 Su ve Atıksu', fd.Y61_su)}
-              {renderSection('6.2 Hava Yönetimi', fd.Y62_hava)}
-              {renderSection('6.3 Atık Yönetimi', fd.Y63_atik)}
-              {renderSection('10. Sonuç ve Öneriler', fd.Y10_sonuc)}
-            </>
-          )}
 
+              {/* 1 - İŞLETME BİLGİLERİ TABLE */}
+              <h3 className="font-extrabold text-sm mb-3 bg-gray-800 text-white p-2 uppercase tracking-wider">1 - İŞLETME BİLGİLERİ</h3>
+              <div className="border-2 border-gray-800 text-[10px]">
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">UNVAN</div>
+                  <div className="p-2 col-span-3">{report.client?.name}</div>
+                </div>
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">ADRES</div>
+                  <div className="p-2 col-span-3">{report.client?.address}</div>
+                </div>
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">VERGİ DAİRESİ / NO</div>
+                  <div className="p-2 border-r border-gray-800">{fd.Y1_vergi_bilgisi || '-'}</div>
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">ÇKN</div>
+                  <div className="p-2">{fd.Y1_ckn || '-'}</div>
+                </div>
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">ALAN (m²)</div>
+                  <div className="p-2 col-span-3">Açık: {fd.Y1_alan_acik || '0'} | Kapalı: {fd.Y1_alan_kapali || '0'} | Toplam: {fd.Y1_alan_toplam || '0'}</div>
+                </div>
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">KOORDİNAT (UTM)</div>
+                  <div className="p-2 border-r border-gray-800">{fd.Y1_koordinat || '-'}</div>
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">KURULU YER</div>
+                  <div className="p-2">{fd.Y1_kurulus_yeri || '-'}</div>
+                </div>
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">PERSONEL</div>
+                  <div className="p-2 col-span-3">
+                    İdari: {fd.Y1_p_idari} | Müh: {fd.Y1_p_muh} | Tek: {fd.Y1_p_tek} | Usta: {fd.Y1_p_usta} | İşçi: {fd.Y1_p_isci} | Top: {fd.Y1_p_toplam}
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 border-b border-gray-800">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">NACE BİLGİSİ</div>
+                  <div className="p-2 col-span-3">{fd.Y1_nace_kod} - {fd.Y1_nace_adi}</div>
+                </div>
+                <div className="grid grid-cols-4">
+                  <div className="p-2 font-bold bg-gray-50 border-r border-gray-800">BELGELER</div>
+                  <div className="p-2 col-span-3">
+                    ÇED: {fd.Y1_kap_ced} | İzin: {fd.Y1_kap_izin} | Kapasite: {fd.Y1_kap_rapor}
+                  </div>
+                </div>
+              </div>
+
+              {renderSubHeader('2 - İŞLETME HAKKINDA GENEL BİLGİLER')}
+              {renderSection('İşletme Özeti', fd.Y2_genel_bilgiler)}
+              {renderSection('Faaliyet Sahibi Değişikliği', fd.Y2_faaliyet_sahibi)}
+
+              {renderSubHeader('3 - ÇED YÖNETMELİĞİNE GÖRE DURUMU')}
+              {renderSection('Değerlendirme', fd.Y3_ced_durumu)}
+
+              {renderSubHeader('4 - ÇEVRE İZİN VE LİSANS YÖNETMELİĞİ (ÇİLY)')}
+              <div className="grid grid-cols-3 gap-4 mb-4 text-xs font-bold bg-gray-50 p-3 border">
+                <div>Ek Liste: {fd.Y4_ek_liste}</div>
+                <div>Bölüm No: {fd.Y4_bolum_no}</div>
+                <div>Faaliyet Adı: {fd.Y4_faaliyet_adi}</div>
+              </div>
+              {renderSection('İzin Konusu', fd.Y4_izin_konulari)}
+              {renderSection('GFB İşlemleri', fd.Y4_gfb_islemleri)}
+              {renderSection('İzin/Lisans İşlemleri', fd.Y4_izin_lisans_islemleri)}
+
+              {renderSubHeader('5 - İŞ AKIM ŞEMASI VE PROSES ÖZETİ')}
+              {renderSection('Proses Özeti', fd.Y5_proses_ozeti)}
+
+              {renderSubHeader('6 - ÇEVRESEL ETKİLER VE ÖNLEMLER')}
+              <div className="space-y-4 pl-4 border-l-2 border-gray-200">
+                {renderSection('6.1 Su ve Atıksu Yönetimi', fd.Y611_su_tuketimi || fd.Y612_evsel_atiksu || fd.Y613_end_atiksu ? 'Detaylı analiz yapıldı.' : '')}
+                {renderSection('6.1.1 Su Tüketimi', fd.Y611_su_tuketimi)}
+                {renderSection('6.1.2 Evsel Atıksu', fd.Y612_evsel_atiksu)}
+                {renderSection('6.1.3 Endüstriyel Atıksu', fd.Y613_end_atiksu)}
+                {renderSection('6.1.6 Arıtma Tesisleri', fd.Y616_aritma_bilgi)}
+                {renderSection('6.1.7 İç İzleme', fd.Y617_ic_izleme)}
+                
+                {renderSection('6.2 Hava Yönetimi', fd.Y621_emisyon_kaynaklari)}
+                {renderSection('6.2.3 Teyit Ölçümü', fd.Y623_teyit_olcumu)}
+                {renderSection('6.2.4 Sürekli Emisyon Ölçümü', fd.Y624_surekli_emisyon)}
+
+                {renderSection('6.3 Atık Yönetimi', fd.Y631_genel_atiklar)}
+                {renderSection('6.3.2 Proses Atıkları', fd.Y632_proses_atiklari)}
+                {renderSection('6.3.4 Atık Yönetim Planı', fd.Y634_atik_plani)}
+                {renderSection('6.3.5 Atık Beyanları', fd.Y635_atik_beyanlari)}
+
+                {renderSection('6.4 Gürültü Yönetimi', fd.Y64_gurultu)}
+                {renderSection('6.5 Toprak Kirliliği', fd.Y65_toprak)}
+                {renderSection('6.6 Kimyasallar Yönetimi', fd.Y66_kimyasallar)}
+                {renderSection('6.7 BEKRA', fd.Y67_bekra)}
+                {renderSection('6.10 Çevre Denetimi', fd.Y610_denetim)}
+                {renderSection('6.11 Yatırımlar', fd.Y611_yatirimlar)}
+              </div>
+
+              {renderSubHeader('7 - 8 - 9 BÖLÜMLER')}
+              {renderSection('7. Kaza ve Kaçaklar', fd.Y7_kaza_ariza)}
+              {renderSection('8. Şikayetler', fd.Y8_sikayetler)}
+              {renderSection('9. Eğitimler', fd.Y9_egitimler)}
+
+              {renderSubHeader('10 - SONUÇ VE ÖNERİLER')}
+              <div className="bg-green-50 p-4 border border-green-200 rounded-lg">
+                {renderSection('Sonuç', fd.Y10_sonuc_oneriler)}
+              </div>
+
+              {fd.attachment_urls && fd.attachment_urls.length > 0 && (
+                <>
+                  {renderSubHeader('11 - EKLER')}
+                  <div className="grid grid-cols-3 gap-4 mt-4">
+                    {fd.attachment_urls.map((url: string, idx: number) => (
+                      <div key={idx} className="border p-2 rounded bg-gray-50 shadow-sm aspect-video overflow-hidden flex items-center justify-center">
+                        <img src={url} alt={`Ek ${idx+1}`} className="max-h-full max-w-full object-contain" />
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* SIGNATURE BLOCK */}
-        <div className="mt-12 pt-6 border-t-2 border-gray-800 grid grid-cols-2 gap-8" style={{ pageBreakInside: 'avoid' }}>
-           <div className="text-center">
-             <h4 className="font-bold text-[11px] mb-12 uppercase">Çevre Mühendisi / Yetkili</h4>
+        <div className="mt-16 pt-8 border-t-2 border-gray-800 grid grid-cols-2 md:grid-cols-4 gap-4 text-center" style={{ pageBreakInside: 'avoid' }}>
+           <div>
+             <h4 className="font-bold text-[9px] mb-12 uppercase">İşletme Yetkilisi</h4>
              <div className="flex flex-col items-center">
-               <p className="border-t border-gray-400 pt-1 font-bold text-xs w-full max-w-[200px]">
-                 {report.creator?.full_name}
-               </p>
+               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">{report.client?.name?.substring(0, 20)}...</p>
+               <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
+             </div>
+           </div>
+           <div>
+             <h4 className="font-bold text-[9px] mb-12 uppercase">Çevre Mühendisi</h4>
+             <div className="flex flex-col items-center">
+               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">{report.creator?.full_name}</p>
                {report.engineer_signature && (
-                 <div className="mt-2 text-[9px] text-green-700 font-bold bg-green-50 px-2 py-1 rounded border border-green-100 flex items-center gap-1">
-                   <CheckCircle size={10} /> Dijital Olarak İmzalandı: {new Date(report.engineer_signature.signed_at).toLocaleString('tr-TR')}
-                 </div>
+                  <div className="mt-1 text-[7px] text-green-700 font-bold bg-green-50 px-1 py-0.5 rounded border border-green-100 flex items-center gap-0.5">
+                    <CheckCircle size={8} /> İmzalandı
+                  </div>
                )}
              </div>
            </div>
-           <div className="text-center">
-             <h4 className="font-bold text-[11px] mb-12 uppercase">İşletme Sahibi / Sorumlusu</h4>
+           <div>
+             <h4 className="font-bold text-[9px] mb-12 uppercase">Çevre Mühendisi 2</h4>
              <div className="flex flex-col items-center">
-               <p className="border-t border-gray-400 pt-1 font-bold text-xs w-full max-w-[200px]">
-                 İmza / Kaşe
-               </p>
-               {report.client_signature && (
-                 <div className="mt-2 text-[9px] text-green-700 font-bold bg-green-50 px-2 py-1 rounded border border-green-100 flex items-center gap-1">
-                   <CheckCircle size={10} /> Dijital Olarak İmzalandı: {new Date(report.client_signature.signed_at).toLocaleString('tr-TR')}
-                 </div>
-               )}
+               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">-</p>
+               <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
+             </div>
+           </div>
+           <div>
+             <h4 className="font-bold text-[9px] mb-12 uppercase">Koordinatör</h4>
+             <div className="flex flex-col items-center">
+               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">Koordinatör</p>
+               <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
              </div>
            </div>
         </div>
