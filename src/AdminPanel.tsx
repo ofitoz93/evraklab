@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { supabase } from './supabaseClient';
+import { supabase, supabaseUrl, supabaseKey } from './supabaseClient';
+import { createClient } from '@supabase/supabase-js';
 import AdminRegulations from './AdminRegulations';
 import {
   Shield,
@@ -15,9 +16,16 @@ import {
   XCircle,
   Send,
   Lock,
-  Bell, // Bildirim İkonu
+  Bell,
   Loader,
   Scale,
+  Mail,
+  UserPlus,
+  Calendar,
+  Database,
+  Key,
+  Phone,
+  ShieldAlert,
 } from 'lucide-react';
 
 export default function AdminPanel() {
@@ -68,6 +76,24 @@ export default function AdminPanel() {
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
   const [teamList, setTeamList] = useState<any[]>([]);
   const [newUserEmail, setNewUserEmail] = useState('');
+
+  // --- YENİ: Hata ve Yükleme State'leri ---
+  const [companySaveError, setCompanySaveError] = useState<string | null>(null);
+  const [userSaveError, setUserSaveError] = useState<string | null>(null);
+
+  // --- YENİ: Kullanıcı Oluşturma State'leri ---
+  const [showCreateUserModal, setShowCreateUserModal] = useState(false);
+  const [createEmail, setCreateEmail] = useState('');
+  const [createPassword, setCreatePassword] = useState('');
+  const [createFullName, setCreateFullName] = useState('');
+  const [createPhone, setCreatePhone] = useState('');
+  const [createRole, setCreateRole] = useState('normal');
+  const [createOrgId, setCreateOrgId] = useState('');
+  const [createEndDate, setCreateEndDate] = useState('');
+  const [createQuotaMB, setCreateQuotaMB] = useState(50);
+  const [createCanViewRegulations, setCreateCanViewRegulations] = useState(false);
+  const [createCanManageRegulations, setCreateCanManageRegulations] = useState(false);
+  const [createUserLoading, setCreateUserLoading] = useState(false);
 
   const roleLabels: any = {
     normal: 'Normal',
@@ -349,6 +375,7 @@ export default function AdminPanel() {
         return;
     }
 
+    setUserSaveError(null);
     try {
       const finalDate = newEndDate ? new Date(newEndDate).toISOString() : null;
       let targetOrgId = editingUser.organization_id;
@@ -405,7 +432,122 @@ export default function AdminPanel() {
       setEditingUser(null);
       fetchUsers();
     } catch (error: any) {
-      alert('Hata: ' + error.message);
+      console.error("Kullanıcı kaydetme hatası:", error);
+      if (error.message?.includes('row-level security') || error.message?.includes('RLS') || error.code === '42501') {
+        setUserSaveError(
+          '⚠️ Veritabanı RLS Politikası Engeli!\n' +
+          'Kullanıcı verilerini güncelleme yetkiniz veritabanı RLS politikaları tarafından engellendi.'
+        );
+      } else {
+        setUserSaveError('Hata: ' + error.message);
+      }
+    }
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!createEmail.trim() || !createPassword.trim() || !createFullName.trim() || !createPhone.trim()) {
+      return alert('Lütfen zorunlu alanları (E-posta, Şifre, Ad Soyad, Telefon) doldurun.');
+    }
+    if (createPassword.length < 6) {
+      return alert('Şifre en az 6 karakter olmalıdır.');
+    }
+
+    setCreateUserLoading(true);
+    setUserSaveError(null);
+    try {
+      const tempClient = createClient(supabaseUrl, supabaseKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+
+      const { data: authData, error: authErr } = await tempClient.auth.signUp({
+        email: createEmail,
+        password: createPassword,
+        options: {
+          data: {
+            full_name: createFullName,
+            phone: createPhone,
+          },
+        },
+      });
+
+      if (authErr) throw authErr;
+      if (!authData.user) {
+        throw new Error('Kullanıcı kaydı başlatıldı fakat kullanıcı objesi alınamadı.');
+      }
+
+      // Supabase trigger'ının profili insert etmesi için asenkron gecikmeyi bekle
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      const finalDate = createEndDate ? new Date(createEndDate).toISOString() : null;
+      
+      const updates: any = {
+        full_name: createFullName,
+        phone: createPhone,
+        role: createRole,
+        can_view_regulations: createCanViewRegulations,
+        can_manage_regulations: createCanManageRegulations,
+        storage_limit: createQuotaMB * 1048576,
+      };
+
+      if (isCorporateRole(createRole)) {
+        if (!createOrgId) {
+          throw new Error('Kurumsal bir rol için lütfen bir şirket seçin.');
+        }
+        updates.organization_id = createOrgId;
+        updates.subscription_end_date = null;
+      } else if (createRole === 'premium_individual') {
+        updates.organization_id = null;
+        updates.subscription_end_date = finalDate;
+      } else {
+        updates.organization_id = null;
+        updates.subscription_end_date = null;
+      }
+
+      const { error: profileUpdateErr } = await supabase
+        .from('profiles')
+        .upsert({
+          id: authData.user.id,
+          email: createEmail,
+          ...updates,
+          updated_at: new Date(),
+        });
+
+      if (profileUpdateErr) throw profileUpdateErr;
+
+      alert(`✅ Kullanıcı başarıyla oluşturuldu!\nE-posta: ${createEmail}`);
+      setShowCreateUserModal(false);
+      
+      // Formu temizle
+      setCreateEmail('');
+      setCreatePassword('');
+      setCreateFullName('');
+      setCreatePhone('');
+      setCreateRole('normal');
+      setCreateOrgId('');
+      setCreateEndDate('');
+      setCreateQuotaMB(50);
+      setCreateCanViewRegulations(false);
+      setCreateCanManageRegulations(false);
+      
+      fetchUsers();
+    } catch (err: any) {
+      console.error("Kullanıcı oluşturma hatası:", err);
+      if (err.message?.includes('row-level security') || err.message?.includes('RLS') || err.code === '42501') {
+        setUserSaveError(
+          '⚠️ Veritabanı RLS Politikası Engeli!\n' +
+          'Kullanıcı oluşturma yetkiniz veritabanı RLS politikaları tarafından engellendi. ' +
+          'Lütfen Supabase Dashboard > SQL Editor sekmesinde size verilen SQL kodunu çalıştırın.'
+        );
+      } else {
+        setUserSaveError('Hata: ' + err.message);
+      }
+    } finally {
+      setCreateUserLoading(false);
     }
   };
 
@@ -429,6 +571,8 @@ export default function AdminPanel() {
       !window.confirm('Şirketteki TÜM personelin aboneliği etkilenecek. Devam?')
     )
       return;
+    
+    setCompanySaveError(null);
     try {
       const finalDate = compDate ? new Date(compDate).toISOString() : null;
       if (isNew) {
@@ -462,7 +606,16 @@ export default function AdminPanel() {
       setEditingCompany(null);
       fetchCompanies();
     } catch (e: any) {
-      alert(e.message);
+      console.error("Şirket kaydetme hatası:", e);
+      if (e.message?.includes('row-level security') || e.message?.includes('RLS') || e.code === '42501') {
+        setCompanySaveError(
+          '⚠️ Veritabanı RLS Politikası Engeli!\n' +
+          'Şirket oluşturma/güncelleme yetkiniz veritabanı RLS politikaları tarafından engellendi. ' +
+          'Lütfen Supabase Dashboard > SQL Editor sekmesinde size verilen SQL kodunu çalıştırın.'
+        );
+      } else {
+        setCompanySaveError('Hata: ' + e.message);
+      }
     }
   };
 
@@ -595,15 +748,46 @@ export default function AdminPanel() {
 
         {/* USERS TAB */}
         {activeTab === 'users' && (
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
-              <tr>
-                <th className="p-3">Kullanıcı</th>
-                <th className="p-3">Rol</th>
-                <th className="p-3">Bitiş</th>
-                <th className="p-3 text-right">İşlem</th>
-              </tr>
-            </thead>
+          <div className="animate-fadeIn">
+            <div className="flex justify-between items-center mb-4 bg-gray-50 p-4 rounded-xl border border-gray-100">
+              <span className="text-sm text-gray-500 font-medium flex items-center gap-2">
+                <Users size={16} className="text-blue-500" />
+                Sistemdeki tüm kullanıcıları yönetin ve yetkilendirin.
+                <span className="bg-blue-100 text-blue-700 px-2.5 py-0.5 rounded-full text-xs font-bold">
+                  {filteredUsers.length} Kullanıcı
+                </span>
+              </span>
+              <button
+                onClick={() => {
+                  setShowCreateUserModal(true);
+                  // Formu temizle
+                  setCreateEmail('');
+                  setCreatePassword('');
+                  setCreateFullName('');
+                  setCreatePhone('');
+                  setCreateRole('normal');
+                  setCreateOrgId('');
+                  setCreateEndDate('');
+                  setCreateQuotaMB(50);
+                  setCreateCanViewRegulations(false);
+                  setCreateCanManageRegulations(false);
+                  setUserSaveError(null);
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-lg shadow-blue-100"
+              >
+                <Plus size={14} /> Yeni Kullanıcı Ekle
+              </button>
+            </div>
+            
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+                <tr>
+                  <th className="p-3">Kullanıcı</th>
+                  <th className="p-3">Rol</th>
+                  <th className="p-3">Bitiş</th>
+                  <th className="p-3 text-right">İşlem</th>
+                </tr>
+              </thead>
             <tbody className="text-sm divide-y">
               {filteredUsers.map((user) => {
                 let displayDate = user.subscription_end_date;
@@ -661,6 +845,7 @@ export default function AdminPanel() {
               })}
             </tbody>
           </table>
+          </div>
         )}
 
         {/* COMPANIES TAB */}
@@ -673,7 +858,13 @@ export default function AdminPanel() {
             )}
             
             <div className="flex justify-between items-center mb-4 bg-gray-50 p-4 rounded-xl border border-gray-100">
-              <span className="text-sm text-gray-500 font-medium">Sistemdeki tüm danışmanlık firmalarını ve kurumsal şirketleri yönetin.</span>
+              <span className="text-sm text-gray-500 font-medium flex items-center gap-2">
+                <Building size={16} className="text-purple-500" />
+                Sistemdeki tüm danışmanlık firmalarını ve kurumsal şirketleri yönetin.
+                <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full text-xs font-bold">
+                  {filteredCompanies.length} Şirket
+                </span>
+              </span>
               <button
                 onClick={() => {
                   setEditingCompany({ id: 'new' });
@@ -682,6 +873,7 @@ export default function AdminPanel() {
                   setCompDate('');
                   setCompIsEnvConsultant(false);
                   setCompanyQuotaMB(500); // Varsayılan 500 MB kota
+                  setCompanySaveError(null);
                 }}
                 className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-lg shadow-purple-100"
               >
@@ -1073,32 +1265,285 @@ export default function AdminPanel() {
         </div>
       )}
 
-      {editingUser && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 overflow-y-auto max-h-[90vh]">
-            <div className="flex justify-between mb-4 border-b pb-2">
-              <h3 className="text-lg font-bold">Kullanıcı Düzenle</h3>
-              <button onClick={() => setEditingUser(null)}>
-                <XCircle className="text-gray-400 hover:text-red-500" />
+      {showCreateUserModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 border border-slate-100 overflow-y-auto max-h-[90vh] animate-fadeIn transition-all">
+            <div className="flex justify-between items-center mb-6 border-b pb-4">
+              <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
+                  <UserPlus size={20} />
+                </div>
+                Yeni Kullanıcı Ekle
+              </h3>
+              <button 
+                onClick={() => setShowCreateUserModal(false)}
+                className="p-1.5 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={22} />
               </button>
             </div>
-            <div className="space-y-4">
-              <div className="text-sm bg-gray-50 p-3 rounded border">
+
+            {userSaveError && (
+              <div className="mb-5 p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm font-semibold whitespace-pre-wrap flex items-start gap-2 animate-fadeIn">
+                <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+                <div>{userSaveError}</div>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateUser} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <b>İsim:</b> {editingUser.full_name}
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Ad Soyad *</label>
+                  <div className="relative">
+                    <Users size={16} className="absolute left-3 top-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ad Soyad"
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium"
+                      value={createFullName}
+                      onChange={(e) => setCreateFullName(e.target.value)}
+                    />
+                  </div>
                 </div>
+
                 <div>
-                  <b>Email:</b> {editingUser.email}
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Telefon *</label>
+                  <div className="relative">
+                    <Phone size={16} className="absolute left-3 top-3.5 text-slate-400" />
+                    <input
+                      type="tel"
+                      required
+                      placeholder="05xx xxx xx xx"
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium"
+                      value={createPhone}
+                      onChange={(e) => setCreatePhone(e.target.value)}
+                    />
+                  </div>
                 </div>
               </div>
+
               <div>
-                <label className="block text-xs font-bold mb-1">
-                  Rol Değiştir
-                </label>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">E-posta Adresi *</label>
+                <div className="relative">
+                  <Mail size={16} className="absolute left-3 top-3.5 text-slate-400" />
+                  <input
+                    type="email"
+                    required
+                    placeholder="ornek@domain.com"
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium"
+                    value={createEmail}
+                    onChange={(e) => setCreateEmail(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Şifre * (En az 6 karakter)</label>
+                <div className="relative">
+                  <Key size={16} className="absolute left-3 top-3.5 text-slate-400" />
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    placeholder="••••••"
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium"
+                    value={createPassword}
+                    onChange={(e) => setCreatePassword(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Kullanıcı Rolü</label>
                 <select
-                  className="w-full border p-2 rounded bg-white"
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-semibold text-slate-700"
+                  value={createRole}
+                  onChange={(e) => {
+                    setCreateRole(e.target.value);
+                    if (!isCorporateRole(e.target.value)) {
+                      setCreateOrgId('');
+                    }
+                  }}
+                >
+                  {Object.entries(roleLabels).map(([k, v]: any) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </div>
+
+              {isCorporateRole(createRole) && (
+                <div className="bg-purple-50/50 p-4 rounded-2xl border border-purple-100 animate-fadeIn">
+                  <label className="block text-xs font-bold text-purple-900 mb-1.5 uppercase tracking-wider">Atanacağı Şirket *</label>
+                  <select
+                    className="w-full p-2.5 rounded-xl border border-purple-200 bg-white outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-semibold text-purple-700"
+                    value={createOrgId}
+                    required={isCorporateRole(createRole)}
+                    onChange={(e) => setCreateOrgId(e.target.value)}
+                  >
+                    <option value="">-- Şirket Seçin --</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {(createRole.includes('premium') || isCorporateRole(createRole)) && (
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider flex items-center gap-1">
+                    <Calendar size={14} className="text-slate-500" />
+                    Abonelik Bitiş Tarihi
+                    {isCorporateRole(createRole) && (
+                      <span className="text-[9px] text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded font-bold uppercase ml-auto">
+                        Şirket Ayarı
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="date"
+                    disabled={isCorporateRole(createRole)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium bg-white disabled:bg-slate-100 disabled:text-slate-400"
+                    value={createEndDate}
+                    onChange={(e) => setCreateEndDate(e.target.value)}
+                  />
+                  {isCorporateRole(createRole) && (
+                    <p className="text-[10px] text-purple-600 mt-1 italic font-medium">
+                      * Kurumsal üyelerin aboneliği, bağlı oldukları şirketin abonelik bitiş tarihi ile eşleşir.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
+                <label className="block text-xs font-bold text-blue-900 mb-1.5 uppercase tracking-wider flex items-center gap-1.5">
+                  <Database size={14} className="text-blue-600" />
+                  Özel Depolama Kotası (MB)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    className="w-full p-2.5 rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-semibold text-slate-700 bg-white"
+                    value={createQuotaMB}
+                    onChange={(e) => setCreateQuotaMB(parseInt(e.target.value) || 0)}
+                  />
+                  <span className="text-xs font-bold text-blue-700 bg-blue-100 px-3 py-2 rounded-xl">MB</span>
+                </div>
+              </div>
+
+              <div className="bg-teal-50/40 p-4 rounded-2xl border border-teal-100 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="create-view-regs"
+                  className="mt-1 w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500 cursor-pointer"
+                  checked={createCanViewRegulations}
+                  onChange={(e) => setCreateCanViewRegulations(e.target.checked)}
+                />
+                <label htmlFor="create-view-regs" className="flex flex-col cursor-pointer select-none">
+                  <span className="text-sm font-bold text-teal-900 flex items-center gap-2">
+                    Mevzuat Sayfası Erişimi
+                  </span>
+                  <span className="text-[10px] text-teal-600/80 font-medium">
+                    Bu kullanıcının sistem genelindeki Mevzuat modülünü görüntüleme yetkisi olsun.
+                  </span>
+                </label>
+              </div>
+
+              <div className="bg-orange-50/40 p-4 rounded-2xl border border-orange-100 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="create-manage-regs"
+                  className="mt-1 w-4 h-4 text-orange-600 border-slate-300 rounded focus:ring-orange-500 cursor-pointer"
+                  checked={createCanManageRegulations}
+                  onChange={(e) => setCreateCanManageRegulations(e.target.checked)}
+                />
+                <label htmlFor="create-manage-regs" className="flex flex-col cursor-pointer select-none">
+                  <span className="text-sm font-bold text-orange-900">
+                    Mevzuat Yönetme Yetkisi
+                  </span>
+                  <span className="text-[10px] text-orange-600/80 font-medium">
+                    Kendi şirketi adına yeni mevzuat maddeleri/dosyaları ekleyip düzenleyebilsin.
+                  </span>
+                </label>
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="submit"
+                  disabled={createUserLoading}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-blue-100 disabled:opacity-50"
+                >
+                  {createUserLoading ? <Loader size={18} className="animate-spin" /> : <UserPlus size={18} />}
+                  {createUserLoading ? 'Kullanıcı Kaydediliyor...' : 'Kaydet ve Oluştur'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateUserModal(false)}
+                  className="flex-1 border border-slate-200 py-3 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition"
+                >
+                  İptal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingUser && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 border border-slate-100 overflow-y-auto max-h-[90vh] animate-fadeIn transition-all">
+            <div className="flex justify-between items-center mb-6 border-b pb-4">
+              <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
+                  <Shield size={20} />
+                </div>
+                Kullanıcı Yetki & Profil Düzenleme
+              </h3>
+              <button 
+                onClick={() => setEditingUser(null)}
+                className="p-1.5 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={22} />
+              </button>
+            </div>
+
+            {userSaveError && (
+              <div className="mb-5 p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm font-semibold whitespace-pre-wrap flex items-start gap-2 animate-fadeIn">
+                <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+                <div>{userSaveError}</div>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div className="text-sm bg-slate-50 p-4 rounded-2xl border border-slate-150 space-y-1">
+                <div className="flex justify-between text-slate-500 font-medium">
+                  <span>Tam Adı:</span>
+                  <span className="font-bold text-slate-800">{editingUser.full_name || 'Girilmemiş'}</span>
+                </div>
+                <div className="flex justify-between text-slate-500 font-medium">
+                  <span>E-posta:</span>
+                  <span className="font-bold text-slate-800">{editingUser.email}</span>
+                </div>
+                {editingUser.phone && (
+                  <div className="flex justify-between text-slate-500 font-medium">
+                    <span>Telefon:</span>
+                    <span className="font-bold text-slate-800">{editingUser.phone}</span>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Kullanıcı Rolü</label>
+                <select
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-semibold text-slate-700"
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
+                  onChange={(e) => {
+                    setNewRole(e.target.value);
+                    if (!isCorporateRole(e.target.value)) {
+                      setSelectedOrgId('');
+                    }
+                  }}
                 >
                   {Object.entries(roleLabels).map(([k, v]: any) => (
                     <option key={k} value={k}>
@@ -1107,15 +1552,14 @@ export default function AdminPanel() {
                   ))}
                 </select>
               </div>
+
               {isCorporateRole(newRole) && (
-                <div className="bg-purple-50 p-3 rounded border border-purple-200 animate-fadeIn">
-                  <label className="block text-xs font-bold text-purple-900 mb-1">
-                    {newRole === 'premium_corporate'
-                      ? 'Şirket Yönetimi'
-                      : 'Atanacağı Şirket'}
+                <div className="bg-purple-50/50 p-4 rounded-2xl border border-purple-100 animate-fadeIn space-y-3">
+                  <label className="block text-xs font-bold text-purple-900 uppercase tracking-wider">
+                    {newRole === 'premium_corporate' ? 'Yönettiği Şirket' : 'Atanacağı Şirket'}
                   </label>
                   <select
-                    className="w-full border p-2 rounded bg-white mb-2"
+                    className="w-full p-2.5 rounded-xl border border-purple-200 bg-white outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-semibold text-purple-700"
                     value={selectedOrgId}
                     onChange={(e) => setSelectedOrgId(e.target.value)}
                   >
@@ -1126,125 +1570,129 @@ export default function AdminPanel() {
                       </option>
                     ))}
                     <option value="new" className="font-bold text-blue-600">
-                      + Yeni Şirket Oluştur
+                      + Yeni Şirket Oluştur ve Ata
                     </option>
                   </select>
+
                   {selectedOrgId === 'new' && (
-                    <div className="space-y-2 pt-2 border-t border-purple-200">
-                      <input
-                        type="text"
-                        placeholder="Yeni Şirket Adı"
-                        className="w-full border p-2 rounded"
-                        value={newOrgNameForUser}
-                        onChange={(e) => setNewOrgNameForUser(e.target.value)}
-                      />
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs">Limit:</span>
+                    <div className="space-y-3 pt-3 border-t border-purple-100 animate-slideDown">
+                      <div>
+                        <label className="block text-[10px] font-bold text-purple-700 mb-1 uppercase">Yeni Şirket Ünvanı</label>
+                        <input
+                          type="text"
+                          placeholder="Yeni Şirket Adı"
+                          className="w-full p-2.5 rounded-xl border border-purple-200 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-medium"
+                          value={newOrgNameForUser}
+                          onChange={(e) => setNewOrgNameForUser(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-bold text-purple-700 uppercase">Personel Limiti:</span>
                         <input
                           type="number"
-                          className="w-20 border p-2 rounded"
+                          className="w-24 p-2.5 rounded-xl border border-purple-200 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-semibold text-slate-700 text-center"
                           value={newOrgLimitForUser}
-                          onChange={(e) =>
-                            setNewOrgLimitForUser(parseInt(e.target.value))
-                          }
+                          onChange={(e) => setNewOrgLimitForUser(parseInt(e.target.value) || 2)}
                         />
                       </div>
                     </div>
                   )}
                 </div>
               )}
-              {(newRole.includes('premium') ||
-                newRole === 'corporate_chief' ||
-                newRole === 'corporate_staff') && (
-                <div className="bg-gray-50 p-3 rounded border">
-                  <label className="block text-xs font-bold mb-1 flex items-center gap-2">
-                    Abonelik Bitiş Tarihi{' '}
+
+              {(newRole.includes('premium') || isCorporateRole(newRole)) && (
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider flex items-center gap-1">
+                    <Calendar size={14} className="text-slate-500" />
+                    Abonelik Bitiş Tarihi
                     {isCorporateRole(newRole) && (
-                      <span className="text-[10px] text-red-500 bg-red-100 px-1 rounded flex items-center">
-                        <AlertTriangle size={10} /> ŞİRKETİ ETKİLER
+                      <span className="text-[9px] text-red-600 bg-red-50 border border-red-150 px-1.5 py-0.5 rounded font-bold uppercase ml-auto flex items-center gap-0.5">
+                        <AlertTriangle size={10} /> Şirketi Etkiler
                       </span>
                     )}
                   </label>
                   <input
                     type="date"
-                    className="w-full border p-2 rounded"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium bg-white"
                     value={newEndDate}
                     onChange={(e) => setNewEndDate(e.target.value)}
                   />
+                  {isCorporateRole(newRole) && (
+                    <p className="text-[10px] text-red-500 mt-1.5 font-medium leading-relaxed">
+                      * Dikkat: Kurumsal yöneticilerin bitiş tarihi değiştirildiğinde tüm şirket çalışanlarının abonelik bitişi de senkronize olarak güncellenir.
+                    </p>
+                  )}
                 </div>
               )}
 
-              <div className="bg-blue-50 p-3 rounded border border-blue-200">
-                <label className="block text-xs font-bold text-blue-900 mb-1 flex items-center gap-2">
-                  <Shield size={12} /> Özel Depolama Kotası (MB)
+              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
+                <label className="block text-xs font-bold text-blue-900 mb-1.5 uppercase tracking-wider flex items-center gap-1.5">
+                  <Database size={14} className="text-blue-600" />
+                  Özel Depolama Kotası (MB)
                 </label>
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
                     min="1"
-                    className="w-full border p-2 rounded bg-white"
+                    className="w-full p-2.5 rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-semibold text-slate-700 bg-white"
                     value={userQuotaMB}
                     onChange={(e) => setUserQuotaMB(parseInt(e.target.value) || 0)}
                   />
-                  <span className="text-xs font-bold text-blue-700">MB</span>
+                  <span className="text-xs font-bold text-blue-700 bg-blue-100 px-3 py-2 rounded-xl">MB</span>
                 </div>
-                <p className="text-[10px] text-blue-500 mt-1 italic">
-                  * Admin tarafından belirlenen özel limit.
-                </p>
               </div>
 
-              <div className="bg-teal-50 p-3 rounded border border-teal-200">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500"
-                    checked={newCanViewRegulations}
-                    onChange={(e) => setNewCanViewRegulations(e.target.checked)}
-                  />
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-teal-900 flex items-center gap-2">
-                      Mevzuat Erişimi
-                      {editingUser?.organization_id && orgsWithRegs.has(editingUser.organization_id) && (
-                        <span className="bg-teal-600 text-white text-[8px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 animate-pulse">
-                          <Building size={8} /> FİRMADAN AKTİF
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-[10px] text-teal-600">
-                      Bu kullanıcı "Mevzuat" sayfasını görebilir mi?
-                    </span>
-                  </div>
+              <div className="bg-teal-50/40 p-4 rounded-2xl border border-teal-100 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="view-regs"
+                  className="mt-1 w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500 cursor-pointer"
+                  checked={newCanViewRegulations}
+                  onChange={(e) => setNewCanViewRegulations(e.target.checked)}
+                />
+                <label htmlFor="view-regs" className="flex flex-col cursor-pointer select-none">
+                  <span className="text-sm font-bold text-teal-900 flex items-center gap-2">
+                    Mevzuat Sayfası Erişimi
+                    {editingUser?.organization_id && orgsWithRegs.has(editingUser.organization_id) && (
+                      <span className="bg-teal-600 text-white text-[8px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                        <Building size={8} /> Firmadan Aktif
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-teal-600/80 font-medium">
+                    Bu kullanıcının sistem genelindeki Mevzuat modülünü görüntüleme yetkisi olsun.
+                  </span>
                 </label>
               </div>
 
-              <div className="bg-orange-50 p-3 rounded border border-orange-200">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
-                    checked={newCanManageRegulations}
-                    onChange={(e) => setNewCanManageRegulations(e.target.checked)}
-                  />
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-orange-900 flex items-center gap-2">
-                      Mevzuat Yönetme Yetkisi
-                    </span>
-                    <span className="text-[10px] text-orange-600">
-                      Bu kullanıcı kendi şirketi için mevzuat ekleyebilir mi?
-                    </span>
-                  </div>
+              <div className="bg-orange-50/40 p-4 rounded-2xl border border-orange-100 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="manage-regs"
+                  className="mt-1 w-4 h-4 text-orange-600 border-slate-300 rounded focus:ring-orange-500 cursor-pointer"
+                  checked={newCanManageRegulations}
+                  onChange={(e) => setNewCanManageRegulations(e.target.checked)}
+                />
+                <label htmlFor="manage-regs" className="flex flex-col cursor-pointer select-none">
+                  <span className="text-sm font-bold text-orange-900">
+                    Mevzuat Yönetme Yetkisi
+                  </span>
+                  <span className="text-[10px] text-orange-600/80 font-medium">
+                    Kendi şirketi adına yeni mevzuat maddeleri/dosyaları ekleyip düzenleyebilsin.
+                  </span>
                 </label>
               </div>
-              <div className="flex gap-2 pt-4 border-t">
+
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
                 <button
                   onClick={handleSaveUser}
-                  className="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700"
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-blue-100"
                 >
-                  Kaydet
+                  <Shield size={16} /> Değişiklikleri Kaydet
                 </button>
                 <button
                   onClick={() => setEditingUser(null)}
-                  className="flex-1 border py-2 rounded font-bold hover:bg-gray-50"
+                  className="flex-1 border border-slate-200 py-3 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition"
                 >
                   İptal
                 </button>
@@ -1255,76 +1703,120 @@ export default function AdminPanel() {
       )}
 
       {editingCompany && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-              <Building /> {editingCompany.id === 'new' ? 'Yeni Şirket Ekle' : 'Şirket Düzenle'}
-            </h3>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 animate-fadeIn transition-all">
+            <div className="flex justify-between items-center mb-6 border-b pb-4">
+              <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center">
+                  <Building size={20} />
+                </div>
+                {editingCompany.id === 'new' ? 'Yeni Şirket Oluştur' : 'Şirket Bilgilerini Düzenle'}
+              </h3>
+              <button 
+                onClick={() => setEditingCompany(null)}
+                className="p-1.5 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={22} />
+              </button>
+            </div>
+
+            {companySaveError && (
+              <div className="mb-5 p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm font-semibold whitespace-pre-wrap flex items-start gap-2 animate-fadeIn shadow-sm">
+                <AlertTriangle size={18} className="shrink-0 mt-0.5 text-red-600" />
+                <div className="flex-1 leading-relaxed">
+                  {companySaveError}
+                  {companySaveError.includes('RLS') && (
+                    <div className="mt-2 text-xs bg-white/70 p-2.5 rounded-lg border border-red-100 text-red-800 font-mono select-all">
+                      -- Supabase Dashboard SQL Editor'de çalıştırılacak script planda mevcut!
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-4">
               <div>
-                <label className="text-xs font-bold">Şirket Ünvanı</label>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Şirket Ünvanı *</label>
                 <input
                   type="text"
-                  className="w-full border p-2 rounded"
+                  required
+                  placeholder="Örn: Acme A.Ş."
+                  className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-medium"
                   value={compName}
                   onChange={(e) => setCompName(e.target.value)}
                 />
               </div>
-              <div>
-                <label className="text-xs font-bold">Personel Limiti</label>
-                <input
-                  type="number"
-                  className="w-full border p-2 rounded"
-                  value={compLimit}
-                  onChange={(e) => setCompLimit(parseInt(e.target.value))}
-                />
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Personel Limiti</label>
+                  <input
+                    type="number"
+                    min="1"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-semibold text-slate-700"
+                    value={compLimit}
+                    onChange={(e) => setCompLimit(parseInt(e.target.value) || 1)}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Abonelik Bitişi</label>
+                  <input
+                    type="date"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-medium text-slate-700"
+                    value={compDate}
+                    onChange={(e) => setCompDate(e.target.value)}
+                  />
+                </div>
               </div>
-              <div>
-                <label className="text-xs font-bold">Abonelik Bitişi</label>
-                <input
-                  type="date"
-                  className="w-full border p-2 rounded"
-                  value={compDate}
-                  onChange={(e) => setCompDate(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold mb-1">Şirket Kotası (MB)</label>
+
+              <div className="bg-purple-50/50 p-4 rounded-2xl border border-purple-100">
+                <label className="block text-xs font-bold text-purple-900 mb-1.5 uppercase tracking-wider flex items-center gap-1.5">
+                  <Database size={14} className="text-purple-600" />
+                  Ortak Şirket Kotası (MB)
+                </label>
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
                     min="1"
-                    className="w-full border p-2 rounded"
+                    className="w-full p-2.5 rounded-xl border border-purple-200 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm font-semibold text-slate-700 bg-white"
                     value={companyQuotaMB}
                     onChange={(e) => setCompanyQuotaMB(parseInt(e.target.value) || 0)}
                   />
-                  <span className="text-xs font-bold text-purple-700">MB</span>
+                  <span className="text-xs font-bold text-purple-700 bg-purple-100 px-3 py-2 rounded-xl">MB</span>
                 </div>
               </div>
-              <div className="bg-blue-50 p-3 rounded border border-blue-200">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                    checked={compIsEnvConsultant}
-                    onChange={(e) => setCompIsEnvConsultant(e.target.checked)}
-                  />
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-blue-900">Raporlar Modülü</span>
-                    <span className="text-[10px] text-blue-600">Bu şirket için detaylı raporlama modülünü aktifleştir.</span>
-                  </div>
+
+              <div className="bg-blue-50/40 p-4 rounded-2xl border border-blue-100 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="comp-env"
+                  className="mt-1 w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
+                  checked={compIsEnvConsultant}
+                  onChange={(e) => setCompIsEnvConsultant(e.target.checked)}
+                />
+                <label htmlFor="comp-env" className="flex flex-col cursor-pointer select-none">
+                  <span className="text-sm font-bold text-blue-900">Çevre Danışmanlık Yetkisi (Raporlar Modülü)</span>
+                  <span className="text-[10px] text-blue-600/80 font-medium">Bu şirket için detaylı Çevre Danışmanlığı Raporu (Aylık/Yıllık) hazırlama modülünü etkinleştirir.</span>
                 </label>
               </div>
-              <div className="flex gap-2 pt-4 border-t">
+
+              {editingCompany.id !== 'new' && (
+                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-[10px] font-medium leading-relaxed">
+                  ⚠️ Şirket bilgileri veya abonelik süresi güncellendiğinde, bu şirkete bağlı tüm çalışanların paket aktiflik süreleri bu durumdan etkilenecektir.
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
                 <button
                   onClick={handleSaveCompany}
-                  className="flex-1 bg-purple-600 text-white py-2 rounded font-bold"
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-purple-100"
                 >
-                  Kaydet
+                  <Building size={16} /> Şirketi Kaydet
                 </button>
                 <button
                   onClick={() => setEditingCompany(null)}
-                  className="flex-1 border py-2 rounded"
+                  className="flex-1 border border-slate-200 py-3 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition"
                 >
                   İptal
                 </button>
@@ -1336,3 +1828,4 @@ export default function AdminPanel() {
     </div>
   );
 }
+
