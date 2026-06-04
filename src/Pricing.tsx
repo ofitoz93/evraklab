@@ -91,27 +91,40 @@ export default function Pricing() {
     } = await supabase.auth.getSession();
     if (session) {
       setUser(session.user);
-      const { data } = await supabase
+      const { data: profileData, error: profileErr } = await supabase
         .from('profiles')
-        .select('*, organization:organizations(*)')
+        .select('*')
         .eq('id', session.user.id)
         .single();
-      setProfile(data);
 
-      if (data.organization) {
-        setViewMode('dashboard');
-        setTargetSeats(data.organization.member_limit);
-        const { count } = await supabase
-          .from('profiles')
-          .select('*', { count: 'exact', head: true })
-          .eq('organization_id', data.organization_id);
-        setActiveMembersCount(count || 1);
-        setSelectedPlan('corporate');
-      } else if (data.role === 'premium_individual') {
-        setViewMode('dashboard');
-        setSelectedPlan('individual');
-      } else {
-        setViewMode('selection');
+      if (profileData) {
+        let orgData = null;
+        if (profileData.organization_id) {
+          const { data: org } = await supabase
+            .from('organizations')
+            .select('*')
+            .eq('id', profileData.organization_id)
+            .single();
+          orgData = org;
+        }
+        const combined = { ...profileData, organization: orgData };
+        setProfile(combined);
+
+        if (orgData) {
+          setViewMode('dashboard');
+          setTargetSeats(orgData.member_limit);
+          const { count } = await supabase
+            .from('profiles')
+            .select('*', { count: 'exact', head: true })
+            .eq('organization_id', profileData.organization_id);
+          setActiveMembersCount(count || 1);
+          setSelectedPlan('corporate');
+        } else if (profileData.role === 'premium_individual') {
+          setViewMode('dashboard');
+          setSelectedPlan('individual');
+        } else {
+          setViewMode('selection');
+        }
       }
     }
     setLoading(false);
@@ -156,12 +169,15 @@ export default function Pricing() {
 
   const initiatePurchase = () => {
     if (purchaseType === 'storage') {
-      // Depolama satın alımı her zaman güvenlidir, uyarıya gerek yok.
       executePurchaseMock();
       return;
     }
 
     if (viewMode === 'selection') {
+      if (selectedPlan === 'corporate' && !companyName.trim()) {
+        alert('Lütfen şirket ünvanını giriniz.');
+        return;
+      }
       if (profile?.organization_id && selectedPlan === 'individual') {
         setShowLeaveWarning(true);
         return;
@@ -182,27 +198,104 @@ export default function Pricing() {
   const executePurchaseMock = async () => {
     setShowLeaveWarning(false);
     setShowIndToCorpWarning(false);
+    setProcessing(true);
 
-    /* --- PAYTR ENTEGRASYONU BURAYA GELECEK ---
-       Ödeme başarılı olursa aşağıdaki backend fonksiyonu çağrılmalı:
-       
-       if (purchaseType === 'storage') {
-          const pack = PRICING_CONFIG.storage[selectedStorageIndex];
-          const totalBytesToAdd = pack.bytes * storageQuantity;
-          const targetId = profile.organization_id || user.id;
-          const isCorporate = !!profile.organization_id;
+    try {
+      if (purchaseType === 'storage') {
+        const pack = PRICING_CONFIG.storage[selectedStorageIndex];
+        const totalBytesToAdd = pack.bytes * storageQuantity;
+        const targetId = profile?.organization_id || user.id;
+        const isCorporate = !!profile?.organization_id;
 
-          await supabase.rpc('add_storage_limit', {
-             target_id: targetId,
-             is_corporate: isCorporate,
-             bytes_to_add: totalBytesToAdd
-          });
-       }
-    */
+        const { error } = await supabase.rpc('add_storage_limit', {
+          target_id: targetId,
+          is_corporate: isCorporate,
+          bytes_to_add: totalBytesToAdd,
+        });
 
-    alert(
-      '🚧 Ödeme Sistemi Entegrasyon Aşamasındadır.\n\nÇok yakında kredi kartı ile güvenli ödeme yapabileceksiniz.'
-    );
+        if (error) throw error;
+        alert(`✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı.`);
+      } else {
+        // subscription
+        const now = new Date();
+        const finalDate = new Date(now.setMonth(now.getMonth() + addDuration)).toISOString();
+
+        if (selectedPlan === 'corporate') {
+          if (viewMode === 'selection') {
+            if (!companyName.trim()) {
+              throw new Error('Lütfen şirket adı giriniz.');
+            }
+
+            // 1. Şirket oluştur (organizations tablosu)
+            const { data: newOrg, error: orgErr } = await supabase
+              .from('organizations')
+              .insert([
+                {
+                  name: companyName,
+                  member_limit: targetSeats,
+                  subscription_end_date: finalDate,
+                  storage_limit: 1073741824, // 1 GB default
+                  is_environmental_consultant: false,
+                },
+              ])
+              .select()
+              .single();
+
+            if (orgErr) throw orgErr;
+
+            // 2. Kullanıcı profilini güncelle (premium_corporate rolü ve organization_id)
+            const { error: profErr } = await supabase
+              .from('profiles')
+              .update({
+                role: 'premium_corporate',
+                organization_id: newOrg.id,
+                subscription_end_date: null,
+              })
+              .eq('id', user.id);
+
+            if (profErr) throw profErr;
+
+            alert(`✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.`);
+          } else {
+            // Dashboard mode - extend subscription and seats
+            if (!profile?.organization_id) throw new Error('Şirketiniz bulunamadı.');
+
+            const { error: orgErr } = await supabase
+              .from('organizations')
+              .update({
+                member_limit: targetSeats,
+                subscription_end_date: finalDate,
+              })
+              .eq('id', profile.organization_id);
+
+            if (orgErr) throw orgErr;
+
+            alert(`✅ Kurumsal Aboneliğiniz Başarıyla Güncellendi!\nŞirket personel limitiniz ${targetSeats} kişiye yükseltildi ve abonelik süreniz ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar uzatıldı.`);
+          }
+        } else {
+          // individual
+          const { error: profErr } = await supabase
+            .from('profiles')
+            .update({
+              role: 'premium_individual',
+              organization_id: null,
+              subscription_end_date: finalDate,
+            })
+            .eq('id', user.id);
+
+          if (profErr) throw profErr;
+
+          alert(`✅ Bireysel Premium Aboneliğiniz Başarıyla Aktifleştirildi!\nTüm premium özellikler ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar hesabınıza tanımlandı.`);
+        }
+      }
+
+      // Refresh
+      window.location.reload();
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setProcessing(false);
+    }
   };
 
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;

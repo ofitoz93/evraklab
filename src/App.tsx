@@ -28,6 +28,8 @@ import {
   Scale, // Mevzuat ikonu
   Briefcase, // Danışmanlık ikonu
   BarChart3,
+  Shield,
+  User,
 } from 'lucide-react';
 
 // Sayfa Importları
@@ -311,7 +313,7 @@ function NavBarContent({
                 </span>
               )}
             </Link>
-            {userRole === 'admin' && (
+            {(userRole === 'admin' || userRole === 'system_admin') && (
               <Link
                 to="/admin"
                 className="text-red-500 hover:text-red-400 transition font-bold"
@@ -510,6 +512,15 @@ function NavBarContent({
               <HelpCircle size={20} /> Yardım & Kılavuz
             </Link>
 
+            {(userRole === 'admin' || userRole === 'system_admin') && (
+              <Link
+                to="/admin"
+                className="flex items-center gap-3 p-2 rounded-lg bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 font-bold"
+              >
+                <Shield size={20} /> Admin Paneli
+              </Link>
+            )}
+
             <Link
               to="/settings"
               className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
@@ -530,7 +541,6 @@ function NavBarContent({
   );
 }
 
-// ... (Kalan kısım aynı) ...
 function AppContent() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -540,6 +550,12 @@ function AppContent() {
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
   const [canViewRegulations, setCanViewRegulations] = useState(false);
   const [isEnvConsultant, setIsEnvConsultant] = useState(false);
+
+  // Ad Soyad ve Telefon Zorunluluğu için State'ler
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [tempName, setTempName] = useState('');
+  const [tempPhone, setTempPhone] = useState('');
+  const [savingName, setSavingName] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -565,21 +581,59 @@ function AppContent() {
   const fetchUserData = async (userId: string) => {
     try {
       // Profili doğrudan çek (join kullanmadan - veritabanında FK tanımlanmamış)
-      const { data: profile, error } = await supabase
+      let { data: profile, error } = await supabase
         .from('profiles')
-        .select('role, organization_id, subscription_end_date, can_view_regulations, can_manage_regulations')
+        .select('full_name, phone, role, organization_id, subscription_end_date, can_view_regulations, can_manage_regulations')
         .eq('id', userId)
         .single();
 
-      if (error) {
+      // Profil satırı yoksa (örneğin tetikleyici hata verdiyse), otomatik oluştur (Self-healing)
+      if (error && error.code === 'PGRST116') {
+        console.log('Profil bulunamadı, otomatik oluşturuluyor...');
+        const { data: newProf, error: insErr } = await supabase
+          .from('profiles')
+          .insert([
+            {
+              id: userId,
+              email: session?.user?.email || '',
+              role: 'normal',
+              full_name: '',
+              phone: '',
+            }
+          ])
+          .select()
+          .single();
+        if (!insErr) {
+          profile = newProf as any;
+        }
+      }
+
+      if (error && !profile) {
         // Fallback: En temel sütunlar
         console.warn('Profil çekilemedi, temel sorgu deneniyor:', error.message);
-        const { data: basic, error: e2 } = await supabase
+        let { data: basic, error: e2 } = await supabase
           .from('profiles')
-          .select('role, organization_id, subscription_end_date')
+          .select('full_name, phone, role, organization_id, subscription_end_date')
           .eq('id', userId)
           .single();
-        if (e2) throw e2;
+        
+        if (e2 && e2.code === 'PGRST116') {
+          const { data: newProf } = await supabase
+            .from('profiles')
+            .insert([
+              {
+                id: userId,
+                email: session?.user?.email || '',
+                role: 'normal',
+                full_name: '',
+                phone: '',
+              }
+            ])
+            .select()
+            .single();
+          basic = newProf as any;
+        }
+
         if (basic) {
           setUserRole(basic.role || 'normal');
           setUserOrgId(basic.organization_id);
@@ -590,6 +644,15 @@ function AppContent() {
           else if (basic.subscription_end_date && new Date(basic.subscription_end_date) > now) active = true;
           setIsPremium(active);
           setSubEndDate(basic.subscription_end_date);
+
+          // Ad soyad ve Telefon kontrolü
+          const noName = !basic.full_name || basic.full_name.trim() === '';
+          const noPhone = !basic.phone || basic.phone.trim() === '';
+          if (noName || noPhone) {
+            setTempName(basic.full_name || '');
+            setTempPhone(basic.phone || '');
+            setShowNameModal(true);
+          }
         }
         return;
       }
@@ -598,6 +661,15 @@ function AppContent() {
         const role = profile.role || 'normal';
         setUserRole(role);
         setUserOrgId(profile.organization_id);
+
+        // Ad soyad ve Telefon kontrolü
+        const noName = !profile.full_name || profile.full_name.trim() === '';
+        const noPhone = !profile.phone || profile.phone.trim() === '';
+        if (noName || noPhone) {
+          setTempName(profile.full_name || '');
+          setTempPhone(profile.phone || '');
+          setShowNameModal(true);
+        }
 
         // Abonelik tarihini belirle
         let finalDate: string | null = profile.subscription_end_date || null;
@@ -610,8 +682,6 @@ function AppContent() {
             .eq('id', profile.organization_id)
             .single();
           
-          console.log('Şirket verisi:', company, 'Hata:', compErr?.message);
-          
           if (company?.subscription_end_date) {
             finalDate = company.subscription_end_date;
           }
@@ -620,29 +690,18 @@ function AppContent() {
           }
         }
 
-        console.log('--- KULLANICI BİLGİSİ ---');
-        console.log('Rol:', role);
-        console.log('organization_id:', profile.organization_id);
-        console.log('Abonelik tarihi (final):', finalDate);
-
         setSubEndDate(finalDate);
 
         // Premium durumu
         const now = new Date();
         let active = false;
-        const isCorporateRole = ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(role);
 
         if (role === 'admin' || role === 'system_admin') {
           active = true;
         } else if (finalDate && new Date(finalDate) > now) {
           active = true;
-        } else if (isCorporateRole && profile.organization_id) {
-          // Şirket tablosuna erişilemese bile, kurumsal role sahip kullanıcılar
-          // admin tarafından atandığı için premium kabul edilir
-          active = true;
         }
         setIsPremium(active);
-        console.log('Premium:', active);
 
         // Mevzuat yetkisi
         let hasRegAccess = !!(profile as any).can_view_regulations;
@@ -659,6 +718,35 @@ function AppContent() {
       console.error('Kullanıcı verisi yüklenirken hata:', err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveName = async () => {
+    if (!tempName.trim()) {
+      alert('Lütfen adınızı ve soyadınızı giriniz.');
+      return;
+    }
+    if (!tempPhone.trim()) {
+      alert('Lütfen telefon numaranızı giriniz.');
+      return;
+    }
+    setSavingName(true);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ 
+          full_name: tempName.trim(),
+          phone: tempPhone.trim()
+        })
+        .eq('id', session.user.id);
+      if (error) throw error;
+      setShowNameModal(false);
+      alert('Profil bilgileriniz başarıyla güncellendi!');
+      fetchUserData(session.user.id);
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setSavingName(false);
     }
   };
 
@@ -722,12 +810,11 @@ function AppContent() {
                 <Route path="/company" element={<CompanyPanel />} />
                 <Route path="/chat" element={<TeamChat />} />
                 <Route path="/pricing" element={<Pricing />} />
-                <Route path="/settings" element={<Settings />} />
+                <Route path="/settings" element={<Settings session={session} />} />
                 <Route path="/notifications" element={<Notifications />} />
                 <Route path="/support" element={<Support />} />
                 <Route path="/help" element={<HelpPage />} />
-                <Route path="/tools" element={<Tools />} />{' '}
-                {/* <--- YENİ ROTAlar */}
+                <Route path="/tools" element={<Tools />} />
                 <Route
                   path="/regulations"
                   element={
@@ -791,6 +878,52 @@ function AppContent() {
           </Routes>
         </div>
       </div>
+
+      {/* Profil Tamamlama Modalı (Ad Soyad ve Telefon Zorunlu) */}
+      {showNameModal && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-8 border border-gray-100 dark:border-slate-700 text-center animate-scaleIn">
+            <div className="w-16 h-16 bg-blue-50 dark:bg-blue-950/30 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600 dark:text-blue-400">
+              <User size={32} />
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+              Profilinizi Tamamlayın
+            </h3>
+            <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
+              Sistemi kullanmaya devam edebilmek için lütfen profil bilgilerinizi eksiksiz doldurunuz.
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-left text-xs font-bold text-gray-500 mb-1.5 pl-1">Ad Soyad</label>
+                <input
+                  type="text"
+                  placeholder="Ad Soyad"
+                  className="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-white p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-center font-semibold text-lg"
+                  value={tempName}
+                  onChange={(e) => setTempName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-left text-xs font-bold text-gray-500 mb-1.5 pl-1">Telefon Numarası</label>
+                <input
+                  type="tel"
+                  placeholder="Örn: 05551234567"
+                  className="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-white p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-center font-semibold text-lg"
+                  value={tempPhone}
+                  onChange={(e) => setTempPhone(e.target.value)}
+                />
+              </div>
+              <button
+                onClick={handleSaveName}
+                disabled={savingName}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-blue-100 dark:shadow-none flex items-center justify-center gap-2 mt-2"
+              >
+                {savingName ? 'Kaydediliyor...' : 'Bilgileri Kaydet ve Devam Et'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Router>
   );
 }

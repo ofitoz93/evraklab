@@ -423,25 +423,44 @@ export default function AdminPanel() {
   };
 
   const handleSaveCompany = async () => {
+    const isNew = editingCompany.id === 'new';
     if (
+      !isNew &&
       !window.confirm('Şirketteki TÜM personelin aboneliği etkilenecek. Devam?')
     )
       return;
     try {
       const finalDate = compDate ? new Date(compDate).toISOString() : null;
-      await supabase
-        .from('organizations')
-        .update({
-          name: compName,
-          member_limit: compLimit,
-          subscription_end_date: finalDate,
-          storage_limit: companyQuotaMB * 1048576,
-          is_environmental_consultant: compIsEnvConsultant,
-        })
-        .eq('id', editingCompany.id);
+      if (isNew) {
+        const { error } = await supabase
+          .from('organizations')
+          .insert([
+            {
+              name: compName,
+              member_limit: compLimit,
+              subscription_end_date: finalDate,
+              storage_limit: companyQuotaMB * 1048576,
+              is_environmental_consultant: compIsEnvConsultant,
+            },
+          ]);
+        if (error) throw error;
+        alert('Yeni şirket başarıyla oluşturuldu!');
+      } else {
+        const { error } = await supabase
+          .from('organizations')
+          .update({
+            name: compName,
+            member_limit: compLimit,
+            subscription_end_date: finalDate,
+            storage_limit: companyQuotaMB * 1048576,
+            is_environmental_consultant: compIsEnvConsultant,
+          })
+          .eq('id', editingCompany.id);
+        if (error) throw error;
+        alert('Şirket güncellendi!');
+      }
       setEditingCompany(null);
       fetchCompanies();
-      alert('Şirket güncellendi!');
     } catch (e: any) {
       alert(e.message);
     }
@@ -652,6 +671,24 @@ export default function AdminPanel() {
                  <AlertTriangle size={18} /> {companyFetchError}
               </div>
             )}
+            
+            <div className="flex justify-between items-center mb-4 bg-gray-50 p-4 rounded-xl border border-gray-100">
+              <span className="text-sm text-gray-500 font-medium">Sistemdeki tüm danışmanlık firmalarını ve kurumsal şirketleri yönetin.</span>
+              <button
+                onClick={() => {
+                  setEditingCompany({ id: 'new' });
+                  setCompName('');
+                  setCompLimit(5);
+                  setCompDate('');
+                  setCompIsEnvConsultant(false);
+                  setCompanyQuotaMB(500); // Varsayılan 500 MB kota
+                }}
+                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-lg shadow-purple-100"
+              >
+                <Plus size={14} /> Yeni Şirket Ekle
+              </button>
+            </div>
+
             <table className="w-full text-left border-collapse">
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
               <tr>
@@ -1221,7 +1258,7 @@ export default function AdminPanel() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-              <Building /> Şirket Düzenle
+              <Building /> {editingCompany.id === 'new' ? 'Yeni Şirket Ekle' : 'Şirket Düzenle'}
             </h3>
             <div className="space-y-4">
               <div>

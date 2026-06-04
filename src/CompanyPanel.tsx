@@ -58,15 +58,27 @@ export default function CompanyPanel() {
         data: { session },
       } = await supabase.auth.getSession();
       if (session) {
-        const { data: profile } = await supabase
+        const { data: profile, error: profileErr } = await supabase
           .from('profiles')
-          .select('*, organization:organizations(*)')
+          .select('*')
           .eq('id', session.user.id)
           .single();
-        setMyProfile(profile);
 
-        if (profile?.organization_id) {
-          setMyOrg(profile.organization);
+        if (profile) {
+          let orgData = null;
+          if (profile.organization_id) {
+            const { data: org } = await supabase
+              .from('organizations')
+              .select('*')
+              .eq('id', profile.organization_id)
+              .single();
+            orgData = org;
+          }
+          const combined = { ...profile, organization: orgData };
+          setMyProfile(combined);
+
+          if (orgData) {
+            setMyOrg(orgData);
 
           // 1. MEVCUT ÜYELER
           let query = supabase
@@ -92,6 +104,7 @@ export default function CompanyPanel() {
           setInvitations(invites || []);
         }
       }
+    }
     } catch (error) {
       console.error(error);
     } finally {

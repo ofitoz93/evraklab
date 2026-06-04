@@ -21,7 +21,7 @@ import {
   Send,
 } from 'lucide-react';
 
-export default function Settings() {
+export default function Settings({ session }: { session: any }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -45,42 +45,97 @@ export default function Settings() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetchProfile();
-  }, []);
+    if (session) {
+      fetchProfile();
+    }
+  }, [session]);
 
   const fetchProfile = async () => {
     setLoading(true);
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (session) {
-      const { data } = await supabase
-        .from('profiles')
-        .select('*, organization:organizations(*)')
-        .eq('id', session.user.id)
-        .single();
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        let { data: profileData, error: profileErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
 
-      setProfile(data);
-      setFullName(data.full_name || '');
-      setEmail(data.email || session.user.email);
-      setPhone(data.phone || '');
-      setAvatarUrl(data.avatar_url || null);
+        // Profil yoksa, otomatik oluştur (Self-healing)
+        if (profileErr && profileErr.code === 'PGRST116') {
+          console.log('Profil bulunamadı, otomatik oluşturuluyor...');
+          const { data: newProf, error: insErr } = await supabase
+            .from('profiles')
+            .insert([
+              {
+                id: session.user.id,
+                email: session.user.email || '',
+                role: 'normal',
+                full_name: '',
+                phone: '',
+              }
+            ])
+            .select()
+            .single();
+          if (!insErr) {
+            profileData = newProf;
+            profileErr = null;
+          }
+        }
+
+        if (profileErr) throw profileErr;
+
+        if (profileData) {
+          let orgData = null;
+          if (profileData.organization_id) {
+            const { data: org, error: orgErr } = await supabase
+              .from('organizations')
+              .select('*')
+              .eq('id', profileData.organization_id)
+              .single();
+            if (!orgErr) {
+              orgData = org;
+            }
+          }
+
+          const combinedData = { ...profileData, organization: orgData };
+          setProfile(combinedData);
+          setFullName(profileData.full_name || '');
+          setEmail(profileData.email || session.user.email);
+          setPhone(profileData.phone || '');
+          setAvatarUrl(profileData.avatar_url || null);
+        }
+      }
+    } catch (err: any) {
+      console.error('Profil yüklenirken hata oluştu:', err.message);
+      alert('Profil Hata Detayı: ' + (err.message || JSON.stringify(err)));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   // --- İŞLEM FONKSİYONLARI ---
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!fullName.trim()) {
+      alert('Ad Soyad alanı boş bırakılamaz.');
+      return;
+    }
+    if (!phone.trim()) {
+      alert('Telefon alanı boş bırakılamaz.');
+      return;
+    }
     setSaving(true);
     try {
       const { error } = await supabase
         .from('profiles')
-        .update({ full_name: fullName, phone: phone })
+        .update({ full_name: fullName.trim(), phone: phone.trim() })
         .eq('id', profile.id);
       if (error) throw error;
-      setProfile({ ...profile, full_name: fullName, phone: phone });
+      setProfile({ ...profile, full_name: fullName.trim(), phone: phone.trim() });
       alert('Profil güncellendi!');
     } catch (err: any) {
       alert('Hata: ' + err.message);
@@ -273,39 +328,10 @@ export default function Settings() {
   const getSubscriptionDetails = () => {
     if (!profile) return null;
 
-    // Şirket
-    if (profile.organization) {
-      const orgName = profile.organization.name;
-      const endDate = new Date(profile.organization.subscription_end_date);
-      const isActive = endDate > new Date();
-      return {
-        type: isActive ? 'corporate' : 'corporate_expired',
-        title: isActive ? 'Kurumsal Premium Hesap' : 'Süresi Dolmuş Üyelik',
-        subtitle: `${orgName} Şirketine Bağlı`,
-        endDate: endDate.toLocaleDateString('tr-TR'),
-        status: isActive ? 'active' : 'expired',
-        color: isActive
-          ? 'from-purple-600 to-indigo-600'
-          : 'from-gray-500 to-gray-700',
-      };
-    }
-    // Bireysel
-    if (profile.role === 'premium_individual') {
-      const endDate = new Date(profile.subscription_end_date);
-      const isActive = endDate > new Date();
-      return {
-        type: 'individual',
-        title: 'Bireysel Premium',
-        subtitle: 'Tüm özellikler aktif',
-        endDate: endDate.toLocaleDateString('tr-TR'),
-        status: isActive ? 'active' : 'inactive',
-        color: isActive
-          ? 'from-blue-600 to-cyan-600'
-          : 'from-gray-500 to-gray-600',
-      };
-    }
-    // Admin
-    if (profile.role === 'admin') {
+    const role = profile.role || 'normal';
+
+    // Admin / Sistem Yöneticisi
+    if (role === 'admin' || role === 'system_admin') {
       return {
         type: 'admin',
         title: 'Sistem Yöneticisi',
@@ -315,7 +341,65 @@ export default function Settings() {
         color: 'from-red-600 to-orange-600',
       };
     }
-    // Normal
+
+    // Kurumsal Roller (Şirket Sahibi, Departman Şefi, Personel)
+    if (
+      role === 'premium_corporate' ||
+      role === 'corporate_chief' ||
+      role === 'corporate_staff' ||
+      profile.organization
+    ) {
+      if (profile.organization) {
+        const orgName = profile.organization.name;
+        const subDateStr = profile.organization.subscription_end_date;
+        const endDate = subDateStr ? new Date(subDateStr) : null;
+        const isActive = endDate ? endDate > new Date() : false;
+        
+        let roleTitle = 'Kurumsal Üyelik';
+        if (role === 'premium_corporate') roleTitle = 'Şirket Yöneticisi (Kurumsal)';
+        else if (role === 'corporate_chief') roleTitle = 'Departman Şefi (Kurumsal)';
+        else if (role === 'corporate_staff') roleTitle = 'Kurumsal Personel';
+
+        return {
+          type: isActive ? 'corporate' : 'corporate_expired',
+          title: roleTitle,
+          subtitle: `${orgName} Şirketine Bağlı`,
+          endDate: endDate ? endDate.toLocaleDateString('tr-TR') : 'Belirtilmemiş',
+          status: isActive ? 'active' : 'expired',
+          color: isActive
+            ? 'from-purple-600 to-indigo-600'
+            : 'from-gray-500 to-gray-700',
+        };
+      } else {
+        return {
+          type: 'corporate_expired',
+          title: 'Kurumsal Üye',
+          subtitle: 'Şirket Bilgisi Yüklenemedi',
+          endDate: '-',
+          status: 'expired',
+          color: 'from-gray-500 to-gray-700',
+        };
+      }
+    }
+
+    // Bireysel Premium
+    if (role === 'premium_individual') {
+      const subDateStr = profile.subscription_end_date;
+      const endDate = subDateStr ? new Date(subDateStr) : null;
+      const isActive = endDate ? endDate > new Date() : false;
+      return {
+        type: 'individual',
+        title: 'Bireysel Premium',
+        subtitle: 'Tüm özellikler aktif',
+        endDate: endDate ? endDate.toLocaleDateString('tr-TR') : 'Belirtilmemiş',
+        status: isActive ? 'active' : 'inactive',
+        color: isActive
+          ? 'from-blue-600 to-cyan-600'
+          : 'from-gray-500 to-gray-600',
+      };
+    }
+
+    // Normal Üye
     return {
       type: 'normal',
       title: 'Standart Üyelik',
@@ -499,8 +583,7 @@ export default function Settings() {
                     </p>
                     {subDetails?.status === 'active' && (
                       <div className="mt-4 inline-flex items-center gap-2 bg-white/20 backdrop-blur-sm px-3 py-1.5 rounded-lg text-xs font-semibold">
-                        <Calendar size={14} /> Bitiş Tarihi:{' '}
-                        {subDetails?.endDate}
+                        <Calendar size={14} /> {subDetails?.type === 'admin' ? 'Geçerlilik: Süresiz' : `Bitiş Tarihi: ${subDetails?.endDate}`}
                       </div>
                     )}
                   </div>
