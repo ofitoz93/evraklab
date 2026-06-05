@@ -198,9 +198,11 @@ function NavBarContent({
       .eq('has_unread_messages', true);
     setUnreadTicketCount(count || 0);
   };
+  const isCorporateUser = ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(userRole);
   const canViewTeam =
     isPremium ||
     userRole === 'admin' ||
+    isCorporateUser ||
     (userRole === 'normal' && !!subEndDate);
   const canExtend =
     userRole === 'premium_individual' || userRole === 'premium_corporate';
@@ -260,14 +262,6 @@ function NavBarContent({
               </Link>
             )}
 
-            {(userRole === 'admin' || (isPremium && isEnvConsultant)) && (
-              <Link
-                to="/consultant"
-                className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
-              >
-                <FileText size={16} /> Raporlar
-              </Link>
-            )}
 
             {hasCompany && (
               <Link
@@ -313,6 +307,14 @@ function NavBarContent({
                 </span>
               )}
             </Link>
+            {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+              <Link
+                to="/consultant"
+                className="hover:text-[#2ca58d] dark:hover:text-[#2ca58d] transition flex items-center gap-1 font-bold text-[#2ca58d]"
+              >
+                <Briefcase size={16} /> Yönetici Paneli
+              </Link>
+            )}
             {(userRole === 'admin' || userRole === 'system_admin') && (
               <Link
                 to="/admin"
@@ -444,15 +446,6 @@ function NavBarContent({
               </Link>
             )}
 
-            {(userRole === 'admin' || (isPremium && isEnvConsultant)) && (
-              <Link
-                to="/consultant"
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
-              >
-                <FileText size={20} /> Raporlar
-              </Link>
-            )}
 
             {hasCompany && (
               <Link
@@ -502,6 +495,16 @@ function NavBarContent({
             >
               <MessageCircle size={20} /> Destek
             </Link>
+
+            {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+              <Link
+                to="/consultant"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 font-bold text-[#2ca58d] dark:text-[#2ca58d]"
+              >
+                <Briefcase size={20} /> Yönetici Paneli
+              </Link>
+            )}
 
             <div className="border-t border-gray-200 dark:border-slate-800 pt-2 mt-2"></div>
 
@@ -828,7 +831,7 @@ function AppContent() {
                 <Route
                   path="/consultant"
                   element={
-                    userRole === 'admin' || (isPremium && isEnvConsultant) ? (
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') ? (
                       <ConsultantPanel />
                     ) : (
                       <Navigate to="/" />
@@ -837,18 +840,12 @@ function AppContent() {
                 />
                 <Route
                   path="/consultant/reports/add"
-                  element={
-                    userRole === 'admin' || (isPremium && isEnvConsultant) ? (
-                      <EnvReportForm />
-                    ) : (
-                      <Navigate to="/" />
-                    )
-                  }
+                  element={<EnvReportForm />}
                 />
                 <Route
                   path="/consultant/reports/:id"
                   element={
-                    userRole === 'admin' || (isPremium && isEnvConsultant) ? (
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') ? (
                       <EnvReportView />
                     ) : (
                       <Navigate to="/" />

@@ -18,6 +18,9 @@ export default function EditDocument() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState('');
+  const [myOrgId, setMyOrgId] = useState<string | null>(null);
+  const [docScope, setDocScope] = useState<'personal' | 'corporate'>('personal');
+  const [corporateClients, setCorporateClients] = useState<any[]>([]);
 
   // Listeler
   const [typeOptions, setTypeOptions] = useState<any[]>([]);
@@ -26,7 +29,7 @@ export default function EditDocument() {
   // State'ler
   const [title, setTitle] = useState('');
   const [docType, setDocType] = useState(''); // ID tutacak
-  const [location, setLocation] = useState(''); // ID tutacak
+  const [location, setLocation] = useState(''); // Şahside ID, Kurumsalda Ünvan tutacak
   const [desc, setDesc] = useState('');
   const [acquisitionDate, setAcquisitionDate] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
@@ -43,6 +46,43 @@ export default function EditDocument() {
   const [editValue, setEditValue] = useState('');
   const [newDefLabel, setNewDefLabel] = useState('');
 
+  const fetchCorporateClients = async (orgId: string, role: string, userId: string) => {
+    try {
+      let query = supabase.from('consultant_clients').select('id, name');
+      
+      if (role === 'corporate_staff') {
+        const { data: assignments } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', userId);
+        const cIds = assignments?.map((a) => a.client_id) || [];
+        if (cIds.length > 0) {
+          query = query.in('id', cIds);
+        } else {
+          setCorporateClients([]);
+          return;
+        }
+      } else {
+        query = query.eq('consultant_company_id', orgId);
+      }
+      
+      const { data } = await query.order('name', { ascending: true });
+      setCorporateClients(data || []);
+    } catch (err) {
+      console.error('Corporate clients fetch error:', err);
+    }
+  };
+
+  useEffect(() => {
+    const run = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
+      }
+    };
+    run();
+  }, [docScope, myOrgId]);
+
   useEffect(() => {
     fetchData();
   }, [id]);
@@ -51,14 +91,21 @@ export default function EditDocument() {
     const {
       data: { session },
     } = await supabase.auth.getSession();
+    
+    let currentRole = '';
+    let currentOrgId: string | null = null;
+    
     if (session) {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, organization_id')
         .eq('id', session.user.id)
         .single();
-      setUserRole(profile?.role || 'normal');
-      fetchDefinitions(session.user.id);
+      currentRole = profile?.role || 'normal';
+      currentOrgId = profile?.organization_id || null;
+      
+      setUserRole(currentRole);
+      setMyOrgId(currentOrgId);
     }
 
     const { data } = await supabase
@@ -66,26 +113,67 @@ export default function EditDocument() {
       .select('*')
       .eq('id', id)
       .single();
+      
     if (data) {
       setTitle(data.title);
-      setDocType(data.type_def_id || ''); // ID Yüklüyoruz
-      setLocation(data.location_def_id || ''); // ID Yüklüyoruz
+      setDocType(data.type_def_id || '');
       setDesc(data.description || '');
       setAcquisitionDate(data.acquisition_date || '');
       setExpiryDate(data.expiry_date || '');
       setAppDeadline(data.application_deadline || '');
       setIsIndefinite(data.is_indefinite || false);
       setReminderDays(data.reminder_days || 0);
+      
+      const scope = data.organization_id ? 'corporate' : 'personal';
+      setDocScope(scope);
+
+      if (currentOrgId) {
+        await fetchCorporateClients(currentOrgId, currentRole, session?.user.id || '');
+      }
+
+      await fetchDefinitions(session?.user.id || '', scope === 'corporate', currentOrgId);
+
+      if (scope === 'corporate' && data.location_def_id) {
+        const { data: def } = await supabase
+          .from('user_definitions')
+          .select('label')
+          .eq('id', data.location_def_id)
+          .single();
+        if (def) {
+          setLocation(def.label);
+        } else {
+          setLocation('');
+        }
+      } else {
+        setLocation(data.location_def_id || '');
+      }
     }
     setLoading(false);
   };
 
-  const fetchDefinitions = async (userId: string) => {
-    const { data: defs } = await supabase
+  const fetchDefinitions = async (userId: string, isCorporate = false, orgId: string | null = null) => {
+    let userIds = [userId];
+    const targetOrgId = orgId || myOrgId;
+    if (isCorporate && targetOrgId) {
+      const { data: orgProfiles, error: pErr } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('organization_id', targetOrgId);
+      if (pErr) {
+        console.error('fetchDefinitions profiles fetch error:', pErr);
+      }
+      if (orgProfiles && orgProfiles.length > 0) {
+        userIds = orgProfiles.map((p) => p.id);
+      }
+    }
+    const { data: defs, error: dErr } = await supabase
       .from('user_definitions')
       .select('*')
-      .eq('user_id', userId)
+      .in('user_id', userIds)
       .order('created_at', { ascending: true });
+    if (dErr) {
+      console.error('fetchDefinitions user_definitions fetch error:', dErr);
+    }
     if (defs) {
       setTypeOptions(defs.filter((d) => d.category === 'doc_type'));
       setLocOptions(defs.filter((d) => d.category === 'location'));
@@ -129,7 +217,7 @@ export default function EditDocument() {
 
     if (!error) {
       setNewDefLabel(''); // Kutuyu temizle
-      fetchDefinitions(session.user.id); // Listeyi yenile
+      fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId); // Listeyi yenile
     } else {
       // Eğer SQL tarafındaki engel yakalarsa burası çalışır
       if (
@@ -149,7 +237,7 @@ export default function EditDocument() {
       data: { session },
     } = await supabase.auth.getSession();
     await supabase.from('user_definitions').delete().eq('id', id);
-    if (session) fetchDefinitions(session.user.id);
+    if (session) fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
   };
 
   const startEditing = (id: string, label: string) => {
@@ -191,7 +279,7 @@ export default function EditDocument() {
     if (!error && session) {
       setEditingId(null);
       setEditValue('');
-      fetchDefinitions(session.user.id);
+      fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
     } else {
       if (error?.message.includes('unique')) {
         alert('Bu isimde başka bir kayıt var.');
@@ -215,26 +303,82 @@ export default function EditDocument() {
     e.preventDefault();
     const finalDeadline = appDeadline ? appDeadline : expiryDate;
 
-    const { error } = await supabase
-      .from('documents')
-      .update({
-        title,
-        description: desc,
-        type_def_id: docType, // ID
-        location_def_id: location || null, // ID
-        acquisition_date: acquisitionDate,
-        expiry_date: isIndefinite ? null : expiryDate,
-        application_deadline: isIndefinite ? null : finalDeadline,
-        is_indefinite: isIndefinite,
-        reminder_days: isPremium ? reminderDays : 0,
-      })
-      .eq('id', id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
 
-    if (!error) {
-      alert('✅ Güncellendi!');
-      navigate(`/documents/${id}`);
-    } else {
-      alert('Hata: ' + error.message);
+      let finalLocId = null;
+      if (docScope === 'corporate' && location) {
+        const clientName = location;
+        let orgUserIds: string[] = [session.user.id];
+        if (myOrgId) {
+          const { data: orgProfiles } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('organization_id', myOrgId);
+          if (orgProfiles && orgProfiles.length > 0) {
+            orgUserIds = orgProfiles.map(p => p.id);
+          }
+        }
+        
+        const { data: existingLoc } = await supabase
+          .from('user_definitions')
+          .select('id')
+          .eq('category', 'location')
+          .ilike('label', clientName)
+          .in('user_id', orgUserIds)
+          .maybeSingle();
+
+        if (existingLoc) {
+          finalLocId = existingLoc.id;
+        } else {
+          const { data: newLoc } = await supabase
+            .from('user_definitions')
+            .insert([{ user_id: session.user.id, category: 'location', label: clientName }])
+            .select('id')
+            .single();
+          if (newLoc) finalLocId = newLoc.id;
+        }
+      } else {
+        finalLocId = (location && location !== 'NEW_LOC') ? location : null;
+        const manualLocName = (window as any).tempManualLoc;
+
+        if (location === 'NEW_LOC' && manualLocName) {
+          const { data: newLoc } = await supabase
+            .from('user_definitions')
+            .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
+            .select()
+            .single();
+          if (newLoc) finalLocId = newLoc.id;
+        }
+      }
+
+      const selectedType = typeOptions.find(t => t.id === docType);
+      const finalTitle = selectedType ? selectedType.label : title;
+
+      const { error } = await supabase
+        .from('documents')
+        .update({
+          title: finalTitle,
+          description: desc,
+          type_def_id: docType,
+          location_def_id: finalLocId,
+          acquisition_date: acquisitionDate,
+          expiry_date: isIndefinite ? null : expiryDate,
+          application_deadline: isIndefinite ? null : finalDeadline,
+          is_indefinite: isIndefinite,
+          reminder_days: isPremium ? reminderDays : 0,
+        })
+        .eq('id', id);
+
+      if (!error) {
+        alert('✅ Güncellendi!');
+        navigate(`/documents/${id}`);
+      } else {
+        alert('Hata: ' + error.message);
+      }
+    } catch (err: any) {
+      alert('Güncelleme sırasında hata oluştu: ' + err.message);
     }
   };
 
@@ -252,26 +396,19 @@ export default function EditDocument() {
         <h2 className="text-2xl font-bold mb-6">Belge Düzenle</h2>
         <form onSubmit={handleUpdate} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="font-bold block mb-1">Başlık</label>
-              <input
-                type="text"
-                className="w-full p-2 border rounded"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                required
-              />
-            </div>
+
             <div>
               <label className="font-bold block mb-1 flex justify-between">
                 Belge Türü
-                <button
-                  type="button"
-                  onClick={() => openManageModal('doc_type')}
-                  className="text-xs text-blue-600 flex items-center gap-1 hover:underline"
-                >
-                  <Settings size={12} /> Yönet
-                </button>
+                {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                  <button
+                    type="button"
+                    onClick={() => openManageModal('doc_type')}
+                    className="text-xs text-blue-600 flex items-center gap-1 hover:underline"
+                  >
+                    <Settings size={12} /> Yönet
+                  </button>
+                )}
               </label>
               <select
                 className="w-full p-2 border rounded bg-white"
@@ -295,28 +432,43 @@ export default function EditDocument() {
           <div>
             <label className="font-bold block mb-1 flex justify-between">
               Lokasyon
-              <button
-                type="button"
-                onClick={() => openManageModal('location')}
-                className="text-xs text-blue-600 flex items-center gap-1 hover:underline"
-              >
-                <Settings size={12} /> Yönet
-              </button>
+              {docScope === 'personal' && (
+                <button
+                  type="button"
+                  onClick={() => openManageModal('location')}
+                  className="text-xs text-blue-600 flex items-center gap-1 hover:underline"
+                >
+                  <Settings size={12} /> Yönet
+                </button>
+              )}
             </label>
             <select
               className="w-full p-2 border rounded bg-white"
               value={location}
               onChange={(e) => setLocation(e.target.value)}
             >
-              <option value="">Belirtilmemiş</option>
-              {location && !locOptions.find((l) => l.id === location) && (
-                <option value={location}>Eski Kayıt</option>
+              {docScope === 'corporate' ? (
+                <>
+                  <option value="">Belirtilmemiş</option>
+                  {corporateClients.map((cc) => (
+                    <option key={cc.id} value={cc.name}>
+                      {cc.name}
+                    </option>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <option value="">Belirtilmemiş</option>
+                  {location && !locOptions.find((l) => l.id === location) && (
+                    <option value={location}>Eski Kayıt</option>
+                  )}
+                  {locOptions.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.label}
+                    </option>
+                  ))}
+                </>
               )}
-              {locOptions.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.label}
-                </option>
-              ))}
             </select>
           </div>
 
@@ -406,7 +558,7 @@ export default function EditDocument() {
       {/* MODAL AYNI (Kod tekrarı olmaması için buraya sadece çağırma mantığını koydum, AddDocument ile aynı modal yapısını kullanabilirsin veya component yapabilirsin. Burada AddDocument'teki modalın aynısını kullan.) */}
       {manageModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-96 max-h-[80vh] flex flex-col">
+          <div className="bg-white text-gray-900 p-6 rounded-xl shadow-2xl w-96 max-h-[80vh] flex flex-col">
             <div className="flex justify-between items-center mb-4 border-b pb-2">
               <h3 className="font-bold text-lg">
                 {manageCategory === 'doc_type'
@@ -422,13 +574,13 @@ export default function EditDocument() {
                 (item) => (
                   <div
                     key={item.id}
-                    className="flex justify-between items-center p-2 bg-gray-50 rounded border group hover:border-blue-200 transition"
+                    className="flex justify-between items-center p-2 bg-gray-50 rounded border group hover:border-blue-200 transition text-gray-900"
                   >
                     {editingId === item.id ? (
                       <div className="flex gap-2 w-full">
                         <input
                           type="text"
-                          className="flex-1 p-1 border rounded text-sm"
+                          className="flex-1 p-1 border rounded text-sm text-gray-900 bg-white"
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           autoFocus
@@ -448,7 +600,7 @@ export default function EditDocument() {
                       </div>
                     ) : (
                       <>
-                        <span className="text-sm font-medium">
+                        <span className="text-sm font-medium text-gray-900">
                           {item.label}
                         </span>
                         <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition">
@@ -475,7 +627,7 @@ export default function EditDocument() {
               <input
                 type="text"
                 placeholder="Yeni ekle..."
-                className="flex-1 p-2 border rounded text-sm"
+                className="flex-1 p-2 border rounded text-sm text-gray-900 bg-white"
                 value={newDefLabel}
                 onChange={(e) => setNewDefLabel(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAddDefinition()}

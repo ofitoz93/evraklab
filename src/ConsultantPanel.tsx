@@ -15,6 +15,9 @@ import {
   Eye,
   Settings as SettingsIcon,
   BarChart3,
+  Copy,
+  Mail,
+  User,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import ComplianceDashboard from './ComplianceDashboard';
@@ -39,10 +42,12 @@ interface Report {
   creator: { full_name: string };
   is_manual_upload: boolean;
   file_url: string;
+  wet_signature_url: string | null;
+  wet_signed_at: string | null;
 }
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'compliance'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'compliance' | 'team'>('clients');
   const [clients, setClients] = useState<Client[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +68,8 @@ export default function ConsultantPanel() {
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [orgData, setOrgData] = useState<any>(null);
   const [savingOrg, setSavingOrg] = useState(false);
+  const [showEditClient, setShowEditClient] = useState(false);
+  const [editingClient, setEditingClient] = useState<any>(null);
 
   // Assignment Modal
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -70,25 +77,182 @@ export default function ConsultantPanel() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [currentAssignments, setCurrentAssignments] = useState<string[]>([]);
 
+  // Ekip Yönetimi (Yönetici Paneli) State'leri
+  const [invitations, setInvitations] = useState<any[]>([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [sendingEmail, setSendingEmail] = useState(false);
+
+  const roleLabels: any = {
+    premium_corporate: 'Çevre Danışmanlık Firma Sahibi',
+    corporate_chief: 'Çevre Danışmanlık Firma Yöneticisi',
+    corporate_staff: 'Çevre Danışmanlık Personeli',
+    normal: 'Normal (Ekip Dışı)',
+  };
+
   useEffect(() => {
     fetchData();
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'settings' && orgId) {
+    if ((activeTab === 'settings' || activeTab === 'team') && orgId) {
       fetchTeamMembers();
+    }
+    if (activeTab === 'team' && orgId) {
+      fetchInvitations();
     }
   }, [activeTab, orgId]);
 
   const fetchTeamMembers = async () => {
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email, extra_permissions')
+      .select('id, full_name, email, role, extra_permissions')
       .eq('organization_id', orgId);
     setTeamMembers(members || []);
   };
 
-  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const fetchInvitations = async () => {
+    if (!orgId) return;
+    const { data } = await supabase
+      .from('invitations')
+      .select('*')
+      .eq('organization_id', orgId)
+      .eq('is_used', false)
+      .order('created_at', { ascending: false });
+    setInvitations(data || []);
+  };
+
+  const handleSendEmailInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.includes('@')) return alert('Geçerli bir e-posta adresi giriniz.');
+
+    setSendingEmail(true);
+    try {
+      const { data: existingInvite } = await supabase
+        .from('invitations')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('email', inviteEmail)
+        .eq('is_used', false)
+        .maybeSingle();
+
+      if (existingInvite) {
+        alert('⚠️ Bu kullanıcıya zaten bekleyen bir davet var.');
+        setSendingEmail(false);
+        return;
+      }
+
+      const { data: targetUser, error: userError } = await supabase
+        .from('profiles')
+        .select('id, full_name, organization_id')
+        .eq('email', inviteEmail)
+        .single();
+
+      if (userError || !targetUser) {
+        alert('❌ Kullanıcı Bulunamadı! (Sisteme kayıtlı olması gerekir)');
+        setSendingEmail(false);
+        return;
+      }
+      if (targetUser.organization_id) {
+        alert('⚠️ Bu kullanıcı zaten bir şirkete/firmaya bağlı.');
+        setSendingEmail(false);
+        return;
+      }
+
+      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+      const { error: inviteError } = await supabase
+        .from('invitations')
+        .insert([{ code, organization_id: orgId, email: inviteEmail }]);
+
+      if (inviteError) throw inviteError;
+
+      await supabase.from('notifications').insert([
+        {
+          user_id: targetUser.id,
+          title: 'Danışmanlık Firması Daveti',
+          message: `${orgData?.name || 'Danışmanlık Firması'} sizi ekibine katılmaya davet etti.`,
+          type: 'invite',
+          metadata: {
+            org_id: orgId,
+            org_name: orgData?.name,
+            invite_code: code,
+          },
+        },
+      ]);
+
+      alert(`✅ Davet başarıyla gönderildi!`);
+      setInviteEmail('');
+      fetchInvitations();
+    } catch (error: any) {
+      alert('Hata: ' + error.message);
+    } finally {
+      setSendingEmail(false);
+    }
+  };
+
+  const handleCreateCode = async () => {
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    try {
+      const { error } = await supabase
+        .from('invitations')
+        .insert([
+          { code, organization_id: orgId, email: null, is_used: false },
+        ]);
+      if (error) throw error;
+      alert(`✅ Davet Kodu Oluşturuldu: ${code}`);
+      fetchInvitations();
+    } catch (error: any) {
+      alert('Hata: ' + error.message);
+    }
+  };
+
+  const handleDeleteInvite = async (id: string) => {
+    if (!window.confirm('Bu daveti iptal etmek istiyor musunuz?')) return;
+    await supabase.from('invitations').delete().eq('id', id);
+    setInvitations((prev) => prev.filter((i) => i.id !== id));
+  };
+
+  const copyCode = (code: string) => {
+    navigator.clipboard.writeText(code);
+    alert('Kopyalandı: ' + code);
+  };
+
+  const handleKick = async (id: string, role: string) => {
+    if (role === 'premium_corporate') return alert('Yöneticiyi silemezsiniz.');
+    if (window.confirm('Bu personeli şirketten çıkarmak istiyor musunuz?')) {
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ organization_id: null, role: 'normal' })
+          .eq('id', id);
+        if (error) throw error;
+        setTeamMembers((prev) => prev.filter((m) => m.id !== id));
+      } catch (err: any) {
+        alert('Çıkarılırken hata oluştu: ' + err.message);
+      }
+    }
+  };
+
+  const handleUpdateRole = async (memberId: string, role: string) => {
+    try {
+      const updates: any = { role };
+      if (role === 'normal') {
+        updates.organization_id = null;
+      }
+      
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', memberId);
+
+      if (error) throw error;
+      alert('Kullanıcı rolü başarıyla güncellendi.');
+      fetchTeamMembers();
+    } catch (err: any) {
+      alert('Rol güncellenemedi: ' + err.message);
+    }
+  };
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>, isEditMode = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -109,7 +273,11 @@ export default function ConsultantPanel() {
         .from('client_assets')
         .getPublicUrl(filePath);
 
-      setNewClient({ ...newClient, logo_url: data.publicUrl });
+      if (isEditMode) {
+        setEditingClient((prev: any) => ({ ...prev, logo_url: data.publicUrl }));
+      } else {
+        setNewClient({ ...newClient, logo_url: data.publicUrl });
+      }
     } catch (err: any) {
       alert('Logo yüklenirken hata: ' + err.message + '\nLütfen Supabase panelinden "client_assets" adında public bir bucket oluşturduğunuzdan emin olun.');
     } finally {
@@ -248,9 +416,9 @@ export default function ConsultantPanel() {
   const fetchClients = async (oId: string, role: string, uId: string, perms?: any) => {
     let query = supabase.from('consultant_clients').select('*');
     
-    // Yalnızca Yönetici (premium_corporate) ve Admin her şeyi görür. 
-    // Diğerleri (Şef ve Personel) sadece atandıkları firmaları görür (perm yoksa).
-    const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
+    // Yalnızca Yönetici (premium_corporate, corporate_chief) ve Admin her şeyi görür. 
+    // Personel sadece atandığı firmaları görür (perm yoksa).
+    const isRestrictedRole = role === 'corporate_staff';
 
     if (isRestrictedRole && !perms?.can_view_all_clients) {
       // Sadece atandığı firmalar
@@ -277,7 +445,7 @@ export default function ConsultantPanel() {
       .from('env_reports')
       .select('*, client:client_id(name), creator:creator_id(full_name)');
     
-    const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
+    const isRestrictedRole = role === 'corporate_staff';
 
     if (isRestrictedRole && !perms?.can_view_all_clients) {
       // Sadece atandığı firmaların raporları
@@ -320,6 +488,56 @@ export default function ConsultantPanel() {
       fetchClients(orgId, userRole, userId);
     } catch (err: any) {
       alert('Firma eklenirken hata: ' + err.message);
+    }
+  };
+
+  const handleOpenEditModal = (client: any) => {
+    setEditingClient(client);
+    setShowEditClient(true);
+  };
+
+  const handleUpdateClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingClient || !editingClient.name) return;
+
+    try {
+      const { error } = await supabase
+        .from('consultant_clients')
+        .update({
+          name: editingClient.name,
+          address: editingClient.address,
+          tax_no: editingClient.tax_no,
+          phone: editingClient.phone,
+          logo_url: editingClient.logo_url,
+        })
+        .eq('id', editingClient.id);
+
+      if (error) throw error;
+      setShowEditClient(false);
+      setEditingClient(null);
+      fetchClients(orgId, userRole, userId);
+      alert('İşletme bilgileri başarıyla güncellendi!');
+    } catch (err: any) {
+      alert('Firma güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleDeleteClient = async (clientId: string) => {
+    if (!window.confirm('Bu işletmeyi silmek istediğinize emin misiniz? Bu işlem geri alınamaz ve işletmeye ait tüm raporlar ve atamalar silinecektir.')) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('consultant_clients')
+        .delete()
+        .eq('id', clientId);
+
+      if (error) throw error;
+      fetchClients(orgId, userRole, userId);
+      alert('İşletme başarıyla silindi.');
+    } catch (err: any) {
+      alert('Firma silinirken hata: ' + err.message);
     }
   };
 
@@ -368,7 +586,7 @@ export default function ConsultantPanel() {
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
 
   const isAdminOrChief = userRole === 'admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
-  const isManager = userRole === 'premium_corporate';
+  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
   const canViewCompliance = isManager || (currentUserPerms?.can_view_compliance);
 
   return (
@@ -419,17 +637,29 @@ export default function ConsultantPanel() {
         >
           <FileText size={16} /> Raporlar
         </button>
-        {userRole === 'premium_corporate' && (
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-              activeTab === 'settings'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <SettingsIcon size={16} /> Şirket Ayarları
-          </button>
+        {isManager && (
+          <>
+            <button
+              onClick={() => setActiveTab('team')}
+              className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+                activeTab === 'team'
+                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Users size={16} /> Ekip Yönetimi
+            </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+                activeTab === 'settings'
+                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <SettingsIcon size={16} /> Şirket Ayarları
+            </button>
+          </>
         )}
         {canViewCompliance && (
           <button
@@ -472,10 +702,24 @@ export default function ConsultantPanel() {
                 <p><span className="font-medium">Tel:</span> {client.phone}</p>
               </div>
               {isManager && (
-                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
+                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex justify-between items-center gap-2">
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => handleOpenEditModal(client)}
+                      className="text-amber-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                    >
+                      <Edit2 size={14} /> Düzenle
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteClient(client.id)}
+                      className="text-red-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                    >
+                      <Trash2 size={14} /> Sil
+                    </button>
+                  </div>
                   <button 
                     onClick={() => openAssignModal(client)}
-                    className="text-blue-600 hover:underline text-sm flex items-center gap-1"
+                    className="text-blue-600 hover:underline text-sm flex items-center gap-1 font-medium"
                   >
                     <Users size={14} /> Personel Ata
                   </button>
@@ -502,6 +746,7 @@ export default function ConsultantPanel() {
                   <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tarih</th>
                   <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Oluşturan</th>
                   <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Durum</th>
+                  <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Islak İmza</th>
                   <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşlemler</th>
                 </tr>
               </thead>
@@ -523,6 +768,22 @@ export default function ConsultantPanel() {
                         {getReportStatusColor(report).includes('red') && <AlertCircle size={12} />}
                         {getReportStatusText(report)}
                       </span>
+                    </td>
+                    <td className="p-4">
+                      {(report as any).wet_signature_url ? (
+                        <a
+                          href={(report as any).wet_signature_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 transition"
+                        >
+                          <CheckCircle size={12} /> Islak İmzalı
+                        </a>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border bg-amber-50 text-amber-700 border-amber-200">
+                          <AlertCircle size={12} /> İmzalanmadı
+                        </span>
+                      )}
                     </td>
                     <td className="p-4">
                       <Link
@@ -587,84 +848,194 @@ export default function ConsultantPanel() {
                 </div>
               </div>
 
-              <div className="pt-6 border-t flex justify-end">
-                <button
-                  onClick={handleSaveOrg}
-                  disabled={savingOrg}
-                  className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg transition disabled:opacity-50 flex items-center gap-2"
-                >
-                  {savingOrg ? 'Kaydediliyor...' : 'Ayarları Kaydet'}
-                </button>
-              </div>
             </div>
           </div>
+        </div>
+      )}
 
-          {/* Ekip Yetki Yönetimi */}
-          <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
-            <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-600">
-              <Users size={20} /> Ekip Yetki Yönetimi
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="text-xs text-gray-500 uppercase border-b">
-                    <th className="pb-3">Personel</th>
-                    <th className="pb-3">Tüm Firmaları Görebilir</th>
-                    <th className="pb-3">Takip Panelini Görebilir</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {teamMembers.filter(m => m.id !== userId).map(member => (
-                    <tr key={member.id}>
-                      <td className="py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs uppercase">
-                            {member.full_name?.charAt(0)}
-                          </div>
-                          <div>
-                            <p className="text-sm font-bold">{member.full_name}</p>
-                            <p className="text-[10px] text-gray-400">{member.email}</p>
-                          </div>
+      {activeTab === 'team' && (
+        <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Ekip Listesi */}
+            <div className="lg:col-span-2 bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+              <h3 className="font-bold text-gray-700 dark:text-white mb-4 flex items-center gap-2 text-lg">
+                <Users className="text-blue-600" /> Ekip ve Bekleyen Kodlar
+              </h3>
+              
+              <div className="space-y-4">
+                {/* Üyeler */}
+                {teamMembers.map((member) => (
+                  <div key={member.id} className="p-4 rounded-xl border border-gray-100 dark:border-slate-700 bg-white dark:bg-slate-800/50 flex flex-col gap-3 hover:shadow-sm transition">
+                    <div className="flex justify-between items-start">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs uppercase dark:bg-blue-950/30">
+                          {member.full_name?.charAt(0) || <User size={20} />}
                         </div>
-                      </td>
-                      <td className="py-4">
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            className="sr-only peer"
-                            checked={member.extra_permissions?.can_view_all_clients || false}
-                            onChange={async (e) => {
-                              const newVal = e.target.checked;
-                              const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
-                              const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                              if (error) alert('Hata: ' + error.message);
-                              else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                            }}
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                        </label>
-                      </td>
-                      <td className="py-4">
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            className="sr-only peer"
-                            checked={member.extra_permissions?.can_view_compliance || false}
-                            onChange={async (e) => {
-                              const newVal = e.target.checked;
-                              const updatedPerms = { ...(member.extra_permissions || {}), can_view_compliance: newVal };
-                              const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                              if (error) alert('Hata: ' + error.message);
-                              else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                            }}
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                        </label>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <div>
+                          <div className="font-bold text-gray-800 dark:text-white flex flex-wrap items-center gap-2">
+                            {member.full_name}
+                            <span className="text-[10px] px-2 py-0.5 rounded border bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900 uppercase font-semibold">
+                              {roleLabels[member.role] || member.role}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">{member.email}</div>
+                        </div>
+                      </div>
+                      
+                      {member.id !== userId && (
+                        <button
+                          onClick={() => handleKick(member.id, member.role)}
+                          className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-100 hover:bg-red-100 transition dark:bg-red-950/20 dark:border-red-900"
+                          title="Çıkar"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Rol & Yetkiler */}
+                    {member.id !== userId && (
+                      <div className="mt-2 pt-3 border-t border-gray-50 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-400 font-bold">ROL:</span>
+                          <select
+                            value={member.role}
+                            onChange={(e) => handleUpdateRole(member.id, e.target.value)}
+                            className="border rounded px-2 py-1 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold text-blue-700 dark:text-blue-400 outline-none focus:ring-1 focus:ring-blue-500"
+                          >
+                            <option value="premium_corporate">Çevre Danışmanlık Firma Sahibi</option>
+                            <option value="corporate_chief">Çevre Danışmanlık Firma Yöneticisi</option>
+                            <option value="corporate_staff">Çevre Danışmanlık Personeli</option>
+                            <option value="normal">Normal (Ekip Dışı)</option>
+                          </select>
+                        </div>
+
+                        <div className="flex flex-wrap gap-3">
+                          <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={member.extra_permissions?.can_view_all_clients || false}
+                              onChange={async (e) => {
+                                const newVal = e.target.checked;
+                                const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
+                                const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                if (error) alert('Hata: ' + error.message);
+                                else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                              }}
+                              className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                            />
+                            Tüm Firmaları Görebilir
+                          </label>
+
+                          <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={member.extra_permissions?.can_view_compliance || false}
+                              onChange={async (e) => {
+                                const newVal = e.target.checked;
+                                const updatedPerms = { ...(member.extra_permissions || {}), can_view_compliance: newVal };
+                                const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                if (error) alert('Hata: ' + error.message);
+                                else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                              }}
+                              className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                            />
+                            Takip Panelini Görebilir
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* Bekleyen Davetler */}
+                {invitations.map((i) => (
+                  <div key={i.id} className="p-4 rounded-xl border-2 border-dashed border-purple-200 bg-purple-50/50 dark:border-purple-900/50 dark:bg-purple-950/20 flex justify-between items-center opacity-90">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-white dark:bg-slate-800 flex items-center justify-center text-purple-600 shadow-sm border dark:border-slate-700">
+                        {i.email ? <Mail size={20} /> : <FileText size={20} />}
+                      </div>
+                      <div>
+                        <div className="font-bold text-purple-900 dark:text-purple-300 text-sm">
+                          {i.email ? i.email : 'Manuel Kod'}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[10px] font-bold bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-900 text-purple-700 dark:text-purple-400 font-mono tracking-wider">
+                            {i.code}
+                          </span>
+                          <span className="text-[10px] text-purple-500 dark:text-purple-400">
+                            {i.email ? '(E-posta Daveti)' : '(Manuel Kod)'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => copyCode(i.code)}
+                        className="p-2 bg-white dark:bg-slate-800 rounded border hover:bg-gray-50 dark:hover:bg-slate-700 text-gray-500 dark:text-gray-400"
+                        title="Kopyala"
+                      >
+                        <Copy size={16} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteInvite(i.id)}
+                        className="p-2 bg-white dark:bg-slate-800 rounded border hover:bg-red-50 dark:hover:bg-red-950/20 text-red-500"
+                        title="İptal Et"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {teamMembers.length <= 1 && invitations.length === 0 && (
+                  <div className="text-center text-gray-400 dark:text-gray-500 py-8 italic">
+                    Henüz ekip üyesi yok.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Davet Paneli (Sağ Kolon) */}
+            <div className="space-y-6">
+              {/* E-posta ile davet */}
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                <h3 className="font-bold text-blue-800 dark:text-blue-400 mb-3 flex items-center gap-2">
+                  <Mail size={18} /> E-Posta ile Davet
+                </h3>
+                <form onSubmit={handleSendEmailInvite} className="space-y-2">
+                  <input
+                    type="email"
+                    required
+                    placeholder="personel@sirket.com"
+                    className="w-full border p-2 rounded-lg text-sm outline-none focus:border-blue-500 dark:bg-slate-900 dark:border-slate-700"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                  />
+                  <button
+                    disabled={sendingEmail}
+                    className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-blue-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {sendingEmail ? 'Gönderiliyor...' : 'Davet Gönder'}
+                  </button>
+                </form>
+              </div>
+
+              {/* Manuel Kod */}
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                <h3 className="font-bold text-purple-800 dark:text-purple-400 mb-3 flex items-center gap-2">
+                  <FileText size={18} /> Manuel Kod Üret
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                  Bu kodu personele verin. Personel "Ayarlar" sayfasından bu kodu girerek gruba katılabilir.
+                </p>
+                <button
+                  onClick={handleCreateCode}
+                  className="w-full bg-purple-600 text-white py-2.5 rounded-lg font-bold text-sm hover:bg-purple-700 transition"
+                >
+                  Kod Oluştur
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -800,6 +1171,104 @@ export default function ConsultantPanel() {
                 <button
                   type="button"
                   onClick={() => setShowAddClient(false)}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-gray-700"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium"
+                >
+                  Kaydet
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Client Modal */}
+      {showEditClient && editingClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+              <h2 className="text-xl font-bold">İşletme Bilgilerini Düzenle</h2>
+              <button 
+                onClick={() => {
+                  setShowEditClient(false);
+                  setEditingClient(null);
+                }} 
+                className="text-gray-400 hover:text-gray-600"
+              >
+                X
+              </button>
+            </div>
+            <form onSubmit={handleUpdateClient} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Ünvanı *</label>
+                <input
+                  type="text"
+                  required
+                  value={editingClient.name}
+                  onChange={(e) => setEditingClient({ ...editingClient, name: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Vergi No</label>
+                <input
+                  type="text"
+                  value={editingClient.tax_no || ''}
+                  onChange={(e) => setEditingClient({ ...editingClient, tax_no: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Adres</label>
+                <textarea
+                  value={editingClient.address || ''}
+                  onChange={(e) => setEditingClient({ ...editingClient, address: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 h-20"
+                ></textarea>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Telefon</label>
+                <input
+                  type="text"
+                  value={editingClient.phone || ''}
+                  onChange={(e) => setEditingClient({ ...editingClient, phone: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Firma Logosu (Opsiyonel)</label>
+                <div className="flex items-center gap-4">
+                  {editingClient.logo_url ? (
+                    <div className="relative">
+                      <img src={editingClient.logo_url} alt="Önizleme" className="w-16 h-16 rounded border object-contain bg-gray-50" />
+                      <button 
+                        type="button"
+                        onClick={() => setEditingClient({...editingClient, logo_url: ''})}
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition">
+                      <span className="text-xs text-gray-500">{uploadingLogo ? 'Yükleniyor...' : 'Bilgisayardan Seç'}</span>
+                      <input type="file" accept="image/*" className="hidden" onChange={(e) => handleLogoUpload(e, true)} disabled={uploadingLogo} />
+                    </label>
+                  )}
+                </div>
+              </div>
+              <div className="pt-4 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditClient(false);
+                    setEditingClient(null);
+                  }}
                   className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-gray-700"
                 >
                   İptal

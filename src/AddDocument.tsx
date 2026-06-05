@@ -73,7 +73,45 @@ export default function AddDocument() {
 
   // AI Analiz State'leri
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [uploadMode, setUploadMode] = useState<'ai' | 'manual'>('ai');
+  const [uploadMode, setUploadMode] = useState<'ai' | 'manual'>('manual');
+  const [corporateClients, setCorporateClients] = useState<any[]>([]);
+
+  const fetchCorporateClients = async (orgId: string, role: string, userId: string) => {
+    try {
+      let query = supabase.from('consultant_clients').select('id, name');
+      
+      if (role === 'corporate_staff') {
+        const { data: assignments } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', userId);
+        const cIds = assignments?.map((a) => a.client_id) || [];
+        if (cIds.length > 0) {
+          query = query.in('id', cIds);
+        } else {
+          setCorporateClients([]);
+          return;
+        }
+      } else {
+        query = query.eq('consultant_company_id', orgId);
+      }
+      
+      const { data } = await query.order('name', { ascending: true });
+      setCorporateClients(data || []);
+    } catch (err) {
+      console.error('Corporate clients fetch error:', err);
+    }
+  };
+
+  useEffect(() => {
+    const run = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
+      }
+    };
+    run();
+  }, [docScope, myOrgId]);
 
   useEffect(() => {
     checkUserAndFetchDefs();
@@ -139,7 +177,11 @@ export default function AddDocument() {
         else setDocScope('personal');
 
         // 4. Tanımları ve Sayaçları Çek
-        await fetchDefinitions(session.user.id);
+        await fetchDefinitions(session.user.id, !!profile?.organization_id, profile?.organization_id);
+
+        if (profile?.organization_id) {
+          await fetchCorporateClients(profile.organization_id, role, session.user.id);
+        }
 
         const { count } = await supabase
           .from('documents')
@@ -155,19 +197,36 @@ export default function AddDocument() {
     }
   };
 
-  const fetchDefinitions = async (userId: string) => {
-    const { data: defs } = await supabase
+  const fetchDefinitions = async (userId: string, isCorporate = false, orgId: string | null = null) => {
+    let userIds = [userId];
+    const targetOrgId = orgId || myOrgId;
+    if (isCorporate && targetOrgId) {
+      const { data: orgProfiles, error: pErr } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('organization_id', targetOrgId);
+      if (pErr) {
+        console.error('fetchDefinitions profiles fetch error:', pErr);
+      }
+      if (orgProfiles && orgProfiles.length > 0) {
+        userIds = orgProfiles.map((p) => p.id);
+      }
+    }
+    const { data: defs, error: dErr } = await supabase
       .from('user_definitions')
       .select('*')
-      .eq('user_id', userId)
+      .in('user_id', userIds)
       .order('created_at', { ascending: true });
+    if (dErr) {
+      console.error('fetchDefinitions user_definitions fetch error:', dErr);
+    }
     if (defs) {
       setTypeOptions(defs.filter((d) => d.category === 'doc_type'));
       setLocOptions(defs.filter((d) => d.category === 'location'));
     }
   };
 
-  const canUploadCorporate = (isPremium || userRole === 'admin') && myOrgId;
+  const canUploadCorporate = !!myOrgId;
 
   // --- YÖNETİM İŞLEMLERİ ---
   const handleAddDefinition = async () => {
@@ -176,15 +235,19 @@ export default function AddDocument() {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) return;
-    await supabase.from('user_definitions').insert([
+    const { error } = await supabase.from('user_definitions').insert([
       {
         user_id: session.user.id,
         category: manageCategory,
         label: newDefLabel.trim(),
       },
     ]);
+    if (error) {
+      alert("Hata: " + error.message);
+      return;
+    }
     setNewDefLabel('');
-    fetchDefinitions(session.user.id);
+    fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
   };
 
   const handleDeleteDefinition = async (id: string) => {
@@ -193,7 +256,7 @@ export default function AddDocument() {
       data: { session },
     } = await supabase.auth.getSession();
     await supabase.from('user_definitions').delete().eq('id', id);
-    if (session) fetchDefinitions(session.user.id);
+    if (session) fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
   };
 
   const saveEditing = async (id: string) => {
@@ -205,7 +268,7 @@ export default function AddDocument() {
       .update({ label: editValue })
       .eq('id', id);
     setEditingId(null);
-    if (session) fetchDefinitions(session.user.id);
+    if (session) fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
   };
   const openManageModal = (category: 'doc_type' | 'location') => {
     setManageCategory(category);
@@ -350,6 +413,9 @@ export default function AddDocument() {
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const selectedType = typeOptions.find(t => t.id === selectedTypeId);
+    const finalTitle = selectedType ? selectedType.label : (file ? file.name : 'Belge');
+
     const docsToUpload = uploadMode === 'ai'
       ? bulkAnalysisResults
       : [{
@@ -359,7 +425,7 @@ export default function AddDocument() {
         isIndefinite,
         selectedTypeId,
         selectedLocId,
-        title,
+        title: finalTitle,
         description: desc,
         file: file
       }];
@@ -412,16 +478,50 @@ export default function AddDocument() {
         }
 
         // YENİ LOKASYON KONTROLÜ (Manuel veya Toplu)
-        let finalLocId = (doc.selectedLocId && doc.selectedLocId !== 'NEW_LOC') ? doc.selectedLocId : (selectedLocId !== 'NEW_LOC' ? selectedLocId : null);
-        const manualLocName = uploadMode === 'ai' ? doc.manualLoc : (window as any).tempManualLoc;
-
-        if ((doc.selectedLocId === 'NEW_LOC' || selectedLocId === 'NEW_LOC') && manualLocName) {
-          const { data: newLoc } = await supabase
+        let finalLocId = null;
+        if (docScope === 'corporate' && selectedLocId) {
+          const clientName = selectedLocId;
+          let orgUserIds: string[] = [session.user.id];
+          if (myOrgId) {
+            const { data: orgProfiles } = await supabase
+              .from('profiles')
+              .select('id')
+              .eq('organization_id', myOrgId);
+            if (orgProfiles && orgProfiles.length > 0) {
+              orgUserIds = orgProfiles.map(p => p.id);
+            }
+          }
+          
+          const { data: existingLoc } = await supabase
             .from('user_definitions')
-            .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
-            .select()
-            .single();
-          if (newLoc) finalLocId = newLoc.id;
+            .select('id')
+            .eq('category', 'location')
+            .ilike('label', clientName)
+            .in('user_id', orgUserIds)
+            .maybeSingle();
+
+          if (existingLoc) {
+            finalLocId = existingLoc.id;
+          } else {
+            const { data: newLoc } = await supabase
+              .from('user_definitions')
+              .insert([{ user_id: session.user.id, category: 'location', label: clientName }])
+              .select('id')
+              .single();
+            if (newLoc) finalLocId = newLoc.id;
+          }
+        } else {
+          finalLocId = (selectedLocId && selectedLocId !== 'NEW_LOC') ? selectedLocId : null;
+          const manualLocName = (window as any).tempManualLoc;
+
+          if (selectedLocId === 'NEW_LOC' && manualLocName) {
+            const { data: newLoc } = await supabase
+              .from('user_definitions')
+              .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
+              .select()
+              .single();
+            if (newLoc) finalLocId = newLoc.id;
+          }
         }
 
         const { error } = await supabase.from('documents').insert([
@@ -485,41 +585,7 @@ export default function AddDocument() {
           )}
         </div>
 
-        {/* MOD SEÇİMİ */}
-        <div className="grid grid-cols-2 gap-4 mb-8">
-          <button
-            type="button"
-            onClick={() => setUploadMode('ai')}
-            className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 ${uploadMode === 'ai'
-              ? 'border-purple-500 bg-purple-50 shadow-md'
-              : 'border-gray-100 bg-white hover:border-gray-300'
-              }`}
-          >
-            <div className={`p-2 rounded-lg ${uploadMode === 'ai' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}`}>
-              <Sparkles size={24} />
-            </div>
-            <div className="text-center">
-              <div className={`font-bold text-sm ${uploadMode === 'ai' ? 'text-blue-800' : 'text-gray-600'}`}>Otomatik Tarama</div>
-              <div className="text-[10px] text-gray-400">Veri Ayıklama (Internet Gerekmez)</div>
-            </div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setUploadMode('manual')}
-            className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 ${uploadMode === 'manual'
-              ? 'border-blue-500 bg-blue-50 shadow-md'
-              : 'border-gray-100 bg-white hover:border-gray-300'
-              }`}
-          >
-            <div className={`p-2 rounded-lg ${uploadMode === 'manual' ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
-              <Edit2 size={24} />
-            </div>
-            <div className="text-center">
-              <div className={`font-bold text-sm ${uploadMode === 'manual' ? 'text-blue-800' : 'text-gray-600'}`}>Manuel Mod</div>
-              <div className="text-[10px] text-gray-400">Klasik & Detaylı Kontrol</div>
-            </div>
-          </button>
-        </div>
+
 
         <form onSubmit={handleUpload} className="space-y-6">
           {/* KAPSAM SEÇİMİ - HER İKİ MODDA DA GÖRÜNSÜN */}
@@ -581,28 +647,19 @@ export default function AddDocument() {
           {uploadMode === 'manual' && (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-bold text-gray-700 mb-1">
-                    Belge Başlığı
-                  </label>
-                  <input
-                    type="text"
-                    className="w-full p-3 border rounded-lg bg-white"
-                    placeholder="Örn: 2026 Çevre İzni Belgesi"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                  />
-                </div>
+
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-1 flex justify-between">
                     <span>Belge Türü *</span>
-                    <button
-                      type="button"
-                      onClick={() => openManageModal('doc_type')}
-                      className="text-xs text-blue-600 bg-blue-50 px-2 rounded"
-                    >
-                      Yönet
-                    </button>
+                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                      <button
+                        type="button"
+                        onClick={() => openManageModal('doc_type')}
+                        className="text-xs text-blue-600 bg-blue-50 px-2 rounded hover:underline font-medium"
+                      >
+                        Yönet
+                      </button>
+                    )}
                   </label>
                   <select
                     required={uploadMode === 'manual'}
@@ -621,28 +678,43 @@ export default function AddDocument() {
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-1 flex justify-between">
                     <span>Lokasyon</span>
-                    <button
-                      type="button"
-                      onClick={() => openManageModal('location')}
-                      className="text-xs text-blue-600 bg-blue-50 px-2 rounded"
-                    >
-                      Yönet
-                    </button>
+                    {docScope === 'personal' && (
+                      <button
+                        type="button"
+                        onClick={() => openManageModal('location')}
+                        className="text-xs text-blue-600 bg-blue-50 px-2 rounded hover:underline font-medium"
+                      >
+                        Yönet
+                      </button>
+                    )}
                   </label>
                   <select
                     className="w-full p-3 border rounded-lg bg-white"
                     value={selectedLocId}
                     onChange={(e) => setSelectedLocId(e.target.value)}
                   >
-                    <option value="">(Lokasyon Seçiniz...)</option>
-                    {locOptions.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.label}
-                      </option>
-                    ))}
-                    <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
+                    {docScope === 'corporate' ? (
+                      <>
+                        <option value="">(İşletme Seçiniz...)</option>
+                        {corporateClients.map((cc) => (
+                          <option key={cc.id} value={cc.name}>
+                            {cc.name}
+                          </option>
+                        ))}
+                      </>
+                    ) : (
+                      <>
+                        <option value="">(Lokasyon Seçiniz...)</option>
+                        {locOptions.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.label}
+                          </option>
+                        ))}
+                        <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
+                      </>
+                    )}
                   </select>
-                  {selectedLocId === 'NEW_LOC' && (
+                  {docScope === 'personal' && selectedLocId === 'NEW_LOC' && (
                     <input
                       type="text"
                       className="w-full mt-2 p-2 border rounded border-blue-300 bg-blue-50 text-sm font-bold"
@@ -1005,7 +1077,7 @@ export default function AddDocument() {
 
       {manageModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-80">
+          <div className="bg-white text-gray-900 p-6 rounded-xl shadow-2xl w-80">
             <div className="flex justify-between mb-4">
               <h3 className="font-bold">Yönet</h3>
               <button onClick={() => setManageModalOpen(false)}>
@@ -1014,12 +1086,12 @@ export default function AddDocument() {
             </div>
             <div className="flex gap-2 mb-4">
               <input
-                className="border p-2 w-full rounded"
+                className="border p-2 w-full rounded text-gray-900 bg-white"
                 value={newDefLabel}
                 onChange={(e) => setNewDefLabel(e.target.value)}
                 placeholder="Yeni ekle..."
               />
-              <button onClick={handleAddDefinition}>
+              <button onClick={handleAddDefinition} className="text-gray-700 hover:text-gray-900">
                 <Plus />
               </button>
             </div>
@@ -1028,7 +1100,7 @@ export default function AddDocument() {
                 (i) => (
                   <div
                     key={i.id}
-                    className="flex justify-between p-2 bg-gray-50 rounded group"
+                    className="flex justify-between p-2 bg-gray-50 rounded group text-gray-900"
                   >
                     {editingId === i.id ? (
                       <>

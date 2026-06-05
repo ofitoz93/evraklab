@@ -45,7 +45,7 @@ export default function ComplianceDashboard() {
       if (profile) {
         setOrgId(profile.organization_id);
         const perms = profile.extra_permissions || {};
-        const isRestrictedRole = profile.role === 'corporate_staff' || profile.role === 'corporate_chief';
+        const isRestrictedRole = profile.role === 'corporate_staff';
         
         let assignedClientIds: string[] = [];
         if (isRestrictedRole && !perms.can_view_all_clients) {
@@ -73,7 +73,20 @@ export default function ComplianceDashboard() {
         }
         
         const { data: clientsData } = await clientQuery.order('name');
-        setClients(clientsData || []);
+
+        // 3. Atamaları çek
+        const { data: assignmentsData } = await supabase
+          .from('consultant_assignments')
+          .select('client_id, user_id, user:profiles!user_id(full_name)');
+
+        const clientsWithAssignments = (clientsData || []).map(client => {
+          const clientAssigns = (assignmentsData || []).filter(a => a.client_id === client.id);
+          return {
+            ...client,
+            assignedUsers: clientAssigns.map(a => a.user?.full_name).filter(Boolean)
+          };
+        });
+        setClients(clientsWithAssignments);
 
         // 2. Bu yılın raporlarını çek
         const startDate = `${currentYear}-01-01`;
@@ -81,7 +94,7 @@ export default function ComplianceDashboard() {
 
         let reportQuery = supabase
           .from('env_reports')
-          .select('id, client_id, report_date, report_type, status')
+          .select('id, client_id, report_date, report_type, status, creator_id, creator:profiles!creator_id(full_name)')
           .eq('consultant_company_id', profile.organization_id)
           .gte('report_date', startDate)
           .lte('report_date', endDate);
@@ -224,7 +237,12 @@ export default function ComplianceDashboard() {
               {clients.map(client => (
                 <tr key={client.id} className="hover:bg-gray-50 dark:hover:bg-blue-900/10 transition">
                   <td className="p-4 text-sm font-bold border-r dark:border-slate-700 sticky left-0 bg-white dark:bg-slate-800 z-10 shadow-sm">
-                    {client.name}
+                    <div>{client.name}</div>
+                    {client.assignedUsers && client.assignedUsers.length > 0 && (
+                      <div className="text-[10px] text-gray-400 font-normal mt-0.5">
+                        Sorumlu: {client.assignedUsers.join(', ')}
+                      </div>
+                    )}
                   </td>
                   {months.map((m, idx) => {
                     const result = getCellStatus(client.id, idx);
@@ -237,7 +255,7 @@ export default function ComplianceDashboard() {
                                 key={r.id}
                                 onClick={() => navigate(`/consultant/reports/${r.id}`)}
                                 className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center hover:scale-110 transition shadow-sm border border-green-200 relative"
-                                title={`${i + 1}. Raporu Gör`}
+                                title={`${r.creator?.full_name || 'Bilinmiyor'} tarafından hazırlandı. Raporu Gör`}
                               >
                                 <CheckCircle size={14} />
                                 {result.reports!.length > 1 && (
@@ -249,11 +267,17 @@ export default function ComplianceDashboard() {
                             ))}
                           </div>
                         ) : result.status === 'overdue' ? (
-                          <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-900/30 text-red-600 flex items-center justify-center mx-auto animate-pulse border border-red-200" title="Süresi Geçti!">
+                          <div 
+                            className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-900/30 text-red-600 flex items-center justify-center mx-auto animate-pulse border border-red-200" 
+                            title={`Süresi Geçti! Sorumlu: ${client.assignedUsers?.join(', ') || 'Belirtilmemiş'}`}
+                          >
                             <AlertCircle size={16} />
                           </div>
                         ) : result.status === 'pending' ? (
-                          <div className="w-8 h-8 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 flex items-center justify-center mx-auto border border-yellow-200" title="Yüklenmesi Bekleniyor">
+                          <div 
+                            className="w-8 h-8 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 flex items-center justify-center mx-auto border border-yellow-200" 
+                            title={`Yüklenmesi Bekleniyor. Sorumlu: ${client.assignedUsers?.join(', ') || 'Belirtilmemiş'}`}
+                          >
                             <Clock size={16} />
                           </div>
                         ) : (
@@ -277,7 +301,7 @@ export default function ComplianceDashboard() {
                                 key={r.id}
                                 onClick={() => navigate(`/consultant/reports/${r.id}`)}
                                 className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center hover:scale-110 transition shadow-md"
-                                title={`İç Tetkik Raporu ${i + 1}`}
+                                title={`İç Tetkik Raporu - ${r.creator?.full_name || 'Bilinmiyor'} tarafından hazırlandı`}
                               >
                                 {result.reports!.length > 1 ? i + 1 : <CheckCircle size={16} />}
                               </button>
@@ -287,13 +311,19 @@ export default function ComplianceDashboard() {
                       }
                       if (result.status === 'overdue') {
                         return (
-                          <div className="w-8 h-8 rounded-lg bg-red-100 text-red-600 flex items-center justify-center mx-auto border border-red-200 animate-pulse">
+                          <div 
+                            className="w-8 h-8 rounded-lg bg-red-100 text-red-600 flex items-center justify-center mx-auto border border-red-200 animate-pulse"
+                            title={`Süresi Geçti! Sorumlu: ${client.assignedUsers?.join(', ') || 'Belirtilmemiş'}`}
+                          >
                             <AlertCircle size={16} />
                           </div>
                         );
                       }
                       return (
-                        <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-300 flex items-center justify-center mx-auto border border-blue-100">
+                        <div 
+                          className="w-8 h-8 rounded-lg bg-blue-50 text-blue-300 flex items-center justify-center mx-auto border border-blue-100"
+                          title={`Yüklenmesi Bekleniyor. Sorumlu: ${client.assignedUsers?.join(', ') || 'Belirtilmemiş'}`}
+                        >
                            <Clock size={16} />
                         </div>
                       );

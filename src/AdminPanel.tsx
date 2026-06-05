@@ -98,9 +98,9 @@ export default function AdminPanel() {
   const roleLabels: any = {
     normal: 'Normal',
     premium_individual: 'Bireysel Premium',
-    premium_corporate: 'Yönetici',
-    corporate_chief: 'Şef',
-    corporate_staff: 'Personel',
+    premium_corporate: 'Çevre Danışmanlık Firma Sahibi',
+    corporate_chief: 'Çevre Danışmanlık Firma Yöneticisi',
+    corporate_staff: 'Çevre Danışmanlık Personeli',
     admin: 'Admin',
     system_admin: 'Sistem Admin',
   };
@@ -346,6 +346,36 @@ export default function AdminPanel() {
     setTeamList(data || []);
   };
 
+  const updateMemberRole = async (memberId: string, role: string) => {
+    try {
+      const updates: any = { role };
+      if (role === 'normal') {
+        updates.organization_id = null;
+      }
+      
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', memberId);
+
+      if (error) throw error;
+
+      alert('Kullanıcı rolü başarıyla güncellendi.');
+      
+      // Şirketten çıkarıldıysa veya güncellendiyse listeyi yenile
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('organization_id', viewTeamOrg.id);
+      setTeamList(data || []);
+      
+      fetchUsers();
+    } catch (err: any) {
+      console.error("Kullanıcı rolü güncellenirken hata:", err);
+      alert('Rol güncellenemedi: ' + err.message);
+    }
+  };
+
   const openUserModal = async (user: any) => {
     setEditingUser(user);
     setNewRole(user.role);
@@ -548,6 +578,22 @@ export default function AdminPanel() {
       }
     } finally {
       setCreateUserLoading(false);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string, userEmail: string) => {
+    if (!window.confirm(`"${userEmail}" e-postalı kullanıcıyı sistemden tamamen silmek istediğinize emin misiniz? Bu işlem geri alınamaz!`)) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase.rpc('delete_user_by_admin', { target_user_id: userId });
+      if (error) throw error;
+      alert('Kullanıcı başarıyla sistemden silindi.');
+      fetchUsers();
+    } catch (err: any) {
+      console.error("Kullanıcı silme hatası:", err);
+      alert('Kullanıcı silinemedi: ' + err.message);
     }
   };
 
@@ -833,12 +879,20 @@ export default function AdminPanel() {
                       )}
                     </td>
                     <td className="p-3 text-right">
-                      <button
-                        onClick={() => openUserModal(user)}
-                        className="text-blue-600 font-bold text-xs border p-1.5 rounded hover:bg-blue-50 flex items-center gap-1 float-right"
-                      >
-                        <Edit size={12} /> Düzenle
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => openUserModal(user)}
+                          className="text-blue-600 font-bold text-xs border p-1.5 rounded hover:bg-blue-50 flex items-center gap-1"
+                        >
+                          <Edit size={12} /> Düzenle
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(user.id, user.email)}
+                          className="text-red-600 font-bold text-xs border border-red-200 p-1.5 rounded hover:bg-red-50 flex items-center gap-1"
+                        >
+                          <Trash2 size={12} /> Sil
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1242,9 +1296,16 @@ export default function AdminPanel() {
                         <div className="text-xs text-gray-500">{m.email}</div>
                       </td>
                       <td className="p-2">
-                        <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-bold">
-                          {roleLabels[m.role]}
-                        </span>
+                        <select
+                          value={m.role}
+                          onChange={(e) => updateMemberRole(m.id, e.target.value)}
+                          className="border rounded px-2 py-1 text-xs bg-white font-bold text-blue-700 border-blue-100 outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="premium_corporate">Çevre Danışmanlık Firma Sahibi</option>
+                          <option value="corporate_chief">Çevre Danışmanlık Firma Yöneticisi</option>
+                          <option value="corporate_staff">Çevre Danışmanlık Personeli</option>
+                          <option value="normal">Normal (Ekip Dışı)</option>
+                        </select>
                       </td>
                       <td className="p-2 text-right">
                         {m.role !== 'premium_corporate' && (

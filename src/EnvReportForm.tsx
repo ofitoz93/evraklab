@@ -41,6 +41,9 @@ export default function EnvReportForm() {
   const [uploading, setUploading] = useState(false);
   const [attachmentUrls, setAttachmentUrls] = useState<string[]>([]);
 
+  const [userMode, setUserMode] = useState<'personal' | 'consultant' | 'loading'>('loading');
+  const [noAssignedClients, setNoAssignedClients] = useState(false);
+
   useEffect(() => {
     fetchInitialData();
   }, []);
@@ -59,22 +62,64 @@ export default function EnvReportForm() {
       setUserProfile(profile);
       const perms = profile.extra_permissions || {};
 
-      // Müşterileri çek
-      let query = supabase.from('consultant_clients').select('*');
-      
-      const isRestrictedRole = profile.role === 'corporate_staff' || profile.role === 'corporate_chief';
+      // --- MOD TESPİTİ ---
+      // Danışmanlık modu: kullanıcının bir şirkete bağlı olması YETERLİ değil,
+      // o şirketin çevre danışmanlığı olması gerekiyor.
+      // Ek güvence: corporate_* rolü olan ve organization_id'si olan kullanıcılar
+      // daima danışmanlık moduna alınır (RLS hatalarına karşı güvenli).
 
-      if (isRestrictedRole && !perms.can_view_all_clients) {
+      const isCorporateRole = ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(profile.role);
+      const hasOrg = !!profile.organization_id;
+
+      let isEnvConsultantOrg = false;
+      if (hasOrg && !isCorporateRole) {
+        // Sadece corporate dışı roller için org kontrolü yap
+        // (corporate roller zaten danışman modunda)
+        const { data: org } = await supabase
+          .from('organizations')
+          .select('is_environmental_consultant')
+          .eq('id', profile.organization_id)
+          .single();
+        if (org?.is_environmental_consultant) isEnvConsultantOrg = true;
+      }
+
+      // Admin veya corporate rolle şirkete bağlı veya env danışmanlık üyesi → danışman modu
+      const isConsultantMode =
+        profile.role === 'admin' ||
+        (hasOrg && isCorporateRole) ||
+        (hasOrg && isEnvConsultantOrg);
+
+      if (!isConsultantMode) {
+        // Normal / bireysel üye → şahsi rapor modu
+        setUserMode('personal');
+        return;
+      }
+
+      // Danışman / Admin modu → hizmet verilen firmaları çek
+      setUserMode('consultant');
+      let query = supabase.from('consultant_clients').select('*');
+
+      const isRestrictedRole = profile.role === 'corporate_staff';
+
+      if (profile.role !== 'admin' && isRestrictedRole && !perms.can_view_all_clients) {
+        // Personel: sadece atandığı firmalar
         const { data: assignments } = await supabase
           .from('consultant_assignments')
           .select('client_id')
           .eq('user_id', session.user.id);
         const cIds = assignments?.map((a) => a.client_id) || [];
-        if (cIds.length > 0) query = query.in('id', cIds);
-        else query = query.eq('id', '00000000-0000-0000-0000-000000000000'); // Hiçbir şey dönmesin
-      } else {
+        if (cIds.length > 0) {
+          query = query.in('id', cIds);
+        } else {
+          // Atanmış firma yok
+          setNoAssignedClients(true);
+          return;
+        }
+      } else if (profile.role !== 'admin') {
+        // Yönetici/Sahip: kendi şirketinin tüm firmaları
         query = query.eq('consultant_company_id', profile.organization_id);
       }
+      // Admin: filtre yok (tüm firmalar)
 
       const { data: clientsData } = await query;
       if (clientsData) setClients(clientsData);
@@ -157,7 +202,8 @@ export default function EnvReportForm() {
   };
 
   const handleSave = async () => {
-    if (!clientId) {
+    const isPersonal = userMode === 'personal';
+    if (!isPersonal && !clientId) {
       alert('Lütfen bir işletme seçin!');
       return;
     }
@@ -175,24 +221,134 @@ export default function EnvReportForm() {
       // Form verisine ekleri de koyalım
       const finalFormData = { ...formData, attachment_urls: attachmentUrls };
 
-      const { data, error } = await supabase.from('env_reports').insert([
-        {
-          client_id: clientId,
-          consultant_company_id: userProfile?.organization_id,
-          creator_id: userProfile?.id,
-          report_type: reportType,
-          report_date: reportDate,
-          expires_at: expiresAt,
-          is_manual_upload: isManualUpload,
-          file_url: fileUrl,
-          form_data: finalFormData,
-          status: 'completed',
-        },
-      ]).select('id').single();
+      let reportId: string | null = null;
 
-      if (error) throw error;
+      if (!isPersonal) {
+        // Danışman modu: env_reports tablosuna kaydet
+        const { data, error } = await supabase.from('env_reports').insert([
+          {
+            client_id: clientId,
+            consultant_company_id: userProfile?.organization_id,
+            creator_id: userProfile?.id,
+            report_type: reportType,
+            report_date: reportDate,
+            expires_at: expiresAt,
+            is_manual_upload: isManualUpload,
+            file_url: fileUrl,
+            form_data: finalFormData,
+            status: 'completed',
+          },
+        ]).select('id').single();
+
+        if (error) throw error;
+        reportId = data.id;
+      }
+
+      // --- Otomatik Olarak Evraklar Sayfasına Ekle ---
+      try {
+        const client = clients.find(c => c.id === clientId);
+        const clientName = isPersonal ? 'Şahsi Rapor' : (client ? client.name : 'Bilinmeyen Firma');
+        
+        // 1. Kullanıcı veya şirket kullanıcılarını çek (tanımları ortak havuzdan aramak için)
+        let orgUserIds = [userProfile.id];
+        if (userProfile.organization_id) {
+          const { data: orgProfiles } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('organization_id', userProfile.organization_id);
+          if (orgProfiles && orgProfiles.length > 0) {
+            orgUserIds = orgProfiles.map(p => p.id);
+          }
+        }
+
+        // 2. Belge Türü (Aylık Faaliyet Raporu / Yıllık İç Tetkik Raporu) bul veya oluştur
+        const typeLabel = reportType === 'monthly' ? 'Aylık Faaliyet Raporu' : 'Yıllık İç Tetkik Raporu';
+        let typeDefId = null;
+
+        const { data: existingType } = await supabase
+          .from('user_definitions')
+          .select('id')
+          .eq('category', 'doc_type')
+          .ilike('label', typeLabel)
+          .in('user_id', orgUserIds)
+          .maybeSingle();
+
+        if (existingType) {
+          typeDefId = existingType.id;
+        } else {
+          const { data: newType } = await supabase
+            .from('user_definitions')
+            .insert([{ user_id: userProfile.id, category: 'doc_type', label: typeLabel }])
+            .select('id')
+            .single();
+          if (newType) typeDefId = newType.id;
+        }
+
+        // 3. Lokasyon bul veya oluştur (şahsi raporda lokasyon yok)
+        let locationDefId = null;
+        if (!isPersonal) {
+          const { data: existingLoc } = await supabase
+            .from('user_definitions')
+            .select('id')
+            .eq('category', 'location')
+            .ilike('label', clientName)
+            .in('user_id', orgUserIds)
+            .maybeSingle();
+
+          if (existingLoc) {
+            locationDefId = existingLoc.id;
+          } else {
+            const { data: newLoc } = await supabase
+              .from('user_definitions')
+              .insert([{ user_id: userProfile.id, category: 'location', label: clientName }])
+              .select('id')
+              .single();
+            if (newLoc) locationDefId = newLoc.id;
+          }
+        }
+
+        // 4. Belgeyi ekle
+        const docTitle = isPersonal
+          ? (reportType === 'monthly'
+              ? `Şahsi Aylık Faaliyet Raporu - ${reportDate}`
+              : `Şahsi Yıllık İç Tetkik Raporu - ${reportDate}`)
+          : (reportType === 'monthly'
+              ? `${clientName} Aylık Faaliyet Raporu - ${reportDate}`
+              : `${clientName} Yıllık İç Tetkik Raporu - ${reportDate}`);
+
+        await supabase.from('documents').insert([
+          {
+            organization_id: isPersonal ? null : userProfile.organization_id,
+            uploader_id: userProfile.id,
+            title: docTitle,
+            description: isPersonal
+              ? `Şahsi ${reportType === 'monthly' ? 'aylık faaliyet' : 'yıllık iç tetkik'} raporudur.`
+              : `${clientName} firması için hazırlanan ${reportType === 'monthly' ? 'aylık faaliyet' : 'yıllık iç tetkik'} raporudur.`,
+            type_def_id: typeDefId,
+            location_def_id: locationDefId,
+            acquisition_date: reportDate,
+            expiry_date: expiresAt,
+            application_deadline: expiresAt,
+            is_indefinite: false,
+            reminder_days: 30,
+            reminder_based_on: 'expiry',
+            is_archived: false,
+            file_url: fileUrl || null,
+            file_type: fileUrl ? fileUrl.split('.').pop() : null,
+            file_size: 0,
+            env_report_id: reportId || null,  // Rapor bağlantısı (görüntüleme için)
+          }
+        ]);
+      } catch (docErr) {
+        console.error('Evrak tablosuna kopyalama başarısız oldu:', docErr);
+      }
+
       alert('Rapor başarıyla kaydedildi!');
-      navigate(`/consultant/reports/${data.id}`);
+      if (reportId) {
+        navigate(`/consultant/reports/${reportId}`);
+      } else {
+        navigate('/documents');
+      }
     } catch (err: any) {
       alert('Kaydetme hatası: ' + err.message);
     } finally {
@@ -504,21 +660,32 @@ export default function EnvReportForm() {
       return (
         <div className="space-y-6 animate-fadeIn">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-4">Temel Bilgiler</h2>
-          
-          <div>
-            <label className="block text-sm font-semibold mb-2">Hizmet Verilen İşletme *</label>
-            <select
-              required
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              className="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700 bg-white"
-            >
-              <option value="">Seçiniz...</option>
-              {clients.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
+
+          {userMode === 'personal' ? (
+            <div className="p-4 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl">
+              <p className="text-sm font-bold text-purple-700 dark:text-purple-300 flex items-center gap-2">
+                <FileText size={16} /> Şahsi Rapor Modu
+              </p>
+              <p className="text-xs text-purple-600 dark:text-purple-400 mt-1">
+                Bu rapor, kişisel evrak listenize şahsi olarak eklenecektir. İşletme seçimi gerekmemektedir.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-semibold mb-2">Hizmet Verilen İşletme *</label>
+              <select
+                required
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                className="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700 bg-white"
+              >
+                <option value="">Seçiniz...</option>
+                {clients.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -571,21 +738,23 @@ export default function EnvReportForm() {
             </div>
           )}
 
-          <div className="flex items-center gap-2 mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg">
-             <RefreshCw size={20} />
-             <div className="flex-1">
-               <p className="font-semibold text-sm">Zaman Kazanmak İster misiniz?</p>
-               <p className="text-xs opacity-80">Bu işletme için oluşturulmuş en son rapor verilerini form üzerine otomatik çekebilirsiniz.</p>
-             </div>
-             <button
-               type="button"
-               onClick={handleLoadPrevious}
-               disabled={!clientId}
-               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition disabled:opacity-50"
-             >
-               Önceki Verileri Çek
-             </button>
-          </div>
+          {userMode === 'consultant' && (
+            <div className="flex items-center gap-2 mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg">
+               <RefreshCw size={20} />
+               <div className="flex-1">
+                 <p className="font-semibold text-sm">Zaman Kazanmak İster misiniz?</p>
+                 <p className="text-xs opacity-80">Bu işletme için oluşturulmuş en son rapor verilerini form üzerine otomatik çekebilirsiniz.</p>
+               </div>
+               <button
+                 type="button"
+                 onClick={handleLoadPrevious}
+                 disabled={!clientId}
+                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition disabled:opacity-50"
+               >
+                 Önceki Verileri Çek
+               </button>
+            </div>
+          )}
 
           <div className="mt-8 pt-6 border-t border-gray-200 dark:border-slate-700">
              <label className="flex items-center gap-3 cursor-pointer">
@@ -660,7 +829,7 @@ export default function EnvReportForm() {
   };
 
   const handleNext = () => {
-    if (currentStep === 1 && !clientId) {
+    if (currentStep === 1 && userMode === 'consultant' && !clientId) {
       alert("Lütfen işletme seçiniz!");
       return;
     }
@@ -677,15 +846,57 @@ export default function EnvReportForm() {
     }
   };
 
+  // --- Loading State ---
+  if (userMode === 'loading') {
+    return (
+      <div className="max-w-5xl mx-auto p-8 text-center">
+        <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+        <p className="text-gray-500">Yükleniyor...</p>
+      </div>
+    );
+  }
+
+  // --- No Assigned Clients State ---
+  if (noAssignedClients) {
+    return (
+      <div className="max-w-5xl mx-auto space-y-6 pb-24">
+        <div className="flex items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+          <button onClick={() => navigate('/documents')} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
+            <ArrowLeft size={20} />
+          </button>
+          <h1 className="text-xl font-bold">Yeni Rapor Oluştur</h1>
+        </div>
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-amber-200 p-12 text-center">
+          <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-4">
+            <FileText size={32} className="text-amber-500" />
+          </div>
+          <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">Atanmış İşletme Bulunamadı</h2>
+          <p className="text-gray-500 dark:text-gray-400 text-sm max-w-md mx-auto">
+            Rapor oluşturmak için size atanmış bir hizmet verilen işletme bulunmamaktadır.
+            Lütfen şirket yöneticinizle iletişime geçin ve size bir işletme atanmasını isteyin.
+          </p>
+          <button
+            onClick={() => navigate('/documents')}
+            className="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold transition"
+          >
+            Evraklar Sayfasına Dön
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-6 pb-24">
       {/* Header */}
       <div className="flex items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 sticky top-[72px] z-10">
-        <button onClick={() => navigate('/consultant')} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
+        <button onClick={() => navigate(userMode === 'personal' ? '/documents' : '/consultant')} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
           <ArrowLeft size={20} />
         </button>
         <div>
-          <h1 className="text-xl font-bold">Yeni Rapor Oluştur</h1>
+          <h1 className="text-xl font-bold">
+            {userMode === 'personal' ? 'Şahsi Rapor Oluştur' : 'Yeni Rapor Oluştur'}
+          </h1>
           <p className="text-xs text-gray-500">Adım {currentStep} / {getMaxSteps()}</p>
         </div>
         

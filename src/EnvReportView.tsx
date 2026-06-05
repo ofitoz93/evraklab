@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import { Printer, Link as LinkIcon, Download, CheckCircle, ArrowLeft, ExternalLink } from 'lucide-react';
+import { Printer, Link as LinkIcon, Download, CheckCircle, ArrowLeft, ExternalLink, Upload, PenLine, X, RefreshCw } from 'lucide-react';
 
 export default function EnvReportView() {
   const { id } = useParams();
@@ -10,6 +10,8 @@ export default function EnvReportView() {
   const [consultantFirm, setConsultantFirm] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [uploadingWetSig, setUploadingWetSig] = useState(false);
+  const [showWetSigModal, setShowWetSigModal] = useState(false);
 
   // Signatures State
   const [isSignMode, setIsSignMode] = useState(false); // E-imza modu aktif mi?
@@ -69,6 +71,33 @@ export default function EnvReportView() {
     } catch (err) {
       console.error(err);
       alert('Link kopyalanamadı.');
+    }
+  };
+
+  const handleWetSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingWetSig(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const filePath = `wet_signatures/report_${report.id}_signed.${fileExt}`;
+      const { error: uploadError } = await supabase.storage
+        .from('client_assets')
+        .upload(filePath, file, { upsert: true });
+      if (uploadError) throw uploadError;
+      const { data } = supabase.storage.from('client_assets').getPublicUrl(filePath);
+      const wetUrl = data.publicUrl;
+      await supabase
+        .from('env_reports')
+        .update({ wet_signature_url: wetUrl, wet_signed_at: new Date().toISOString() })
+        .eq('id', report.id);
+      setReport({ ...report, wet_signature_url: wetUrl, wet_signed_at: new Date().toISOString() });
+      setShowWetSigModal(false);
+      alert('Islak imzalı rapor başarıyla yüklendi!');
+    } catch (err: any) {
+      alert('Yüklenirken hata: ' + err.message);
+    } finally {
+      setUploadingWetSig(false);
     }
   };
 
@@ -151,6 +180,24 @@ export default function EnvReportView() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Islak İmza Durumu */}
+          {report.wet_signature_url ? (
+            <a
+              href={report.wet_signature_url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition text-sm font-bold"
+            >
+              <CheckCircle size={16} /> Islak İmzalıyı Görüntüle
+            </a>
+          ) : (
+            <button
+              onClick={() => setShowWetSigModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition text-sm font-medium"
+            >
+              <PenLine size={16} /> Islak İmzalı Yükle
+            </button>
+          )}
           <button
             onClick={generateSignLink}
             className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 transition text-sm font-medium"
@@ -166,6 +213,37 @@ export default function EnvReportView() {
           </button>
         </div>
       </div>
+
+      {/* Islak İmza Durum Bandı */}
+      {report.wet_signature_url ? (
+        <div className="print-hidden flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+          <CheckCircle size={20} className="text-emerald-600 flex-shrink-0" />
+          <div className="flex-1">
+            <span className="font-bold text-emerald-700 text-sm">Islak İmzalı Versiyon Mevcut</span>
+            <span className="text-emerald-600 text-xs ml-2">
+              {report.wet_signed_at && `(${new Date(report.wet_signed_at).toLocaleDateString('tr-TR')} tarihinde yüklendi)`}
+            </span>
+          </div>
+          <a href={report.wet_signature_url} target="_blank" rel="noreferrer"
+            className="text-emerald-700 font-bold text-sm underline hover:no-underline flex items-center gap-1"
+          >
+            <ExternalLink size={14} /> Görüntüle
+          </a>
+        </div>
+      ) : (
+        <div className="print-hidden flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+          <PenLine size={20} className="text-amber-600 flex-shrink-0" />
+          <div className="flex-1">
+            <span className="font-bold text-amber-700 text-sm">Islak İmza Bekleniyor</span>
+            <span className="text-amber-600 text-xs ml-2">Rapor henüz ıslak imzalanmamış. PDF indirip imzaladıktan sonra yükleyebilirsiniz.</span>
+          </div>
+          <button onClick={() => setShowWetSigModal(true)}
+            className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold transition"
+          >
+            Yükle
+          </button>
+        </div>
+      )}
 
       {/* A4 Printable Area */}
       <div className="print-content bg-white shadow-xl mx-auto print:shadow-none print:w-full" style={{ width: '210mm', minHeight: '297mm', padding: '15mm' }}>
@@ -453,6 +531,53 @@ export default function EnvReportView() {
         </div>
 
       </div>
+
+      {/* Islak İmza Yükleme Modalı */}
+      {showWetSigModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-lg flex items-center gap-2">
+                <PenLine className="text-amber-600" /> Islak İmzalı Rapor Yükle
+              </h3>
+              <button onClick={() => setShowWetSigModal(false)}>
+                <X size={20} className="text-gray-400 hover:text-red-500" />
+              </button>
+            </div>
+            <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+              <strong>Nasıl yapılır?</strong>
+              <ol className="mt-2 space-y-1 list-decimal list-inside text-xs">
+                <li>"PDF Olarak İndir" butonuyla raporu indirin</li>
+                <li>Raporu yazdırın ve ilgili kişilere imzalatın</li>
+                <li>İmzalı raporu tarayıcı/kamera ile dijitalleştirin</li>
+                <li>Aşağıdan yükleyin</li>
+              </ol>
+            </div>
+            <label className={`w-full flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed rounded-xl cursor-pointer transition ${uploadingWetSig ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-amber-300 bg-amber-50 hover:border-amber-500 hover:bg-amber-100'}`}>
+              {uploadingWetSig ? (
+                <>
+                  <RefreshCw size={32} className="text-amber-500 animate-spin" />
+                  <span className="font-bold text-amber-700">Yükleniyor...</span>
+                </>
+              ) : (
+                <>
+                  <Upload size={32} className="text-amber-500" />
+                  <span className="font-bold text-gray-700">Islak İmzalı Dosyayı Seçin</span>
+                  <span className="text-xs text-gray-400">PDF, JPG, PNG desteklenir</span>
+                </>
+              )}
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,.jpg,.jpeg,.png"
+                onChange={handleWetSignatureUpload}
+                disabled={uploadingWetSig}
+              />
+            </label>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

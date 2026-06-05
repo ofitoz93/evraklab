@@ -228,14 +228,27 @@ export default function DocumentDetail() {
           </div>
 
           <div className="flex gap-2 w-full md:w-auto">
-            <a
-              href={doc.file_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-1 md:flex-none bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-blue-700 text-sm shadow transition"
-            >
-              <Download size={16} /> İndir
-            </a>
+            {doc.file_url ? (
+              <a
+                href={doc.file_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 md:flex-none bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-blue-700 text-sm shadow transition"
+              >
+                <Download size={16} /> İndir
+              </a>
+            ) : doc.env_report_id ? (
+              <Link
+                to={`/consultant/reports/${doc.env_report_id}`}
+                className="flex-1 md:flex-none bg-green-600 text-white px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-green-700 text-sm shadow transition"
+              >
+                <Eye size={16} /> Raporu Görüntüle / İndir
+              </Link>
+            ) : (
+              <span className="flex-1 md:flex-none bg-gray-100 text-gray-400 px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 text-sm cursor-not-allowed">
+                <Download size={16} /> Dosya Yok
+              </span>
+            )}
             <Link
               to={`/documents/edit/${id}`}
               className="flex-1 md:flex-none bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-gray-50 text-sm transition"
@@ -317,13 +330,26 @@ export default function DocumentDetail() {
               </div>
             </div>
 
-            <a
-              href={doc.file_url}
-              target="_blank"
-              className="block text-center p-4 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl font-bold transition flex items-center justify-center gap-2"
-            >
-              <Eye size={20} /> Belgeyi Görüntüle (Yeni Sekme)
-            </a>
+            {doc.env_report_id ? (
+              <Link
+                to={`/consultant/reports/${doc.env_report_id}`}
+                className="block text-center p-4 bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 rounded-xl font-bold transition flex items-center justify-center gap-2"
+              >
+                <Eye size={20} /> Raporu Görüntüle ve PDF İndir
+              </Link>
+            ) : doc.file_url ? (
+              <a
+                href={doc.file_url}
+                target="_blank"
+                className="block text-center p-4 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl font-bold transition flex items-center justify-center gap-2"
+              >
+                <Eye size={20} /> Belgeyi Görüntüle (Yeni Sekme)
+              </a>
+            ) : (
+              <div className="block text-center p-4 bg-gray-50 text-gray-400 border border-gray-200 rounded-xl font-bold flex items-center justify-center gap-2">
+                <Eye size={20} /> Dosya mevcut değil
+              </div>
+            )}
           </div>
         </div>
       </div>

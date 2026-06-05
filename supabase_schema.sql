@@ -357,9 +357,42 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- F. Delete User by Admin
+CREATE OR REPLACE FUNCTION public.delete_user_by_admin(target_user_id UUID)
+RETURNS VOID AS $$
+BEGIN
+  -- Istek yapan kullanıcının admin olup olmadığını kontrol edelim
+  IF NOT (SELECT public.is_admin()) THEN
+    RAISE EXCEPTION 'Bu işlem için admin yetkisi gereklidir.';
+  END IF;
+
+  -- Profil verisini sil
+  DELETE FROM public.profiles WHERE id = target_user_id;
+
+  -- auth.users tablosundaki kaydı sil (böylece aynı maille tekrar kaydolabilir)
+  DELETE FROM auth.users WHERE id = target_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 -- ==========================================
 -- 13. AUTH AUTOMATION TRIGGER (profiles creation)
 -- ==========================================
+
+-- E-posta onayını otomatik yapmak için trigger fonksiyonu
+CREATE OR REPLACE FUNCTION public.auto_confirm_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.email_confirmed_at = NOW();
+  NEW.confirmed_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger'ı auth.users tablosuna BEFORE INSERT olarak ekleyelim
+DROP TRIGGER IF EXISTS on_auth_user_created_auto_confirm ON auth.users;
+CREATE TRIGGER on_auth_user_created_auto_confirm
+  BEFORE INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.auto_confirm_user();
 
 -- Automated profile creator function when registering through auth.users
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -394,10 +427,40 @@ CREATE OR REPLACE TRIGGER on_auth_user_created
 -- 14. ROW LEVEL SECURITY (RLS) POLICIES
 -- ==========================================
 
--- Enable RLS for consultant tables
+-- Enable RLS for profiles and other tables
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consultant_clients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consultant_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE env_reports ENABLE ROW LEVEL SECURITY;
+
+-- profiles policies
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid()
+    AND (role = 'admin' OR role = 'system_admin')
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE POLICY "Users can view all profiles" ON public.profiles
+FOR SELECT
+TO authenticated
+USING (true);
+
+CREATE POLICY "Users can update own profile" ON public.profiles
+FOR UPDATE
+TO authenticated
+USING (auth.uid() = id)
+WITH CHECK (auth.uid() = id);
+
+CREATE POLICY "Admins can manage all profiles" ON public.profiles
+FOR ALL
+TO authenticated
+USING (public.is_admin())
+WITH CHECK (public.is_admin());
 
 -- consultant_clients policies
 CREATE POLICY "Consultants can view their own clients"
@@ -454,13 +517,47 @@ USING (
 );
 
 -- ==========================================
--- 15. STORAGE BUCKETS SETUP DOCUMENTATION
+-- 15. STORAGE BUCKETS SETUP & POLICIES
 -- ==========================================
--- Please run the following commands manually or use the Supabase dashboard to create the storage buckets:
---
--- 1. Create public bucket 'documents'
--- 2. Create public bucket 'avatars'
--- 3. Create public bucket 'client_assets'
---
--- Policy example for storage.objects:
--- CREATE POLICY "Public Access" ON storage.objects FOR ALL USING (true);
+
+-- 1. Create public buckets if they don't exist
+INSERT INTO storage.buckets (id, name, public) 
+VALUES 
+  ('client_assets', 'client_assets', true),
+  ('documents', 'documents', true),
+  ('avatars', 'avatars', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- 2. Remove any conflicting policies
+DROP POLICY IF EXISTS "Allow public insert into client_assets" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public select from client_assets" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public update on client_assets" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public delete from client_assets" ON storage.objects;
+
+DROP POLICY IF EXISTS "Allow public insert into documents" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public select from documents" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public update on documents" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public delete from documents" ON storage.objects;
+
+DROP POLICY IF EXISTS "Allow public insert into avatars" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public select from avatars" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public update on avatars" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public delete from avatars" ON storage.objects;
+
+-- 3. Create client_assets RLS policies
+CREATE POLICY "Allow public insert into client_assets" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'client_assets');
+CREATE POLICY "Allow public select from client_assets" ON storage.objects FOR SELECT USING (bucket_id = 'client_assets');
+CREATE POLICY "Allow public update on client_assets" ON storage.objects FOR UPDATE USING (bucket_id = 'client_assets');
+CREATE POLICY "Allow public delete from client_assets" ON storage.objects FOR DELETE USING (bucket_id = 'client_assets');
+
+-- 4. Create documents RLS policies
+CREATE POLICY "Allow public insert into documents" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'documents');
+CREATE POLICY "Allow public select from documents" ON storage.objects FOR SELECT USING (bucket_id = 'documents');
+CREATE POLICY "Allow public update on documents" ON storage.objects FOR UPDATE USING (bucket_id = 'documents');
+CREATE POLICY "Allow public delete from documents" ON storage.objects FOR DELETE USING (bucket_id = 'documents');
+
+-- 5. Create avatars RLS policies
+CREATE POLICY "Allow public insert into avatars" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'avatars');
+CREATE POLICY "Allow public select from avatars" ON storage.objects FOR SELECT USING (bucket_id = 'avatars');
+CREATE POLICY "Allow public update on avatars" ON storage.objects FOR UPDATE USING (bucket_id = 'avatars');
+CREATE POLICY "Allow public delete from avatars" ON storage.objects FOR DELETE USING (bucket_id = 'avatars');

@@ -62,7 +62,7 @@ export default function Dashboard() {
         const { data: profile } = await supabase
           .from('profiles')
           .select(
-            'id, full_name, role, permissions, storage_limit, storage_used, organization_id, organization:organizations(storage_limit, storage_used)'
+            'id, full_name, role, permissions, storage_limit, organization_id, organization:organizations(storage_limit)'
           )
           .eq('id', session.user.id)
           .single();

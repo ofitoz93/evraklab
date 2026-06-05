@@ -67,6 +67,7 @@ export default function Documents() {
   const [myPermissions, setMyPermissions] = useState<any>({});
 
   const [isPremium, setIsPremium] = useState(false);
+  const [isEnvConsultant, setIsEnvConsultant] = useState(false);
   const [pendingInvite, setPendingInvite] = useState<boolean>(false);
 
   // İletme State'leri
@@ -133,7 +134,7 @@ export default function Documents() {
       const { data: profile } = await supabase
         .from('profiles')
         .select(
-          'organization_id, role, permissions, organization:organizations(subscription_end_date), subscription_end_date'
+          'organization_id, role, permissions, organization:organizations(subscription_end_date, is_environmental_consultant), subscription_end_date'
         )
         .eq('id', session.user.id)
         .single();
@@ -172,6 +173,7 @@ export default function Documents() {
       }
 
       setIsPremium(hasActivePremium);
+      setIsEnvConsultant(!!(profile?.organization as any)?.is_environmental_consultant);
 
       let query = supabase
         .from('documents')
@@ -494,12 +496,20 @@ export default function Documents() {
             Evrak Listesi
           </h1>
         </div>
-        <Link
-          to="/documents/add"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg hover:bg-blue-700 transition"
-        >
-          <Plus size={20} /> Yeni Belge Ekle
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link
+            to="/consultant/reports/add"
+            className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg hover:bg-green-700 transition"
+          >
+            <FileText size={20} /> Yeni Rapor Oluştur
+          </Link>
+          <Link
+            to="/documents/add"
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg hover:bg-blue-700 transition"
+          >
+            <Plus size={20} /> Yeni Belge Ekle
+          </Link>
+        </div>
       </div>
 
       <div className="bg-white p-4 rounded-xl shadow-sm border space-y-3">
@@ -914,23 +924,63 @@ export default function Documents() {
             >
               <X size={24} />
             </button>
-            <div className="flex-1 bg-gray-100 rounded-xl overflow-hidden">
-              <iframe
-                src={previewDoc?.file_url}
-                className="w-full h-full"
-                title="Önizleme"
-              ></iframe>
-            </div>
-            <div className="p-4 bg-white flex justify-between items-center rounded-b-xl">
-              <div className="font-bold">{previewDoc?.title}</div>
-              <a
-                href={previewDoc?.file_url}
-                target="_blank"
-                rel="noreferrer"
-                className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2"
-              >
-                <Maximize size={16} /> Tam Ekran
-              </a>
+
+            {/* Rapor bağlantılı belge: iframe yerine rapor önizlemesi */}
+            {previewDoc?.env_report_id ? (
+              <div className="flex-1 flex flex-col items-center justify-center gap-6 p-8 bg-gradient-to-br from-green-50 to-emerald-50">
+                <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center">
+                  <FileText size={40} className="text-green-600" />
+                </div>
+                <div className="text-center">
+                  <h3 className="text-xl font-bold text-gray-800 mb-2">{previewDoc?.title}</h3>
+                  <p className="text-sm text-gray-500 mb-1">
+                    Bu belge sistem üzerinde hazırlanan bir çevre raporuna bağlıdır.
+                  </p>
+                  <p className="text-xs text-gray-400">Raporu görüntülemek, yazdırmak veya PDF olarak indirmek için aşağıdaki butona tıklayın.</p>
+                </div>
+                <div className="flex gap-3">
+                  <Link
+                    to={`/consultant/reports/${previewDoc.env_report_id}`}
+                    onClick={() => setPreviewModalOpen(false)}
+                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg transition"
+                  >
+                    <Eye size={20} /> Raporu Görüntüle ve PDF İndir
+                  </Link>
+                  <button
+                    onClick={() => setPreviewModalOpen(false)}
+                    className="border border-gray-300 text-gray-600 px-4 py-3 rounded-xl font-medium hover:bg-gray-50 transition"
+                  >
+                    Kapat
+                  </button>
+                </div>
+              </div>
+            ) : previewDoc?.file_url ? (
+              <div className="flex-1 bg-gray-100 rounded-xl overflow-hidden">
+                <iframe
+                  src={previewDoc?.file_url}
+                  className="w-full h-full"
+                  title="Önizleme"
+                ></iframe>
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center gap-4 text-gray-400">
+                <FileText size={48} />
+                <p className="font-bold">Bu belge için dosya mevcut değil.</p>
+              </div>
+            )}
+
+            <div className="p-4 bg-white flex justify-between items-center rounded-b-xl border-t">
+              <div className="font-bold text-gray-700">{previewDoc?.title}</div>
+              {!previewDoc?.env_report_id && previewDoc?.file_url && (
+                <a
+                  href={previewDoc?.file_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2"
+                >
+                  <Maximize size={16} /> Tam Ekran
+                </a>
+              )}
             </div>
           </div>
         </div>
