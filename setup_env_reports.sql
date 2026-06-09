@@ -81,9 +81,12 @@ ALTER TABLE env_reports ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view reports in their company"
 ON env_reports FOR SELECT
-USING (consultant_company_id IN (
-    SELECT organization_id FROM profiles WHERE id = auth.uid()
-));
+USING (
+    consultant_company_id IN (
+        SELECT organization_id FROM profiles WHERE id = auth.uid()
+    )
+    OR creator_id = auth.uid()
+);
 
 CREATE POLICY "Assigned users and admins can manage reports"
 ON env_reports FOR ALL

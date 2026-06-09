@@ -9,7 +9,9 @@ import {
   ChevronRight,
   Filter,
   Building,
-  FileText
+  FileText,
+  Trash2,
+  X
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -20,6 +22,9 @@ export default function ComplianceDashboard() {
   const [loading, setLoading] = useState(true);
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
   const [orgId, setOrgId] = useState('');
+  const [userRole, setUserRole] = useState('');
+  const [selectedReportOptions, setSelectedReportOptions] = useState<any>(null);
+  const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
 
   const months = [
     'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
@@ -44,6 +49,7 @@ export default function ComplianceDashboard() {
 
       if (profile) {
         setOrgId(profile.organization_id);
+        setUserRole(profile.role);
         const perms = profile.extra_permissions || {};
         const isRestrictedRole = profile.role === 'corporate_staff';
         
@@ -110,6 +116,75 @@ export default function ComplianceDashboard() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const getStoragePathFromUrl = (url: string) => {
+    if (!url) return null;
+    const parts = url.split('/public/client_assets/');
+    if (parts.length > 1) return parts[1];
+    return null;
+  };
+
+  const handleDeleteReport = async (report: any) => {
+    if (!window.confirm('Bu raporu sistemden ve veri tabanından tamamen silmek istediğinize emin misiniz? Bu işlem geri alınamaz!')) {
+      return;
+    }
+
+    setDeletingReportId(report.id);
+    try {
+      // 1. Fetch files from env_reports
+      const { data: reportDetails, error: fetchErr } = await supabase
+        .from('env_reports')
+        .select('file_url, wet_signature_url')
+        .eq('id', report.id)
+        .single();
+
+      if (fetchErr) throw fetchErr;
+
+      // 2. Remove files from storage
+      const pathsToDelete: string[] = [];
+      if (reportDetails.file_url) {
+        const fileSec = getStoragePathFromUrl(reportDetails.file_url);
+        if (fileSec) pathsToDelete.push(fileSec);
+      }
+      if (reportDetails.wet_signature_url) {
+        const wetSec = getStoragePathFromUrl(reportDetails.wet_signature_url);
+        if (wetSec) pathsToDelete.push(wetSec);
+      }
+
+      if (pathsToDelete.length > 0) {
+        const { error: storageErr } = await supabase.storage
+          .from('client_assets')
+          .remove(pathsToDelete);
+        if (storageErr) {
+          console.warn('Storage files could not be deleted:', storageErr.message);
+        }
+      }
+
+      // 3. Delete from documents
+      const { error: docDeleteErr } = await supabase
+        .from('documents')
+        .delete()
+        .eq('env_report_id', report.id);
+
+      if (docDeleteErr) throw docDeleteErr;
+
+      // 4. Delete from env_reports
+      const { error: reportDeleteErr } = await supabase
+        .from('env_reports')
+        .delete()
+        .eq('id', report.id);
+
+      if (reportDeleteErr) throw reportDeleteErr;
+
+      alert('Rapor ve bağlı dosyalar başarıyla silindi!');
+      setSelectedReportOptions(null);
+      fetchData();
+    } catch (err: any) {
+      alert('Silme işlemi sırasında bir hata oluştu: ' + err.message);
+    } finally {
+      setDeletingReportId(null);
     }
   };
 
@@ -253,7 +328,7 @@ export default function ComplianceDashboard() {
                             {result.reports?.map((r: any, i: number) => (
                               <button 
                                 key={r.id}
-                                onClick={() => navigate(`/consultant/reports/${r.id}`)}
+                                onClick={() => setSelectedReportOptions({ ...r, clientName: client.name })}
                                 className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center hover:scale-110 transition shadow-sm border border-green-200 relative"
                                 title={`${r.creator?.full_name || 'Bilinmiyor'} tarafından hazırlandı. Raporu Gör`}
                               >
@@ -299,7 +374,7 @@ export default function ComplianceDashboard() {
                             {result.reports?.map((r: any, i: number) => (
                               <button 
                                 key={r.id}
-                                onClick={() => navigate(`/consultant/reports/${r.id}`)}
+                                onClick={() => setSelectedReportOptions({ ...r, clientName: client.name })}
                                 className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center hover:scale-110 transition shadow-md"
                                 title={`İç Tetkik Raporu - ${r.creator?.full_name || 'Bilinmiyor'} tarafından hazırlandı`}
                               >
@@ -358,6 +433,86 @@ export default function ComplianceDashboard() {
           <div className="w-3 h-3 rounded bg-gray-300"></div> Gelecek Dönem
         </div>
       </div>
+
+      {/* Rapor Seçenekleri Modalı */}
+      {selectedReportOptions && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 relative">
+            <div className="flex justify-between items-center mb-4 border-b pb-3">
+              <h3 className="font-bold text-lg text-gray-800">Rapor Seçenekleri</h3>
+              <button 
+                onClick={() => setSelectedReportOptions(null)}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-3 mb-6">
+              <div className="p-3 bg-gray-50 rounded-xl border">
+                <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">İşletme</p>
+                <p className="font-bold text-gray-800 text-sm">{selectedReportOptions.clientName}</p>
+              </div>
+              <div className="p-3 bg-gray-50 rounded-xl border">
+                <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">Rapor Türü</p>
+                <p className="font-bold text-gray-800 text-sm">
+                  {selectedReportOptions.report_type === 'monthly' ? 'Aylık Değerlendirme Raporu' : 'Yıllık İç Tetkik Raporu'}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 bg-gray-50 rounded-xl border">
+                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">Tarih</p>
+                  <p className="font-bold text-gray-800 text-xs">
+                    {new Date(selectedReportOptions.report_date).toLocaleDateString('tr-TR')}
+                  </p>
+                </div>
+                <div className="p-3 bg-gray-50 rounded-xl border">
+                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">Hazırlayan</p>
+                  <p className="font-bold text-gray-800 text-xs">
+                    {selectedReportOptions.creator?.full_name || 'Bilinmiyor'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => {
+                  navigate(`/consultant/reports/${selectedReportOptions.id}`);
+                  setSelectedReportOptions(null);
+                }}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-blue-200"
+              >
+                <FileText size={18} /> Raporu Görüntüle
+              </button>
+
+              {['premium_corporate', 'corporate_chief', 'admin', 'system_admin', 'super_admin'].includes(userRole) && (
+                <button
+                  disabled={deletingReportId === selectedReportOptions.id}
+                  onClick={() => handleDeleteReport(selectedReportOptions)}
+                  className="w-full bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2"
+                >
+                  {deletingReportId === selectedReportOptions.id ? (
+                    'Siliniyor...'
+                  ) : (
+                    <>
+                      <Trash2 size={18} /> Raporu Tamamen Sil
+                    </>
+                  )}
+                </button>
+              )}
+
+              <button
+                onClick={() => setSelectedReportOptions(null)}
+                className="w-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-semibold py-3 rounded-xl transition"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

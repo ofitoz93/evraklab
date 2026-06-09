@@ -307,6 +307,29 @@ export default function EnvReportForm() {
           }
         }
 
+        // Önceki aktif raporları arşivle (Tür ve Lokasyon bazlı)
+        if (typeDefId) {
+          let archQuery = supabase
+            .from('documents')
+            .update({ is_archived: true })
+            .eq('type_def_id', typeDefId)
+            .eq('is_archived', false);
+            
+          if (locationDefId) {
+            archQuery = archQuery.eq('location_def_id', locationDefId);
+          } else {
+            archQuery = archQuery.is('location_def_id', null);
+          }
+          
+          if (isPersonal) {
+            archQuery = archQuery.eq('uploader_id', userProfile.id);
+          } else if (userProfile.organization_id) {
+            archQuery = archQuery.eq('organization_id', userProfile.organization_id);
+          }
+          
+          await archQuery;
+        }
+
         // 4. Belgeyi ekle
         const docTitle = isPersonal
           ? (reportType === 'monthly'
@@ -711,7 +734,7 @@ export default function EnvReportForm() {
             </div>
           </div>
 
-          {reportType === 'monthly' && (
+          {reportType === 'monthly' && !isManualUpload && (
             <div className="p-4 bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-gray-200 dark:border-slate-700">
                <label className="block text-sm font-bold mb-3">Aylık Ziyaret Saati</label>
                <div className="flex gap-8 mb-2">
@@ -738,7 +761,7 @@ export default function EnvReportForm() {
             </div>
           )}
 
-          {userMode === 'consultant' && (
+          {userMode === 'consultant' && !isManualUpload && (
             <div className="flex items-center gap-2 mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg">
                <RefreshCw size={20} />
                <div className="flex-1">

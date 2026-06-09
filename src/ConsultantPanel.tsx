@@ -305,7 +305,18 @@ export default function ConsultantPanel() {
         .from('client_assets')
         .getPublicUrl(filePath);
 
-      setOrgData({ ...orgData, consultant_logo_url: data.publicUrl });
+      const newLogoUrl = data.publicUrl;
+
+      // Hemen veritabanına kaydet
+      const { error: dbError } = await supabase
+        .from('organizations')
+        .update({ consultant_logo_url: newLogoUrl })
+        .eq('id', orgId);
+
+      if (dbError) throw dbError;
+
+      setOrgData({ ...orgData, consultant_logo_url: newLogoUrl });
+      alert('Danışman logosu başarıyla güncellendi!');
     } catch (err: any) {
       alert('Logo yüklenirken hata: ' + err.message);
     } finally {
@@ -848,6 +859,17 @@ export default function ConsultantPanel() {
                 </div>
               </div>
 
+            </div>
+
+            {/* Kaydet Butonu */}
+            <div className="flex justify-end pt-4 border-t border-gray-100 dark:border-slate-700 mt-4">
+              <button
+                onClick={handleSaveOrg}
+                disabled={savingOrg}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl font-bold transition disabled:opacity-50"
+              >
+                {savingOrg ? 'Kaydediliyor...' : '💾 Şirket Bilgilerini Kaydet'}
+              </button>
             </div>
           </div>
         </div>

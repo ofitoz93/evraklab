@@ -25,6 +25,9 @@ import {
   Building,
   Share2,
   Send,
+  Upload,
+  PenLine,
+  Download,
 } from 'lucide-react';
 
 export default function Documents() {
@@ -76,6 +79,11 @@ export default function Documents() {
   const [forwardTarget, setForwardTarget] = useState('general');
   const [forwardNote, setForwardNote] = useState('');
   const [sendingForward, setSendingForward] = useState(false);
+
+  // Islak İmza State'leri
+  const [wetSigModalOpen, setWetSigModalOpen] = useState(false);
+  const [selectedDocForWetSig, setSelectedDocForWetSig] = useState<any>(null);
+  const [uploadingWetSig, setUploadingWetSig] = useState(false);
 
   useEffect(() => {
     fetchDocuments();
@@ -178,7 +186,7 @@ export default function Documents() {
       let query = supabase
         .from('documents')
         .select(
-          `*, type_def:user_definitions!type_def_id(label), location_def:user_definitions!location_def_id(label), uploader:profiles!uploader_id(full_name), organization:organizations(name)`
+          `*, type_def:user_definitions!type_def_id(label), location_def:user_definitions!location_def_id(label), uploader:profiles!uploader_id(full_name), organization:organizations(name), env_report:env_reports(wet_signature_url, wet_signed_at)`
         )
         .eq('is_archived', false);
 
@@ -269,7 +277,7 @@ export default function Documents() {
     setArchiveModalOpen(true);
     let query = supabase
       .from('documents')
-      .select(`*, uploader:profiles!uploader_id(full_name)`)
+      .select(`*, uploader:profiles!uploader_id(full_name), env_report:env_reports(wet_signature_url, wet_signed_at)`)
       .eq('is_archived', true)
       .eq('type_def_id', doc.type_def_id);
     if (doc.location_def_id)
@@ -410,6 +418,46 @@ export default function Documents() {
     }
   };
 
+  const handleWetSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedDocForWetSig) return;
+    setUploadingWetSig(true);
+    try {
+      const reportId = selectedDocForWetSig.env_report_id;
+      const fileExt = file.name.split('.').pop();
+      const filePath = `wet_signatures/report_${reportId}_signed.${fileExt}`;
+      const { error: uploadError } = await supabase.storage
+        .from('client_assets')
+        .upload(filePath, file, { upsert: true });
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('client_assets').getPublicUrl(filePath);
+      const wetUrl = data.publicUrl;
+
+      // Update env_reports
+      const { error: updateError } = await supabase
+        .from('env_reports')
+        .update({
+          wet_signature_url: wetUrl,
+          wet_signed_at: new Date().toISOString()
+        })
+        .eq('id', reportId);
+
+      if (updateError) throw updateError;
+
+      setWetSigModalOpen(false);
+      setSelectedDocForWetSig(null);
+      alert('Islak imzalı rapor başarıyla yüklendi!');
+      fetchDocuments();
+      if (selectedDocForArchive) {
+        handleOpenArchive(selectedDocForArchive);
+      }
+    } catch (err: any) {
+      alert('Yüklenirken hata oluştu: ' + err.message);
+    } finally {
+      setUploadingWetSig(false);
+    }
+  };
 
   const canForward = (doc: any) => {
     if (!doc.organization_id) return false;
@@ -639,9 +687,20 @@ export default function Documents() {
                       <div className="font-bold text-blue-700 uppercase mb-1">
                         {doc.type_def?.label || 'Genel'}
                       </div>
-                      <div className="text-gray-700 font-semibold text-xs flex items-center gap-1">
+                      <div className="text-gray-700 font-semibold text-xs flex items-center gap-1.5 flex-wrap">
                         <FileText size={12} className="text-gray-400" />{' '}
-                        {doc.title}
+                        <span>{doc.title}</span>
+                        {doc.env_report?.wet_signature_url && (
+                          <a
+                            href={doc.env_report.wet_signature_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[9px] uppercase font-black px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-0.5 hover:bg-emerald-200 transition"
+                            title="Islak İmzalı Raporu Görüntüle"
+                          >
+                            <CheckCircle size={10} className="text-emerald-600" /> Islak İmzalı
+                          </a>
+                        )}
                       </div>
                       <div className="mt-2 flex items-center gap-2 flex-wrap">
                         <span
@@ -692,6 +751,24 @@ export default function Documents() {
                             title="Personele İlet / Sor"
                           >
                             <Share2 size={16} />
+                          </button>
+                        )}
+
+                        {doc.env_report_id && doc.uploader_id === userId && (
+                          <button
+                            onClick={() => {
+                              if (doc.env_report?.wet_signature_url) {
+                                if (!window.confirm("Bu ay için ıslak imzalı rapor zaten yüklü. Güncellemek ister misiniz?")) {
+                                  return;
+                                }
+                              }
+                              setSelectedDocForWetSig(doc);
+                              setWetSigModalOpen(true);
+                            }}
+                            className="p-2 bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded transition"
+                            title="Islak İmzalı Rapor Yükle"
+                          >
+                            <PenLine size={16} />
                           </button>
                         )}
 
@@ -792,40 +869,93 @@ export default function Documents() {
                 <table className="w-full text-left text-sm divide-y">
                   <thead>
                     <tr>
-                      <th>Versiyon</th>
-                      <th>Tarih</th>
-                      <th className="text-right">İşlem</th>
+                      <th className="p-3 text-left">Belge Adı</th>
+                      <th className="p-3 text-left">Tarih</th>
+                      <th className="p-3 text-right">İşlemler</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {archivedList.map((arc) => (
-                      <tr key={arc.id}>
-                        <td className="p-3 font-bold">{arc.title}</td>
-                        <td className="p-3 text-gray-500">
-                          {new Date(arc.created_at).toLocaleDateString()}
-                        </td>
-                        <td className="p-3 text-right flex justify-end gap-2">
-                          <button
-                            onClick={() => handlePreview(arc)}
-                            className="text-blue-600 font-bold"
-                          >
-                            Gör
-                          </button>
-                          <button
-                            onClick={() => handleEditArchive(arc.id)}
-                            className="text-yellow-600 font-bold"
-                          >
-                            Düzenle
-                          </button>
-                          <button
-                            onClick={() => handleDelete(arc.id, true)}
-                            className="text-red-500"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {archivedList.map((arc) => {
+                      const isReport = !!arc.env_report_id;
+                      const isWetSigned = !!arc.env_report?.wet_signature_url;
+                      return (
+                        <tr key={arc.id} className="border-b border-gray-100 hover:bg-gray-50/50">
+                          <td className="p-3">
+                            <div className="font-bold text-gray-800 flex items-center gap-2">
+                              {arc.title}
+                              {isWetSigned && (
+                                <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-bold">
+                                  [Islak İmzalı]
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-3 text-gray-500 text-xs">
+                            {new Date(arc.created_at).toLocaleDateString()}
+                          </td>
+                          <td className="p-3 text-right flex justify-end items-center gap-2">
+                            {/* Görüntüleme & İndirme */}
+                            {isReport ? (
+                              <Link
+                                to={`/consultant/reports/${arc.env_report_id}`}
+                                onClick={() => setArchiveModalOpen(false)}
+                                className="p-1.5 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 rounded transition"
+                                title="Raporu Görüntüle ve PDF İndir"
+                              >
+                                <Eye size={14} />
+                              </Link>
+                            ) : arc.file_url ? (
+                              <a
+                                href={arc.file_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded transition flex items-center justify-center"
+                                title="Dosyayı İndir"
+                              >
+                                <Download size={14} />
+                              </a>
+                            ) : null}
+
+                            {/* Islak İmza Yükleme (Sadece Raporlar İçin) */}
+                            {isReport && arc.uploader_id === userId && (
+                              <button
+                                onClick={() => {
+                                  if (arc.env_report?.wet_signature_url) {
+                                    if (!window.confirm("Bu ay için ıslak imzalı rapor zaten yüklü. Güncellemek ister misiniz?")) {
+                                      return;
+                                    }
+                                  }
+                                  setSelectedDocForWetSig(arc);
+                                  setWetSigModalOpen(true);
+                                }}
+                                className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded transition"
+                                title="Islak İmzalı Rapor Yükle"
+                              >
+                                <PenLine size={14} />
+                              </button>
+                            )}
+
+                            {/* Düzeltme */}
+                            <button
+                              onClick={() => handleEditArchive(arc.id)}
+                              className="p-1.5 bg-yellow-50 hover:bg-yellow-100 text-yellow-600 border border-yellow-200 rounded transition"
+                              title="Belge Bilgilerini Düzenle"
+                            >
+                              <Edit size={14} />
+                            </button>
+
+                            {/* Sil */}
+                            <button
+                              onClick={() => handleDelete(arc.id, true)}
+                              className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded transition"
+                              title="Sil"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -1053,6 +1183,56 @@ export default function Documents() {
                 )}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Islak İmza Yükleme Modalı */}
+      {wetSigModalOpen && selectedDocForWetSig && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 relative">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-lg flex items-center gap-2">
+                <PenLine className="text-amber-600" /> Islak İmzalı Rapor Yükle
+              </h3>
+              <button onClick={() => { setWetSigModalOpen(false); setSelectedDocForWetSig(null); }}>
+                <X size={20} className="text-gray-400 hover:text-red-500" />
+              </button>
+            </div>
+            
+            <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100 text-xs text-blue-700">
+              <span className="font-bold">Seçilen Rapor:</span> {selectedDocForWetSig.title}
+            </div>
+
+            <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+              <strong>Nasıl yapılır?</strong>
+              <ol className="mt-2 space-y-1 list-decimal list-inside text-xs">
+                <li>Raporu indirin veya "Görüntüle" sayfasından yazdırın</li>
+                <li>İlgili kişilere ıslak imzalattırın</li>
+                <li>İmzalı raporu taratıp/fotoğrafını çekip dijitalleştirin</li>
+                <li>Aşağıdan seçerek yükleyin</li>
+              </ol>
+            </div>
+            <label className={`w-full flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed rounded-xl cursor-pointer transition ${uploadingWetSig ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-amber-300 bg-amber-50 hover:border-amber-500 hover:bg-amber-100'}`}>
+              {uploadingWetSig ? (
+                <>
+                  <RefreshCw size={32} className="text-amber-500 animate-spin" />
+                  <span className="font-bold text-amber-700">Yükleniyor...</span>
+                </>
+              ) : (
+                <>
+                  <Upload size={32} className="text-amber-500" />
+                  <span className="font-bold text-gray-700">Islak İmzalı Dosyayı Seçin</span>
+                  <span className="text-xs text-gray-400">PDF, JPG, PNG desteklenir</span>
+                </>
+              )}
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,.jpg,.jpeg,.png"
+                onChange={handleWetSignatureUpload}
+                disabled={uploadingWetSig}
+              />
+            </label>
           </div>
         </div>
       )}

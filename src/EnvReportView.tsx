@@ -12,30 +12,75 @@ export default function EnvReportView() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [uploadingWetSig, setUploadingWetSig] = useState(false);
   const [showWetSigModal, setShowWetSigModal] = useState(false);
+  const [userRole, setUserRole] = useState<string>('normal');
+  const [isEnvConsultant, setIsEnvConsultant] = useState(false);
 
   // Signatures State
   const [isSignMode, setIsSignMode] = useState(false); // E-imza modu aktif mi?
 
   useEffect(() => {
     fetchReport();
+    fetchUserPermissions();
   }, [id]);
+
+  const fetchUserPermissions = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role, organization_id')
+          .eq('id', session.user.id)
+          .single();
+        if (profile) {
+          setUserRole(profile.role || 'normal');
+          if (profile.organization_id) {
+            const { data: org } = await supabase
+              .from('organizations')
+              .select('is_environmental_consultant')
+              .eq('id', profile.organization_id)
+              .single();
+            if (org) {
+              setIsEnvConsultant(!!org.is_environmental_consultant);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching user permissions:', err);
+    }
+  };
+
+  const handleBack = () => {
+    const canAccessConsultant = (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief');
+    if (document.referrer && document.referrer.includes(window.location.host)) {
+      navigate(-1);
+    } else {
+      navigate(canAccessConsultant ? '/consultant' : '/documents');
+    }
+  };
 
   const fetchReport = async () => {
     try {
       const { data, error } = await supabase
         .from('env_reports')
-        .select('*, client:client_id(name, logo_url, address, tax_no), creator:creator_id(full_name)')
+        .select('*, client:client_id(name, logo_url, address, tax_no), creator:creator_id(full_name, organization_id)')
         .eq('id', id)
         .single();
 
       if (error) throw error;
       setReport(data);
 
-      if (data?.consultant_company_id) {
+      let companyId = data?.consultant_company_id;
+      if (!companyId && data?.creator?.organization_id) {
+        companyId = data.creator.organization_id;
+      }
+
+      if (companyId) {
         const { data: compData } = await supabase
           .from('organizations')
           .select('name, consultant_logo_url')
-          .eq('id', data.consultant_company_id)
+          .eq('id', companyId)
           .single();
         setConsultantFirm(compData);
       }
@@ -104,24 +149,78 @@ export default function EnvReportView() {
   if (loading) return <div className="p-8 text-center">Rapor Yükleniyor...</div>;
   if (!report) return <div className="p-8 text-center">Rapor bulunamadı.</div>;
 
+  if (report.wet_signature_url) {
+    return (
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+          <div className="flex items-center gap-4">
+            <button onClick={handleBack} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
+              <ArrowLeft size={20} />
+            </button>
+            <div>
+              <h1 className="font-bold">Islak İmzalı Rapor Görünümü</h1>
+              <p className="text-xs text-gray-500">
+                {new Date(report.report_date).toLocaleDateString('tr-TR')}
+                {report.wet_signed_at && ` (Yükleme: ${new Date(report.wet_signed_at).toLocaleDateString('tr-TR')})`}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <a
+              href={report.wet_signature_url}
+              download
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-bold"
+            >
+              <Download size={18} /> Raporu İndir
+            </a>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-lg border overflow-hidden p-2" style={{ height: '80vh' }}>
+          <iframe
+            src={report.wet_signature_url}
+            className="w-full h-full border-none rounded-lg"
+            title="Islak İmzalı Rapor"
+          ></iframe>
+        </div>
+      </div>
+    );
+  }
+
   if (report.is_manual_upload) {
     return (
-      <div className="max-w-4xl mx-auto space-y-6">
-        <button onClick={() => navigate('/consultant')} className="flex items-center gap-2 text-gray-500 hover:text-gray-900 mb-4">
-          <ArrowLeft size={16} /> Geri Dön
-        </button>
-        <div className="bg-white p-8 rounded-xl shadow border flex flex-col items-center justify-center min-h-[400px]">
-          <Download size={48} className="text-blue-600 mb-4" />
-          <h2 className="text-2xl font-bold mb-2">Bu rapor manuel olarak yüklenmiş.</h2>
-          <p className="text-gray-500 mb-6">Aşağıdaki butona tıklayarak yüklenen dosyayı görüntüleyebilir veya indirebilirsiniz.</p>
-          <a
-            href={report.file_url}
-            target="_blank"
-            rel="noreferrer"
-            className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700 transition"
-          >
-            Dosyayı Görüntüle
-          </a>
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+          <div className="flex items-center gap-4">
+            <button onClick={handleBack} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
+              <ArrowLeft size={20} />
+            </button>
+            <div>
+              <h1 className="font-bold">Manuel Yüklenen Rapor</h1>
+              <p className="text-xs text-gray-500">{new Date(report.report_date).toLocaleDateString('tr-TR')}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <a
+              href={report.file_url}
+              download
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-bold"
+            >
+              <Download size={18} /> Raporu İndir
+            </a>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-lg border overflow-hidden p-2" style={{ height: '80vh' }}>
+          <iframe
+            src={report.file_url}
+            className="w-full h-full border-none rounded-lg"
+            title="Manuel Rapor"
+          ></iframe>
         </div>
       </div>
     );
@@ -171,7 +270,7 @@ export default function EnvReportView() {
       {/* Controls */}
       <div className="print-hidden flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
         <div className="flex items-center gap-4">
-          <button onClick={() => navigate('/consultant')} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
+          <button onClick={handleBack} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
             <ArrowLeft size={20} />
           </button>
           <div>
@@ -181,7 +280,7 @@ export default function EnvReportView() {
         </div>
         <div className="flex items-center gap-3">
           {/* Islak İmza Durumu */}
-          {report.wet_signature_url ? (
+          {report.wet_signature_url && (
             <a
               href={report.wet_signature_url}
               target="_blank"
@@ -190,13 +289,6 @@ export default function EnvReportView() {
             >
               <CheckCircle size={16} /> Islak İmzalıyı Görüntüle
             </a>
-          ) : (
-            <button
-              onClick={() => setShowWetSigModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition text-sm font-medium"
-            >
-              <PenLine size={16} /> Islak İmzalı Yükle
-            </button>
           )}
           <button
             onClick={generateSignLink}
@@ -215,7 +307,7 @@ export default function EnvReportView() {
       </div>
 
       {/* Islak İmza Durum Bandı */}
-      {report.wet_signature_url ? (
+      {report.wet_signature_url && (
         <div className="print-hidden flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
           <CheckCircle size={20} className="text-emerald-600 flex-shrink-0" />
           <div className="flex-1">
@@ -229,19 +321,6 @@ export default function EnvReportView() {
           >
             <ExternalLink size={14} /> Görüntüle
           </a>
-        </div>
-      ) : (
-        <div className="print-hidden flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
-          <PenLine size={20} className="text-amber-600 flex-shrink-0" />
-          <div className="flex-1">
-            <span className="font-bold text-amber-700 text-sm">Islak İmza Bekleniyor</span>
-            <span className="text-amber-600 text-xs ml-2">Rapor henüz ıslak imzalanmamış. PDF indirip imzaladıktan sonra yükleyebilirsiniz.</span>
-          </div>
-          <button onClick={() => setShowWetSigModal(true)}
-            className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold transition"
-          >
-            Yükle
-          </button>
         </div>
       )}
 
@@ -495,7 +574,7 @@ export default function EnvReportView() {
         </div>
 
         {/* SIGNATURE BLOCK */}
-        <div className="mt-16 pt-8 border-t-2 border-gray-800 grid grid-cols-2 md:grid-cols-4 gap-4 text-center" style={{ pageBreakInside: 'avoid' }}>
+        <div className={`mt-16 pt-8 border-t-2 border-gray-800 grid gap-4 text-center ${report.report_type === 'monthly' ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`} style={{ pageBreakInside: 'avoid' }}>
            <div>
              <h4 className="font-bold text-[9px] mb-12 uppercase">İşletme Yetkilisi</h4>
              <div className="flex flex-col items-center">
@@ -514,20 +593,24 @@ export default function EnvReportView() {
                )}
              </div>
            </div>
-           <div>
-             <h4 className="font-bold text-[9px] mb-12 uppercase">Çevre Mühendisi 2</h4>
-             <div className="flex flex-col items-center">
-               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">-</p>
-               <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
-             </div>
-           </div>
-           <div>
-             <h4 className="font-bold text-[9px] mb-12 uppercase">Koordinatör</h4>
-             <div className="flex flex-col items-center">
-               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">Koordinatör</p>
-               <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
-             </div>
-           </div>
+           {report.report_type !== 'monthly' && (
+             <>
+               <div>
+                 <h4 className="font-bold text-[9px] mb-12 uppercase">Çevre Mühendisi 2</h4>
+                 <div className="flex flex-col items-center">
+                   <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">-</p>
+                   <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
+                 </div>
+               </div>
+               <div>
+                 <h4 className="font-bold text-[9px] mb-12 uppercase">Koordinatör</h4>
+                 <div className="flex flex-col items-center">
+                   <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">Koordinatör</p>
+                   <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
+                 </div>
+               </div>
+             </>
+           )}
         </div>
 
       </div>

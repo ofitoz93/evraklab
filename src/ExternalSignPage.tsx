@@ -21,7 +21,7 @@ export default function ExternalSignPage() {
     try {
       const { data, error } = await supabase
         .from('env_reports')
-        .select('*, client:client_id(name, logo_url, address), creator:creator_id(full_name)')
+        .select('*, client:client_id(name, logo_url, address), creator:creator_id(full_name, organization_id)')
         .eq('signature_link_token', token)
         .single();
 
@@ -37,11 +37,16 @@ export default function ExternalSignPage() {
         setIsSigned(true);
       }
 
-      if (data.consultant_company_id) {
+      let companyId = data?.consultant_company_id;
+      if (!companyId && data?.creator?.organization_id) {
+        companyId = data.creator.organization_id;
+      }
+
+      if (companyId) {
         const { data: compData } = await supabase
           .from('organizations')
           .select('name, consultant_logo_url')
-          .eq('id', data.consultant_company_id)
+          .eq('id', companyId)
           .single();
         setConsultantFirm(compData);
       }

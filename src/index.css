@@ -41,3 +41,35 @@ h5,
 h6 {
   @apply font-bold text-gray-900 dark:text-white;
 }
+
+/* ==========================================
+   GLOBAL PRINT STYLES
+   ========================================== */
+@media print {
+  /* Navbar ve diğer UI elemanlarını gizle */
+  nav,
+  .print-hidden {
+    display: none !important;
+  }
+
+  /* Sayfa padding/margin sıfırla */
+  body {
+    background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Rapor içeriği için tam genişlik */
+  #root,
+  .flex-1 {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  /* Ekran dışına taşmayı engelle */
+  * {
+    overflow: visible !important;
+  }
+}

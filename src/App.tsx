@@ -210,7 +210,7 @@ function NavBarContent({
     userRole === 'corporate_staff' || userRole === 'corporate_chief';
 
   return (
-    <nav className="sticky top-0 z-50 px-4 py-3 shadow-sm border-b transition-colors duration-300 bg-white border-gray-200 dark:bg-slate-900 dark:border-slate-800">
+    <nav className="print-hidden sticky top-0 z-50 px-4 py-3 shadow-sm border-b transition-colors duration-300 bg-white border-gray-200 dark:bg-slate-900 dark:border-slate-800">
       <div className="max-w-7xl mx-auto flex justify-between items-center">
         <div className="flex items-center gap-4">
           <button
@@ -844,13 +844,7 @@ function AppContent() {
                 />
                 <Route
                   path="/consultant/reports/:id"
-                  element={
-                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') ? (
-                      <EnvReportView />
-                    ) : (
-                      <Navigate to="/" />
-                    )
-                  }
+                  element={<EnvReportView />}
                 />
                 <Route
                   path="/consultant/compliance"
