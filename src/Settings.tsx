@@ -19,6 +19,7 @@ import {
   Calendar,
   Ticket,
   Send,
+  Clock,
 } from 'lucide-react';
 
 export default function Settings({ session }: { session: any }) {
@@ -36,6 +37,7 @@ export default function Settings({ session }: { session: any }) {
   // Şirket Katılım
   const [inviteCode, setInviteCode] = useState('');
   const [joining, setJoining] = useState(false);
+  const [pendingRequest, setPendingRequest] = useState<any>(null);
 
   // Şifre Değiştirme
   const [newPassword, setNewPassword] = useState('');
@@ -106,6 +108,23 @@ export default function Settings({ session }: { session: any }) {
           setEmail(profileData.email || session.user.email);
           setPhone(profileData.phone || '');
           setAvatarUrl(profileData.avatar_url || null);
+
+          // Check if there is a pending join request
+          if (!profileData.organization_id) {
+            const { data: pending } = await supabase
+              .from('notifications')
+              .select('*')
+              .eq('type', 'join_request')
+              .filter('metadata->>requester_id', 'eq', session.user.id)
+              .limit(1);
+            if (pending && pending.length > 0) {
+              setPendingRequest(pending[0]);
+            } else {
+              setPendingRequest(null);
+            }
+          } else {
+            setPendingRequest(null);
+          }
         }
       }
     } catch (err: any) {
@@ -217,38 +236,69 @@ export default function Settings({ session }: { session: any }) {
       if (inviteError || !invite)
         throw new Error('Geçersiz veya kullanılmış kod.');
 
-      // 2. Yöneticiyi Bul
-      const { data: adminProfile } = await supabase
+      // 2. Şirket Sahibi, Yöneticiler ve Şefleri Bul
+      const { data: managers, error: mgrErr } = await supabase
         .from('profiles')
         .select('id')
         .eq('organization_id', invite.organization_id)
-        .eq('role', 'premium_corporate')
-        .single();
+        .in('role', ['premium_corporate', 'corporate_chief', 'admin', 'system_admin']);
 
-      if (!adminProfile) throw new Error('Şirket yöneticisi bulunamadı.');
+      if (mgrErr || !managers || managers.length === 0) {
+        throw new Error('Şirket yöneticisi veya sahibi bulunamadı.');
+      }
 
-      // 3. Bildirim Gönder
-      await supabase.from('notifications').insert([
-        {
-          user_id: adminProfile.id,
-          title: 'Yeni Personel Talebi',
-          message: `${fullName} (${email}) şirketinize katılmak için kod kullandı. Onaylıyor musunuz?`,
-          type: 'join_request',
-          metadata: {
-            requester_id: profile.id,
-            requester_name: fullName,
-            invitation_id: invite.id,
-            invite_code: invite.code,
-          },
+      // 3. Her Yönetici/Sahip için Bildirim Gönder
+      const notificationInserts = managers.map((mgr) => ({
+        user_id: mgr.id,
+        title: 'Yeni Personel Talebi',
+        message: `${fullName} (${email}) şirketinize katılmak için kod kullandı. Onaylıyor musunuz?`,
+        type: 'join_request',
+        metadata: {
+          requester_id: profile.id,
+          requester_name: fullName,
+          invitation_id: invite.id,
+          invite_code: invite.code,
+          org_name: invite.organization?.name || 'Şirket',
         },
-      ]);
+      }));
+
+      const { error: notifyErr } = await supabase
+        .from('notifications')
+        .insert(notificationInserts);
+
+      if (notifyErr) throw notifyErr;
 
       alert(
         `✅ Talep Gönderildi! "${invite.organization.name}" yöneticisi onayladığında giriş yapabileceksiniz.`
       );
       setInviteCode('');
+      fetchProfile();
     } catch (err: any) {
       alert('Hata: ' + err.message);
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  const handleCancelRequest = async () => {
+    if (!pendingRequest) return;
+    const confirmed = window.confirm("Katılım talebinizi iptal etmek istediğinize emin misiniz?");
+    if (!confirmed) return;
+
+    setJoining(true);
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('type', 'join_request')
+        .filter('metadata->>requester_id', 'eq', profile.id);
+
+      if (error) throw error;
+      
+      alert("Katılım talebi iptal edildi.");
+      setPendingRequest(null);
+    } catch (err: any) {
+      alert("Hata: " + err.message);
     } finally {
       setJoining(false);
     }
@@ -519,36 +569,57 @@ export default function Settings({ session }: { session: any }) {
 
           {/* ŞİRKETE KATILMA (GERİ GELDİ) */}
           {!profile?.organization_id && (
-            <div className="bg-gradient-to-br from-purple-50 to-indigo-50 p-6 rounded-2xl border border-purple-100 shadow-sm">
-              <h3 className="font-bold text-purple-800 mb-3 flex items-center gap-2">
-                <Ticket size={18} /> Şirkete Katıl
-              </h3>
-              <p className="text-xs text-purple-600 mb-4">
-                Yöneticinizden aldığınız 6 haneli davet kodunu girerek giriş
-                talebi oluşturun.
-              </p>
-              <form onSubmit={handleJoinCompany} className="space-y-2">
-                <input
-                  type="text"
-                  placeholder="KOD GİRİN (Örn: X9Y2Z1)"
-                  className="w-full p-2 border border-purple-200 rounded text-center font-mono uppercase tracking-widest outline-none focus:border-purple-500"
-                  value={inviteCode}
-                  onChange={(e) => setInviteCode(e.target.value)}
-                  maxLength={6}
-                />
+            pendingRequest ? (
+              <div className="bg-gradient-to-br from-amber-50 to-orange-50 p-6 rounded-2xl border border-amber-200 shadow-sm space-y-4">
+                <h3 className="font-bold text-amber-800 flex items-center gap-2">
+                  <Clock size={18} className="animate-pulse" /> Davet Onayı Bekleniyor
+                </h3>
+                <div className="text-xs text-amber-700 bg-white/60 p-3 rounded-lg border border-amber-100">
+                  <p className="font-semibold">{pendingRequest.metadata?.org_name || 'Şirket'} katılım talebiniz gönderildi.</p>
+                  <p className="mt-1">Şirket yöneticisi veya sahibi onayladığında sisteme dahil olacaksınız.</p>
+                  <p className="mt-2 text-[10px] font-mono">Davet Kodu: {pendingRequest.metadata?.invite_code}</p>
+                </div>
                 <button
+                  onClick={handleCancelRequest}
                   disabled={joining}
-                  className="w-full bg-purple-600 text-white py-2 rounded font-bold text-sm hover:bg-purple-700 flex items-center justify-center gap-2"
+                  className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition disabled:opacity-50"
                 >
-                  {joining ? (
-                    <Loader size={14} className="animate-spin" />
-                  ) : (
-                    <Send size={14} />
-                  )}
-                  Talep Gönder
+                  {joining ? <Loader size={14} className="animate-spin" /> : null}
+                  Talebi İptal Et
                 </button>
-              </form>
-            </div>
+              </div>
+            ) : (
+              <div className="bg-gradient-to-br from-purple-50 to-indigo-50 p-6 rounded-2xl border border-purple-100 shadow-sm">
+                <h3 className="font-bold text-purple-800 mb-3 flex items-center gap-2">
+                  <Ticket size={18} /> Şirkete Katıl
+                </h3>
+                <p className="text-xs text-purple-600 mb-4">
+                  Yöneticinizden aldığınız 6 haneli davet kodunu girerek giriş
+                  talebi oluşturun.
+                </p>
+                <form onSubmit={handleJoinCompany} className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="KOD GİRİN (Örn: X9Y2Z1)"
+                    className="w-full p-2 border border-purple-200 rounded text-center font-mono uppercase tracking-widest outline-none focus:border-purple-500"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    maxLength={6}
+                  />
+                  <button
+                    disabled={joining}
+                    className="w-full bg-purple-600 text-white py-2 rounded font-bold text-sm hover:bg-purple-700 flex items-center justify-center gap-2"
+                  >
+                    {joining ? (
+                      <Loader size={14} className="animate-spin" />
+                    ) : (
+                      <Send size={14} />
+                    )}
+                    Talep Gönder
+                  </button>
+                </form>
+              </div>
+            )
           )}
         </div>
 

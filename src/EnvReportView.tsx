@@ -91,8 +91,62 @@ export default function EnvReportView() {
     }
   };
 
+  const getReportFilename = (suffix = '') => {
+    if (!report) return `rapor${suffix}`;
+    const companyName = report.client?.name || 'Firma';
+    const reportDate = report.report_date ? new Date(report.report_date).toLocaleDateString('tr-TR').replace(/\./g, '-') : '';
+    const reportType = report.report_type === 'monthly' ? 'Aylik_Faaliyet_Raporu' : 'Yillik_Ic_Tetkik_Raporu';
+    
+    const cleanCompany = companyName
+      .replace(/[^a-zA-Z0-9çğıöşüÇĞİÖŞÜ\s-_]/g, '')
+      .trim()
+      .replace(/\s+/g, '_');
+      
+    return `${cleanCompany}_${reportType}_${reportDate}${suffix}`;
+  };
+
+  const downloadFile = async (url: string, baseName: string) => {
+    let ext = 'pdf';
+    try {
+      const urlPath = new URL(url).pathname;
+      const parts = urlPath.split('.');
+      if (parts.length > 1) {
+        const potentialExt = parts.pop()?.toLowerCase();
+        if (potentialExt && ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'].includes(potentialExt)) {
+          ext = potentialExt;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    
+    const filename = `${baseName}.${ext}`;
+    
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(blobUrl);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Download failed, opening in new tab', error);
+      window.open(url, '_blank');
+    }
+  };
+
   const handlePrint = () => {
+    const originalTitle = document.title;
+    document.title = getReportFilename();
     window.print();
+    setTimeout(() => {
+      document.title = originalTitle;
+    }, 1000);
   };
 
   const generateSignLink = async () => {
@@ -166,15 +220,12 @@ export default function EnvReportView() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <a
-              href={report.wet_signature_url}
-              download
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={() => downloadFile(report.wet_signature_url, getReportFilename('_islak_imzali'))}
               className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-bold"
             >
               <Download size={18} /> Raporu İndir
-            </a>
+            </button>
           </div>
         </div>
 
@@ -203,15 +254,12 @@ export default function EnvReportView() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <a
-              href={report.file_url}
-              download
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={() => downloadFile(report.file_url, getReportFilename('_manuel'))}
               className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-bold"
             >
               <Download size={18} /> Raporu İndir
-            </a>
+            </button>
           </div>
         </div>
 

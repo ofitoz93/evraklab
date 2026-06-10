@@ -46,40 +46,66 @@ export default function Notifications() {
     }
   }
 
+  const deleteRelatedNotifications = async (invitationId: string) => {
+    try {
+      const { data: relatedNotifs } = await supabase
+        .from('notifications')
+        .select('id, metadata')
+        .eq('type', 'join_request');
+      
+      const idsToDelete = (relatedNotifs || [])
+        .filter((n: any) => n.metadata?.invitation_id === invitationId)
+        .map((n: any) => n.id);
+        
+      if (idsToDelete.length > 0) {
+        await supabase.from('notifications').delete().in('id', idsToDelete);
+        setNotifications(prev => prev.filter(n => !idsToDelete.includes(n.id)));
+      }
+    } catch (err) {
+      console.error("Related notifications delete failed:", err);
+    }
+  };
+
   // --- ONAY İŞLEMİ ---
   const handleApproveJoin = async (notification: any) => {
     const { requester_id, invitation_id } = notification.metadata;
 
     try {
         // 1. Kodu kontrol et (Hala kullanılmamış mı?)
-        const {data: invite} = await supabase.from('invitations').select('*').eq('id', invitation_id).single();
-        if(!invite || invite.is_used) {
+        const {data: invite, error: inviteErr} = await supabase.from('invitations').select('*').eq('id', invitation_id).single();
+        if(inviteErr || !invite || invite.is_used) {
             alert("Bu kod artık geçersiz veya kullanılmış.");
             return;
         }
 
         // 2. Kullanıcıyı Şirkete Al (Profile Update)
-        await supabase.from('profiles').update({
+        const { error: profileErr } = await supabase.from('profiles').update({
             organization_id: invite.organization_id,
             role: 'corporate_staff'
         }).eq('id', requester_id);
+        
+        if (profileErr) throw profileErr;
 
         // 3. Kodu "Kullanıldı" İşaretle
-        await supabase.from('invitations').update({
+        const { error: inviteUpdateErr } = await supabase.from('invitations').update({
             is_used: true,
             email: 'Used by ID: ' + requester_id // Takip için
         }).eq('id', invitation_id);
+        
+        if (inviteUpdateErr) throw inviteUpdateErr;
 
         // 4. Kullanıcıya "Onaylandı" Bildirimi Gönder
-        await supabase.from('notifications').insert([{
+        const { error: notifyErr } = await supabase.from('notifications').insert([{
             user_id: requester_id,
             title: "Tebrikler! 🎉",
             message: "Şirkete katılım talebiniz yönetici tarafından onaylandı.",
             type: "info"
         }]);
+        
+        if (notifyErr) throw notifyErr;
 
         alert("Kullanıcı şirkete eklendi!");
-        deleteNotification(notification.id); // Yönetici bildirimini sil
+        await deleteRelatedNotifications(invitation_id); // Tüm yöneticilerdeki bildirimleri sil
 
     } catch (error:any) {
         alert("Hata: " + error.message);
@@ -94,21 +120,25 @@ export default function Notifications() {
 
     try {
         // 1. Kodu yak (is_used = true) ki bir daha kullanılamasın
-        await supabase.from('invitations').update({
+        const { error: inviteErr } = await supabase.from('invitations').update({
             is_used: true,
             email: 'REJECTED'
         }).eq('id', invitation_id);
+        
+        if (inviteErr) throw inviteErr;
 
         // 2. Kullanıcıya "Reddedildi" Bildirimi Gönder
-        await supabase.from('notifications').insert([{
+        const { error: notifyErr } = await supabase.from('notifications').insert([{
             user_id: requester_id,
             title: "Talep Reddedildi ❌",
             message: "Şirkete katılım talebiniz onaylanmadı. Lütfen yeni bir kod isteyin.",
             type: "warning"
         }]);
+        
+        if (notifyErr) throw notifyErr;
 
         alert("Talep reddedildi.");
-        deleteNotification(notification.id);
+        await deleteRelatedNotifications(invitation_id); // Tüm yöneticilerdeki bildirimleri sil
 
     } catch (error:any) {
         alert("Hata: " + error.message);

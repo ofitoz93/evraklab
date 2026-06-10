@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     message TEXT NOT NULL,
     type TEXT NOT NULL, -- 'system_admin_announcement', 'system_admin_msg', 'invite', etc.
     is_read BOOLEAN DEFAULT FALSE,
+    metadata JSONB DEFAULT '{}'::jsonb, -- Store dynamic metadata (e.g. invite codes, requester details)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -155,7 +156,8 @@ CREATE TABLE IF NOT EXISTS ticket_messages (
 
 CREATE TABLE IF NOT EXISTS invitations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email TEXT NOT NULL,
+    email TEXT, -- Nullable to allow code-based invitations
+    code TEXT,  -- Invitation code (e.g. X9Y2Z1)
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     is_used BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -564,3 +566,144 @@ CREATE POLICY "Allow public insert into avatars" ON storage.objects FOR INSERT W
 CREATE POLICY "Allow public select from avatars" ON storage.objects FOR SELECT USING (bucket_id = 'avatars');
 CREATE POLICY "Allow public update on avatars" ON storage.objects FOR UPDATE USING (bucket_id = 'avatars');
 CREATE POLICY "Allow public delete from avatars" ON storage.objects FOR DELETE USING (bucket_id = 'avatars');
+
+-- ==========================================
+-- 16. ADDITIONAL RLS POLICIES FOR CHAT, INVITATIONS, NOTIFICATIONS
+-- ==========================================
+
+-- Enable Row Level Security (RLS)
+ALTER TABLE public.company_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.message_reads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invitations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+
+-- company_messages Policies
+CREATE POLICY "Allow users to read messages in their organization" ON public.company_messages
+FOR SELECT TO authenticated USING (
+  organization_id IN (
+    SELECT organization_id FROM public.profiles WHERE id = auth.uid()
+  )
+  AND (
+    receiver_id IS NULL -- general chat
+    OR receiver_id = auth.uid() -- received DMs
+    OR sender_id = auth.uid() -- sent DMs
+  )
+);
+
+CREATE POLICY "Allow users to send messages in their organization" ON public.company_messages
+FOR INSERT TO authenticated WITH CHECK (
+  sender_id = auth.uid()
+  AND organization_id IN (
+    SELECT organization_id FROM public.profiles WHERE id = auth.uid()
+  )
+);
+
+-- message_reads Policies
+CREATE POLICY "Allow users to manage their own message reads" ON public.message_reads
+FOR ALL TO authenticated USING (
+  user_id = auth.uid()
+) WITH CHECK (
+  user_id = auth.uid()
+);
+
+-- chat_settings Policies
+CREATE POLICY "Allow users to manage their own chat settings" ON public.chat_settings
+FOR ALL TO authenticated USING (
+  user_id = auth.uid()
+) WITH CHECK (
+  user_id = auth.uid()
+);
+
+-- invitations Policies
+CREATE POLICY "Allow users to select invitations" ON public.invitations
+FOR SELECT TO authenticated USING (
+  organization_id IN (
+    SELECT organization_id FROM public.profiles WHERE id = auth.uid()
+  )
+  OR is_used = false
+);
+
+CREATE POLICY "Allow managers to insert invitations" ON public.invitations
+FOR INSERT TO authenticated WITH CHECK (
+  organization_id IN (
+    SELECT organization_id FROM public.profiles 
+    WHERE id = auth.uid() 
+    AND (role = 'premium_corporate' OR role = 'corporate_chief' OR role = 'admin')
+  )
+);
+
+CREATE POLICY "Allow managers to delete invitations" ON public.invitations
+FOR DELETE TO authenticated USING (
+  organization_id IN (
+    SELECT organization_id FROM public.profiles 
+    WHERE id = auth.uid() 
+    AND (role = 'premium_corporate' OR role = 'corporate_chief' OR role = 'admin')
+  )
+);
+
+CREATE POLICY "Allow managers to update invitations" ON public.invitations
+FOR UPDATE TO authenticated USING (
+  organization_id IN (
+    SELECT organization_id FROM public.profiles 
+    WHERE id = auth.uid() 
+    AND (role = 'premium_corporate' OR role = 'corporate_chief' OR role = 'admin')
+  )
+) WITH CHECK (
+  organization_id IN (
+    SELECT organization_id FROM public.profiles 
+    WHERE id = auth.uid() 
+    AND (role = 'premium_corporate' OR role = 'corporate_chief' OR role = 'admin')
+  )
+);
+
+-- notifications Policies
+CREATE POLICY "Allow users to read own or requested notifications" ON public.notifications
+FOR SELECT TO authenticated USING (
+  user_id = auth.uid()
+  OR (
+    type = 'join_request'
+    AND metadata->>'requester_id' = auth.uid()::text
+  )
+);
+
+CREATE POLICY "Allow authenticated to insert notifications" ON public.notifications
+FOR INSERT TO authenticated WITH CHECK (true);
+
+CREATE POLICY "Allow users to update own notifications" ON public.notifications
+FOR UPDATE TO authenticated USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Allow users to delete own or requested notifications" ON public.notifications
+FOR DELETE TO authenticated USING (
+  user_id = auth.uid()
+  OR (
+    type = 'join_request'
+    AND metadata->>'requester_id' = auth.uid()::text
+  )
+);
+
+-- ==========================================
+-- 17. ADDITIONAL RLS POLICIES FOR PROFILES
+-- ==========================================
+DROP POLICY IF EXISTS "Allow company managers to join users to their company" ON public.profiles;
+
+CREATE POLICY "Allow company managers to join users to their company" ON public.profiles
+FOR UPDATE
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles manager
+    WHERE manager.id = auth.uid()
+    AND (manager.role = 'premium_corporate' OR manager.role = 'corporate_chief' OR manager.role = 'admin' OR manager.role = 'system_admin')
+    AND (profiles.organization_id IS NULL OR profiles.organization_id = manager.organization_id)
+  )
+)
+WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM public.profiles manager
+    WHERE manager.id = auth.uid()
+    AND (manager.role = 'premium_corporate' OR manager.role = 'corporate_chief' OR manager.role = 'admin' OR manager.role = 'system_admin')
+    AND profiles.organization_id = manager.organization_id
+  )
+);
+
