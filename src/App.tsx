@@ -25,7 +25,6 @@ import {
   Menu,
   X,
   Wrench, // <--- YENİ İKON (İngiliz Anahtarı)
-  Scale, // Mevzuat ikonu
   Briefcase, // Danışmanlık ikonu
   BarChart3,
   Shield,
@@ -49,13 +48,10 @@ import Dashboard from './Dashboard';
 import TeamChat from './TeamChat';
 import HelpPage from './HelpPage';
 import Tools from './Tools'; // <--- YENİ ARAÇLAR SAYFASI
-import AdminRegulations from './AdminRegulations';
-import Regulations from './Regulations';
 import ConsultantPanel from './ConsultantPanel';
 import EnvReportForm from './EnvReportForm';
 import EnvReportView from './EnvReportView';
 import ExternalSignPage from './ExternalSignPage';
-import ComplianceDashboard from './ComplianceDashboard';
 
 // --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
@@ -99,8 +95,8 @@ function NavBarContent({
   subEndDate,
   hasCompany,
   userOrgId,
-  canViewRegulations,
   isEnvConsultant,
+  systemLogoUrl,
 }: any) {
   const location = useLocation();
   const [unreadCount, setUnreadCount] = useState(0);
@@ -225,8 +221,12 @@ function NavBarContent({
             className="flex items-center gap-2 hover:opacity-90 transition-opacity"
           >
             <div className="flex items-center gap-1.5">
-              <div className="relative flex items-center justify-center w-8 h-8 bg-gradient-to-br from-[#0e2a47] to-[#1a4066] rounded-lg shadow-sm text-white">
-                <LayoutDashboard size={18} />
+              <div className="relative flex items-center justify-center w-8 h-8 bg-gradient-to-br from-[#0e2a47] to-[#1a4066] rounded-lg shadow-sm text-white overflow-hidden">
+                {systemLogoUrl ? (
+                  <img src={systemLogoUrl} className="w-full h-full object-contain p-0.5" alt="Logo" />
+                ) : (
+                  <LayoutDashboard size={18} />
+                )}
               </div>
               <div className="text-2xl font-extrabold tracking-tight flex items-baseline select-none">
                 <span className="text-[#0e2a47] dark:text-white">EVRAK</span>
@@ -253,14 +253,8 @@ function NavBarContent({
               <Wrench size={16} /> Araçlar
             </Link>
 
-            {(userRole === 'admin' || canViewRegulations) && (
-              <Link
-                to="/regulations"
-                className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
-              >
-                <Scale size={16} /> Mevzuat
-              </Link>
-            )}
+
+
 
 
             {hasCompany && (
@@ -312,7 +306,7 @@ function NavBarContent({
                 to="/consultant"
                 className="hover:text-[#2ca58d] dark:hover:text-[#2ca58d] transition flex items-center gap-1 font-bold text-[#2ca58d]"
               >
-                <Briefcase size={16} /> Yönetici Paneli
+                <Briefcase size={16} /> {userRole === 'corporate_chief' ? 'Şef Paneli' : 'Yönetici Paneli'}
               </Link>
             )}
             {(userRole === 'admin' || userRole === 'system_admin') && (
@@ -436,15 +430,7 @@ function NavBarContent({
               <Wrench size={20} /> Araçlar
             </Link>
 
-            {/* Mobil Menüye Mevzuat Eklendi */}
-            {(userRole === 'admin' || canViewRegulations) && (
-              <Link
-                to="/regulations"
-                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
-              >
-                <Scale size={20} /> Mevzuat
-              </Link>
-            )}
+
 
 
             {hasCompany && (
@@ -502,7 +488,7 @@ function NavBarContent({
                 onClick={() => setIsMobileMenuOpen(false)}
                 className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 font-bold text-[#2ca58d] dark:text-[#2ca58d]"
               >
-                <Briefcase size={20} /> Yönetici Paneli
+                <Briefcase size={20} /> {userRole === 'corporate_chief' ? 'Şef Paneli' : 'Yönetici Paneli'}
               </Link>
             )}
 
@@ -551,8 +537,9 @@ function AppContent() {
   const [subEndDate, setSubEndDate] = useState<string | null>(null);
   const [isPremium, setIsPremium] = useState(false);
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
-  const [canViewRegulations, setCanViewRegulations] = useState(false);
   const [isEnvConsultant, setIsEnvConsultant] = useState(false);
+  const [extraPermissions, setExtraPermissions] = useState<any>({});
+  const [systemLogoUrl, setSystemLogoUrl] = useState<string | null>(null);
 
   // Ad Soyad ve Telefon Zorunluluğu için State'ler
   const [showNameModal, setShowNameModal] = useState(false);
@@ -561,6 +548,7 @@ function AppContent() {
   const [savingName, setSavingName] = useState(false);
 
   useEffect(() => {
+    fetchSystemLogo();
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) {
@@ -581,12 +569,31 @@ function AppContent() {
     return () => subscription.unsubscribe();
   }, []);
 
+  const fetchSystemLogo = async () => {
+    try {
+      const { data } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'system_logo_url')
+        .maybeSingle();
+      if (data && data.value) {
+        setSystemLogoUrl(data.value);
+        const link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
+        if (link) {
+          link.href = data.value;
+        }
+      }
+    } catch (err) {
+      console.error('System logo fetch error:', err);
+    }
+  };
+
   const fetchUserData = async (userId: string) => {
     try {
       // Profili doğrudan çek (join kullanmadan - veritabanında FK tanımlanmamış)
       let { data: profile, error } = await supabase
         .from('profiles')
-        .select('full_name, phone, role, organization_id, subscription_end_date, can_view_regulations, can_manage_regulations')
+        .select('full_name, phone, role, organization_id, subscription_end_date, extra_permissions')
         .eq('id', userId)
         .single();
 
@@ -616,7 +623,7 @@ function AppContent() {
         console.warn('Profil çekilemedi, temel sorgu deneniyor:', error.message);
         let { data: basic, error: e2 } = await supabase
           .from('profiles')
-          .select('full_name, phone, role, organization_id, subscription_end_date')
+          .select('full_name, phone, role, organization_id, subscription_end_date, extra_permissions')
           .eq('id', userId)
           .single();
         
@@ -640,6 +647,7 @@ function AppContent() {
         if (basic) {
           setUserRole(basic.role || 'normal');
           setUserOrgId(basic.organization_id);
+          setExtraPermissions(basic.extra_permissions || {});
           const role = basic.role || 'normal';
           const now = new Date();
           let active = false;
@@ -664,6 +672,7 @@ function AppContent() {
         const role = profile.role || 'normal';
         setUserRole(role);
         setUserOrgId(profile.organization_id);
+        setExtraPermissions(profile.extra_permissions || {});
 
         // Ad soyad ve Telefon kontrolü
         const noName = !profile.full_name || profile.full_name.trim() === '';
@@ -706,16 +715,7 @@ function AppContent() {
         }
         setIsPremium(active);
 
-        // Mevzuat yetkisi
-        let hasRegAccess = !!(profile as any).can_view_regulations;
-        if (!hasRegAccess && profile.organization_id) {
-          const { count } = await supabase
-            .from('company_pdf_regulations')
-            .select('*', { count: 'exact', head: true })
-            .eq('company_id', profile.organization_id);
-          if (count && count > 0) hasRegAccess = true;
-        }
-        setCanViewRegulations(hasRegAccess);
+
       }
     } catch (err: any) {
       console.error('Kullanıcı verisi yüklenirken hata:', err.message);
@@ -788,8 +788,8 @@ function AppContent() {
             subEndDate={subEndDate}
             hasCompany={!!userOrgId}
             userOrgId={userOrgId}
-            canViewRegulations={canViewRegulations}
             isEnvConsultant={isEnvConsultant}
+            systemLogoUrl={systemLogoUrl}
           />
         )}
         <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
@@ -799,7 +799,6 @@ function AppContent() {
                 <Route path="/" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/consultant/reports/:id" element={<EnvReportView />} />
-                <Route path="/consultant/compliance" element={<ComplianceDashboard />} />
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
@@ -818,16 +817,7 @@ function AppContent() {
                 <Route path="/support" element={<Support />} />
                 <Route path="/help" element={<HelpPage />} />
                 <Route path="/tools" element={<Tools />} />
-                <Route
-                  path="/regulations"
-                  element={
-                    userRole === 'admin' || canViewRegulations ? (
-                      <Regulations />
-                    ) : (
-                      <Navigate to="/" />
-                    )
-                  }
-                />
+
                 <Route
                   path="/consultant"
                   element={
@@ -846,16 +836,7 @@ function AppContent() {
                   path="/consultant/reports/:id"
                   element={<EnvReportView />}
                 />
-                <Route
-                  path="/consultant/compliance"
-                  element={
-                    userRole === 'admin' || (isPremium && isEnvConsultant && userRole !== 'corporate_staff') ? (
-                      <ComplianceDashboard />
-                    ) : (
-                      <Navigate to="/" />
-                    )
-                  }
-                />
+
                 <Route
                   path="/admin"
                   element={

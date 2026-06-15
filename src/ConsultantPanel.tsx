@@ -14,13 +14,14 @@ import {
   Clock,
   Eye,
   Settings as SettingsIcon,
-  BarChart3,
   Copy,
   Mail,
   User,
+  MapPin,
+  Tag,
+  Loader,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import ComplianceDashboard from './ComplianceDashboard';
 
 interface Client {
   id: string;
@@ -29,6 +30,8 @@ interface Client {
   tax_no: string;
   phone: string;
   logo_url: string;
+  created_by?: string;
+  created_at?: string;
 }
 
 interface Report {
@@ -47,7 +50,7 @@ interface Report {
 }
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'compliance' | 'team'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions'>('clients');
   const [clients, setClients] = useState<Client[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,6 +58,17 @@ export default function ConsultantPanel() {
   const [userId, setUserId] = useState('');
   const [orgId, setOrgId] = useState('');
   const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
+
+  // Tanımlamalar Tab State'leri
+  const [defTabTypes, setDefTabTypes] = useState<any[]>([]);
+  const [defTabLocs, setDefTabLocs] = useState<any[]>([]);
+  const [rawDefs, setRawDefs] = useState<any[]>([]);
+  const [selectedDefMemberId, setSelectedDefMemberId] = useState<string>('all');
+  const [selectedDefTypeMemberId, setSelectedDefTypeMemberId] = useState<string>('all');
+  const [newDefTypeLabel, setNewDefTypeLabel] = useState('');
+  const [newDefLocLabel, setNewDefLocLabel] = useState('');
+  const [savingDef, setSavingDef] = useState(false);
+  const [clientNames, setClientNames] = useState<string[]>([]);
 
   // Modals
   const [showAddClient, setShowAddClient] = useState(false);
@@ -94,11 +108,14 @@ export default function ConsultantPanel() {
   }, []);
 
   useEffect(() => {
-    if ((activeTab === 'settings' || activeTab === 'team') && orgId) {
+    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions') && orgId) {
       fetchTeamMembers();
     }
     if (activeTab === 'team' && orgId) {
       fetchInvitations();
+    }
+    if (activeTab === 'definitions' && orgId) {
+      fetchDefinitionsTab();
     }
   }, [activeTab, orgId]);
 
@@ -121,8 +138,230 @@ export default function ConsultantPanel() {
     setInvitations(data || []);
   };
 
+  const groupDefinitions = (defs: any[], orgProfiles: any[]) => {
+    const grouped: any[] = [];
+    const labelGroups = new Map<string, any[]>();
+    
+    // Group by label (case-insensitive)
+    defs.forEach(d => {
+      if (!d.label) return;
+      const key = d.label.trim().toLowerCase();
+      if (!labelGroups.has(key)) {
+        labelGroups.set(key, []);
+      }
+      labelGroups.get(key)!.push(d);
+    });
+
+    const activeMemberIds = orgProfiles.map(m => m.id);
+
+    labelGroups.forEach((rows, labelKey) => {
+      const rowUserIds = rows.map(r => r.user_id);
+      // Check if this label covers all active team members
+      const coversAll = activeMemberIds.length > 0 && activeMemberIds.every(id => rowUserIds.includes(id));
+
+      if (coversAll) {
+        grouped.push({
+          id: `group:${rows.map(r => r.id).join(',')}`,
+          label: rows[0].label,
+          isGroup: true,
+          rowIds: rows.map(r => r.id),
+          ownerName: 'Tüm Ekip',
+          category: rows[0].category,
+          created_at: rows[0].created_at
+        });
+      } else {
+        rows.forEach(r => {
+          grouped.push({
+            ...r,
+            isGroup: false,
+            rowIds: [r.id],
+            ownerName: r.user?.full_name || 'Bilinmeyen'
+          });
+        });
+      }
+    });
+
+    return grouped.sort((a, b) => a.label.localeCompare(b.label));
+  };
+
+  const fetchDefinitionsTab = async () => {
+    if (!orgId) return;
+    try {
+      const { data: orgProfiles } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('organization_id', orgId);
+
+      const { data: defs, error } = await supabase
+        .from('user_definitions')
+        .select('*, user:profiles!user_id(full_name)')
+        .eq('organization_id', orgId)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      // Fetch company names to prevent deletion of registered business locations
+      const { data: clientsData } = await supabase
+        .from('consultant_clients')
+        .select('name')
+        .eq('consultant_company_id', orgId);
+      setClientNames(clientsData?.map(c => c.name) || []);
+
+      if (defs) {
+        setRawDefs(defs);
+        const groupedTypes = groupDefinitions(defs.filter(d => d.category === 'doc_type'), orgProfiles || []);
+        const groupedLocs = groupDefinitions(defs.filter(d => d.category === 'location'), orgProfiles || []);
+        setDefTabTypes(groupedTypes);
+        setDefTabLocs(groupedLocs);
+      }
+    } catch (err: any) {
+      console.error('Tanımlar çekilirken hata:', err.message);
+    }
+  };
+
+  const handleAddTabDocType = async () => {
+    if (!newDefTypeLabel.trim()) return;
+    
+    const exists = rawDefs.some(t => t.category === 'doc_type' && t.label && t.label.toLowerCase() === newDefTypeLabel.trim().toLowerCase() &&
+      (selectedDefTypeMemberId === 'all' || t.user_id === selectedDefTypeMemberId)
+    );
+    if (exists) {
+      alert(`⛔ "${newDefTypeLabel.trim()}" seçilen kapsamda zaten tanımlanmış!`);
+      return;
+    }
+
+    setSavingDef(true);
+    try {
+      let targetUserIds: string[] = [];
+      if (selectedDefTypeMemberId === 'all') {
+        const { data: orgProfiles } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('organization_id', orgId);
+        targetUserIds = orgProfiles?.map(p => p.id) || [];
+      } else {
+        targetUserIds = [selectedDefTypeMemberId];
+      }
+
+      if (targetUserIds.length === 0) return;
+
+      const inserts = targetUserIds.map(uid => ({
+        user_id: uid,
+        category: 'doc_type',
+        label: newDefTypeLabel.trim(),
+        organization_id: orgId
+      }));
+
+      const { error } = await supabase
+        .from('user_definitions')
+        .insert(inserts);
+
+      if (error) throw error;
+      setNewDefTypeLabel('');
+      await fetchDefinitionsTab();
+    } catch (err: any) {
+      alert('Belge türü eklenirken hata: ' + err.message);
+    } finally {
+      setSavingDef(false);
+    }
+  };
+
+  const handleAddTabLocation = async () => {
+    if (!newDefLocLabel.trim()) return;
+
+    const exists = rawDefs.some(l => l.category === 'location' && l.label && l.label.toLowerCase() === newDefLocLabel.trim().toLowerCase() && 
+      (selectedDefMemberId === 'all' || l.user_id === selectedDefMemberId)
+    );
+    if (exists) {
+      alert(`⛔ "${newDefLocLabel.trim()}" seçilen kapsamda zaten tanımlanmış!`);
+      return;
+    }
+
+    setSavingDef(true);
+    try {
+      let targetUserIds: string[] = [];
+      if (selectedDefMemberId === 'all') {
+        const { data: orgProfiles } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('organization_id', orgId);
+        targetUserIds = orgProfiles?.map(p => p.id) || [];
+      } else {
+        targetUserIds = [selectedDefMemberId];
+      }
+
+      if (targetUserIds.length === 0) return;
+
+      const inserts = targetUserIds.map(uid => ({
+        user_id: uid,
+        category: 'location',
+        label: newDefLocLabel.trim(),
+        organization_id: orgId
+      }));
+
+      const { error } = await supabase
+        .from('user_definitions')
+        .insert(inserts);
+
+      if (error) throw error;
+      setNewDefLocLabel('');
+      await fetchDefinitionsTab();
+    } catch (err: any) {
+      alert('Lokasyon eklenirken hata: ' + err.message);
+    } finally {
+      setSavingDef(false);
+    }
+  };
+
+  const handleDeleteTabDefinition = async (id: string) => {
+    let idsToDelete: string[] = [];
+    let isBusiness = false;
+    let label = '';
+
+    if (id.startsWith('group:')) {
+      idsToDelete = id.substring(6).split(',');
+      const firstId = idsToDelete[0];
+      const match = rawDefs.find(d => d.id === firstId);
+      if (match) {
+        label = match.label;
+      }
+    } else {
+      idsToDelete = [id];
+      const match = rawDefs.find(d => d.id === id);
+      if (match) {
+        label = match.label;
+      }
+    }
+
+    if (label) {
+      isBusiness = clientNames.some(
+        cName => cName && label && cName.trim().toLowerCase() === label.trim().toLowerCase()
+      );
+      if (isBusiness) {
+        alert('⛔ Kayıtlı bir işletmeye ait lokasyon silinemez!');
+        return;
+      }
+    }
+
+    if (!window.confirm('Bu tanımı silmek istediğinize emin misiniz? Bu işlem bağlı belgeleri etkileyebilir.')) return;
+    try {
+      const { error } = await supabase
+        .from('user_definitions')
+        .delete()
+        .in('id', idsToDelete);
+      if (error) throw error;
+      await fetchDefinitionsTab();
+    } catch (err: any) {
+      alert('Silme işlemi başarısız: ' + err.message);
+    }
+  };
+
   const handleSendEmailInvite = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     if (!inviteEmail.includes('@')) return alert('Geçerli bir e-posta adresi giriniz.');
 
     setSendingEmail(true);
@@ -190,6 +429,10 @@ export default function ConsultantPanel() {
   };
 
   const handleCreateCode = async () => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     try {
       const { error } = await supabase
@@ -206,6 +449,10 @@ export default function ConsultantPanel() {
   };
 
   const handleDeleteInvite = async (id: string) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     if (!window.confirm('Bu daveti iptal etmek istiyor musunuz?')) return;
     await supabase.from('invitations').delete().eq('id', id);
     setInvitations((prev) => prev.filter((i) => i.id !== id));
@@ -217,6 +464,10 @@ export default function ConsultantPanel() {
   };
 
   const handleKick = async (id: string, role: string) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     if (role === 'premium_corporate') return alert('Yöneticiyi silemezsiniz.');
     if (window.confirm('Bu personeli şirketten çıkarmak istiyor musunuz?')) {
       try {
@@ -233,6 +484,10 @@ export default function ConsultantPanel() {
   };
 
   const handleUpdateRole = async (memberId: string, role: string) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     try {
       const updates: any = { role };
       if (role === 'normal') {
@@ -345,6 +600,10 @@ export default function ConsultantPanel() {
   };
 
   const openAssignModal = async (client: any) => {
+    if (!canAssignClients) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     setSelectedClient(client);
     setShowAssignModal(true);
     
@@ -364,6 +623,10 @@ export default function ConsultantPanel() {
   };
 
   const handleToggleAssign = async (uId: string) => {
+    if (!canAssignClients) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     try {
       if (currentAssignments.includes(uId)) {
         // Remove assignment
@@ -405,7 +668,20 @@ export default function ConsultantPanel() {
         if (profile) {
         setUserRole(profile.role);
         setOrgId(profile.organization_id);
-        setCurrentUserPerms(profile.extra_permissions || {});
+        const perms = profile.extra_permissions || {};
+        setCurrentUserPerms(perms);
+
+        if (profile.role === 'corporate_chief') {
+          if (perms.can_view_team !== false) {
+            setActiveTab('team');
+          } else if (perms.can_view_clients !== false) {
+            setActiveTab('clients');
+          } else if (perms.can_view_reports !== false) {
+            setActiveTab('reports');
+          } else {
+            setActiveTab('clients');
+          }
+        }
 
         if (profile.organization_id) {
           const { data: org } = await supabase.from('organizations').select('*').eq('id', profile.organization_id).single();
@@ -413,8 +689,8 @@ export default function ConsultantPanel() {
         }
 
         await Promise.all([
-          fetchClients(profile.organization_id, profile.role, session.user.id, profile.extra_permissions),
-          fetchReports(profile.organization_id, profile.role, session.user.id, profile.extra_permissions),
+          fetchClients(profile.organization_id, profile.role, session.user.id, perms),
+          fetchReports(profile.organization_id, profile.role, session.user.id, perms),
         ]);
       }
     } catch (err) {
@@ -427,9 +703,8 @@ export default function ConsultantPanel() {
   const fetchClients = async (oId: string, role: string, uId: string, perms?: any) => {
     let query = supabase.from('consultant_clients').select('*');
     
-    // Yalnızca Yönetici (premium_corporate, corporate_chief) ve Admin her şeyi görür. 
-    // Personel sadece atandığı firmaları görür (perm yoksa).
-    const isRestrictedRole = role === 'corporate_staff';
+    // Kurumsal şef ve personel sadece atandığı firmaları görür (perm yoksa).
+    const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
 
     if (isRestrictedRole && !perms?.can_view_all_clients) {
       // Sadece atandığı firmalar
@@ -456,7 +731,7 @@ export default function ConsultantPanel() {
       .from('env_reports')
       .select('*, client:client_id(name), creator:creator_id(full_name)');
     
-    const isRestrictedRole = role === 'corporate_staff';
+    const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
 
     if (isRestrictedRole && !perms?.can_view_all_clients) {
       // Sadece atandığı firmaların raporları
@@ -481,6 +756,10 @@ export default function ConsultantPanel() {
   const handleAddClient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newClient.name) return;
+    if (!canCreateClients) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
 
     try {
       const { error } = await supabase.from('consultant_clients').insert([
@@ -491,6 +770,7 @@ export default function ConsultantPanel() {
           tax_no: newClient.tax_no,
           phone: newClient.phone,
           logo_url: newClient.logo_url,
+          created_by: userId,
         },
       ]);
       if (error) throw error;
@@ -503,6 +783,10 @@ export default function ConsultantPanel() {
   };
 
   const handleOpenEditModal = (client: any) => {
+    if (!checkClientEditable(client)) {
+      alert('Bu işletmeyi düzenleme yetkiniz bulunmamaktadır (Firma Sahibi tarafından oluşturulmuş veya oluşturulma süresi 24 saati geçmiş).');
+      return;
+    }
     setEditingClient(client);
     setShowEditClient(true);
   };
@@ -510,6 +794,10 @@ export default function ConsultantPanel() {
   const handleUpdateClient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingClient || !editingClient.name) return;
+    if (!checkClientEditable(editingClient)) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
 
     try {
       const { error } = await supabase
@@ -534,6 +822,10 @@ export default function ConsultantPanel() {
   };
 
   const handleDeleteClient = async (clientId: string) => {
+    if (!canDeleteClients) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
     if (!window.confirm('Bu işletmeyi silmek istediğinize emin misiniz? Bu işlem geri alınamaz ve işletmeye ait tüm raporlar ve atamalar silinecektir.')) {
       return;
     }
@@ -598,19 +890,40 @@ export default function ConsultantPanel() {
 
   const isAdminOrChief = userRole === 'admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
   const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
-  const canViewCompliance = isManager || (currentUserPerms?.can_view_compliance);
+  
+  // Granular Permissions for Chief / Staff
+  const canViewClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_clients !== false);
+  const canCreateClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_create_clients);
+  const canEditClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients);
+  const canAssignClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
+  const canDeleteClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
+  const canViewReports = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
+  const canViewTeam = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
+
+
+  const checkClientEditable = (client: Client) => {
+    if (userRole === 'premium_corporate' || userRole === 'admin') return true;
+    if (userRole === 'corporate_chief') {
+      if (currentUserPerms?.can_edit_clients) return true;
+      if (client.created_by === userId && client.created_at) {
+        const diffMs = Date.now() - new Date(client.created_at).getTime();
+        return diffMs < 24 * 60 * 60 * 1000;
+      }
+    }
+    return false;
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <FileText className="text-blue-600" /> Raporlar Paneli
+            <FileText className="text-blue-600" /> {userRole === 'corporate_chief' ? 'Şef Paneli' : 'Raporlar Paneli'}
           </h1>
           <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
         </div>
           <div className="flex items-center gap-2">
-            {isManager && (
+            {canCreateClients && (
               <button
                 onClick={() => setShowAddClient(true)}
                 className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
@@ -618,70 +931,77 @@ export default function ConsultantPanel() {
                 <Plus size={18} /> Yeni İşletme
               </button>
             )}
-          <Link
-            to="/consultant/reports/add"
-            className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
-          >
-            <FileText size={18} /> Rapor Oluştur
-          </Link>
+          {userRole !== 'corporate_chief' && (
+            <Link
+              to="/consultant/reports/add"
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
+            >
+              <FileText size={18} /> Rapor Oluştur
+            </Link>
+          )}
         </div>
       </div>
 
       <div className="flex border-b border-gray-200 dark:border-slate-700">
-        <button
-          onClick={() => setActiveTab('clients')}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'clients'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Building size={16} /> Hizmet Verilen İşletmeler
-        </button>
-        <button
-          onClick={() => setActiveTab('reports')}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'reports'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <FileText size={16} /> Raporlar
-        </button>
-        {isManager && (
-          <>
-            <button
-              onClick={() => setActiveTab('team')}
-              className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-                activeTab === 'team'
-                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Users size={16} /> Ekip Yönetimi
-            </button>
-            <button
-              onClick={() => setActiveTab('settings')}
-              className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-                activeTab === 'settings'
-                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <SettingsIcon size={16} /> Şirket Ayarları
-            </button>
-          </>
-        )}
-        {canViewCompliance && (
+        {canViewClients && (
           <button
-            onClick={() => setActiveTab('compliance')}
+            onClick={() => setActiveTab('clients')}
             className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-              activeTab === 'compliance'
+              activeTab === 'clients'
                 ? 'border-blue-600 text-blue-600 dark:text-blue-400'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
-            <BarChart3 size={16} /> Takip Paneli
+            <Building size={16} /> Hizmet Verilen İşletmeler
+          </button>
+        )}
+        {canViewReports && (
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+              activeTab === 'reports'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <FileText size={16} /> Raporlar
+          </button>
+        )}
+        {canViewTeam && (
+          <button
+            onClick={() => setActiveTab('team')}
+            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+              activeTab === 'team'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Users size={16} /> Ekip Yönetimi
+          </button>
+        )}
+        {userRole === 'premium_corporate' && (
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+              activeTab === 'settings'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <SettingsIcon size={16} /> Şirket Ayarları
+          </button>
+        )}
+
+        {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+          <button
+            onClick={() => setActiveTab('definitions')}
+            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+              activeTab === 'definitions'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <SettingsIcon size={16} /> Tanımlamalar
           </button>
         )}
       </div>
@@ -712,28 +1032,34 @@ export default function ConsultantPanel() {
                 <p className="line-clamp-2"><span className="font-medium">Adres:</span> {client.address}</p>
                 <p><span className="font-medium">Tel:</span> {client.phone}</p>
               </div>
-              {isManager && (
+              {(canDeleteClients || checkClientEditable(client) || canAssignClients) && (
                 <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex justify-between items-center gap-2">
                   <div className="flex gap-2">
-                    <button 
-                      onClick={() => handleOpenEditModal(client)}
-                      className="text-amber-600 hover:underline text-sm flex items-center gap-1 font-medium"
-                    >
-                      <Edit2 size={14} /> Düzenle
-                    </button>
-                    <button 
-                      onClick={() => handleDeleteClient(client.id)}
-                      className="text-red-600 hover:underline text-sm flex items-center gap-1 font-medium"
-                    >
-                      <Trash2 size={14} /> Sil
-                    </button>
+                    {checkClientEditable(client) && (
+                      <button 
+                        onClick={() => handleOpenEditModal(client)}
+                        className="text-amber-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                      >
+                        <Edit2 size={14} /> Düzenle
+                      </button>
+                    )}
+                    {canDeleteClients && (
+                      <button 
+                        onClick={() => handleDeleteClient(client.id)}
+                        className="text-red-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                      >
+                        <Trash2 size={14} /> Sil
+                      </button>
+                    )}
                   </div>
-                  <button 
-                    onClick={() => openAssignModal(client)}
-                    className="text-blue-600 hover:underline text-sm flex items-center gap-1 font-medium"
-                  >
-                    <Users size={14} /> Personel Ata
-                  </button>
+                  {canAssignClients && (
+                    <button 
+                      onClick={() => openAssignModal(client)}
+                      className="text-blue-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                    >
+                      <Users size={14} /> Personel Ata
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -879,7 +1205,7 @@ export default function ConsultantPanel() {
         <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Ekip Listesi */}
-            <div className="lg:col-span-2 bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <div className={`${userRole === 'premium_corporate' ? 'lg:col-span-2' : 'lg:col-span-3'} bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700`}>
               <h3 className="font-bold text-gray-700 dark:text-white mb-4 flex items-center gap-2 text-lg">
                 <Users className="text-blue-600" /> Ekip ve Bekleyen Kodlar
               </h3>
@@ -904,7 +1230,7 @@ export default function ConsultantPanel() {
                         </div>
                       </div>
                       
-                      {member.id !== userId && (
+                      {userRole === 'premium_corporate' && member.id !== userId && (
                         <button
                           onClick={() => handleKick(member.id, member.role)}
                           className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-100 hover:bg-red-100 transition dark:bg-red-950/20 dark:border-red-900"
@@ -916,54 +1242,224 @@ export default function ConsultantPanel() {
                     </div>
 
                     {/* Rol & Yetkiler */}
-                    {member.id !== userId && (
+                    {userRole === 'premium_corporate' && member.id !== userId && (
                       <div className="mt-2 pt-3 border-t border-gray-50 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-gray-400 font-bold">ROL:</span>
-                          <select
-                            value={member.role}
-                            onChange={(e) => handleUpdateRole(member.id, e.target.value)}
-                            className="border rounded px-2 py-1 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold text-blue-700 dark:text-blue-400 outline-none focus:ring-1 focus:ring-blue-500"
-                          >
-                            <option value="premium_corporate">Çevre Danışmanlık Firma Sahibi</option>
-                            <option value="corporate_chief">Çevre Danışmanlık Firma Yöneticisi</option>
-                            <option value="corporate_staff">Çevre Danışmanlık Personeli</option>
-                            <option value="normal">Normal (Ekip Dışı)</option>
-                          </select>
+                          {userRole === 'premium_corporate' ? (
+                            <select
+                              value={member.role}
+                              onChange={(e) => handleUpdateRole(member.id, e.target.value)}
+                              className="border rounded px-2 py-1 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold text-blue-700 dark:text-blue-400 outline-none focus:ring-1 focus:ring-blue-500"
+                            >
+                              <option value="premium_corporate">Çevre Danışmanlık Firma Sahibi</option>
+                              <option value="corporate_chief">Çevre Danışmanlık Firma Yöneticisi</option>
+                              <option value="corporate_staff">Çevre Danışmanlık Personeli</option>
+                              <option value="normal">Normal (Ekip Dışı)</option>
+                            </select>
+                          ) : (
+                            <span className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                              {roleLabels[member.role] || member.role}
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap gap-3">
-                          <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={member.extra_permissions?.can_view_all_clients || false}
-                              onChange={async (e) => {
-                                const newVal = e.target.checked;
-                                const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
-                                const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                if (error) alert('Hata: ' + error.message);
-                                else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                              }}
-                              className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                            />
-                            Tüm Firmaları Görebilir
-                          </label>
+                          {member.role === 'corporate_chief' ? (
+                            <>
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_view_clients !== false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                İşletmeleri Görüntüleme
+                              </label>
 
-                          <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={member.extra_permissions?.can_view_compliance || false}
-                              onChange={async (e) => {
-                                const newVal = e.target.checked;
-                                const updatedPerms = { ...(member.extra_permissions || {}), can_view_compliance: newVal };
-                                const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                if (error) alert('Hata: ' + error.message);
-                                else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                              }}
-                              className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                            />
-                            Takip Panelini Görebilir
-                          </label>
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_view_all_clients || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Tüm Firmaları Görebilir
+                              </label>
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_create_clients || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_create_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Yeni İşletme Oluşturma
+                              </label>
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_edit_clients || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_edit_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                İşletme Düzenleme
+                              </label>
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_assign_clients || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_assign_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Personel Atama
+                              </label>
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_delete_clients || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_delete_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                İşletme Silme (Kritik)
+                              </label>
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_view_reports !== false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_reports: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Raporları Görüntüleme
+                              </label>
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_view_team !== false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_team: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Ekip Yönetimini Görüntüleme
+                              </label>
+
+
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.receive_reminder_cc || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), receive_reminder_cc: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Hatırlatma Maillerinde CC'de Yer Alsın
+                              </label>
+                            </>
+                          ) : (
+                            <>
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.can_view_all_clients || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Tüm Firmaları Görebilir
+                              </label>
+
+
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  disabled={userRole !== 'premium_corporate'}
+                                  checked={member.extra_permissions?.receive_reminder_cc || false}
+                                  onChange={async (e) => {
+                                    const newVal = e.target.checked;
+                                    const updatedPerms = { ...(member.extra_permissions || {}), receive_reminder_cc: newVal };
+                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                                    if (error) alert('Hata: ' + error.message);
+                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                                  }}
+                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                                />
+                                Hatırlatma Maillerinde CC'de Yer Alsın
+                              </label>
+                            </>
+                          )}
                         </div>
                       </div>
                     )}
@@ -971,7 +1467,7 @@ export default function ConsultantPanel() {
                 ))}
 
                 {/* Bekleyen Davetler */}
-                {invitations.map((i) => (
+                {userRole === 'premium_corporate' && invitations.map((i) => (
                   <div key={i.id} className="p-4 rounded-xl border-2 border-dashed border-purple-200 bg-purple-50/50 dark:border-purple-900/50 dark:bg-purple-950/20 flex justify-between items-center opacity-90">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-white dark:bg-slate-800 flex items-center justify-center text-purple-600 shadow-sm border dark:border-slate-700">
@@ -1010,7 +1506,7 @@ export default function ConsultantPanel() {
                   </div>
                 ))}
 
-                {teamMembers.length <= 1 && invitations.length === 0 && (
+                {teamMembers.length <= 1 && (userRole !== 'premium_corporate' || invitations.length === 0) && (
                   <div className="text-center text-gray-400 dark:text-gray-500 py-8 italic">
                     Henüz ekip üyesi yok.
                   </div>
@@ -1019,52 +1515,218 @@ export default function ConsultantPanel() {
             </div>
 
             {/* Davet Paneli (Sağ Kolon) */}
-            <div className="space-y-6">
-              {/* E-posta ile davet */}
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
-                <h3 className="font-bold text-blue-800 dark:text-blue-400 mb-3 flex items-center gap-2">
-                  <Mail size={18} /> E-Posta ile Davet
-                </h3>
-                <form onSubmit={handleSendEmailInvite} className="space-y-2">
-                  <input
-                    type="email"
-                    required
-                    placeholder="personel@sirket.com"
-                    className="w-full border p-2 rounded-lg text-sm outline-none focus:border-blue-500 dark:bg-slate-900 dark:border-slate-700"
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                  />
-                  <button
-                    disabled={sendingEmail}
-                    className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-blue-700 flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {sendingEmail ? 'Gönderiliyor...' : 'Davet Gönder'}
-                  </button>
-                </form>
-              </div>
+            {userRole === 'premium_corporate' && (
+              <div className="space-y-6">
+                {/* E-posta ile davet */}
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                  <h3 className="font-bold text-blue-800 dark:text-blue-400 mb-3 flex items-center gap-2">
+                    <Mail size={18} /> E-Posta ile Davet
+                  </h3>
+                  <form onSubmit={handleSendEmailInvite} className="space-y-2">
+                    <input
+                      type="email"
+                      required
+                      placeholder="personel@sirket.com"
+                      className="w-full border p-2 rounded-lg text-sm outline-none focus:border-blue-500 dark:bg-slate-900 dark:border-slate-700"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                    />
+                    <button
+                      disabled={sendingEmail}
+                      className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-blue-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      {sendingEmail ? 'Gönderiliyor...' : 'Davet Gönder'}
+                    </button>
+                  </form>
+                </div>
 
-              {/* Manuel Kod */}
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
-                <h3 className="font-bold text-purple-800 dark:text-purple-400 mb-3 flex items-center gap-2">
-                  <FileText size={18} /> Manuel Kod Üret
-                </h3>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-                  Bu kodu personele verin. Personel "Ayarlar" sayfasından bu kodu girerek gruba katılabilir.
-                </p>
-                <button
-                  onClick={handleCreateCode}
-                  className="w-full bg-purple-600 text-white py-2.5 rounded-lg font-bold text-sm hover:bg-purple-700 transition"
-                >
-                  Kod Oluştur
-                </button>
+                {/* Manuel Kod */}
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                  <h3 className="font-bold text-purple-800 dark:text-purple-400 mb-3 flex items-center gap-2">
+                    <FileText size={18} /> Manuel Kod Üret
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                    Bu kodu personele verin. Personel "Ayarlar" sayfasından bu kodu girerek gruba katılabilir.
+                  </p>
+                  <button
+                    onClick={handleCreateCode}
+                    className="w-full bg-purple-600 text-white py-2.5 rounded-lg font-bold text-sm hover:bg-purple-700 transition"
+                  >
+                    Kod Oluştur
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
 
-      {activeTab === 'compliance' && (
-        <ComplianceDashboard />
+
+
+      {activeTab === 'definitions' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fadeIn pb-12">
+          {/* BELGE TÜRLERİ */}
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 space-y-6">
+            <div className="flex items-center gap-3 border-b border-gray-100 dark:border-slate-700 pb-4">
+              <div className="p-2.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-xl">
+                <Tag size={22} />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold">Belge Türleri</h2>
+                <p className="text-xs text-gray-400">Ekip üyeleri veya tüm ekip için belge türlerini yönetin</p>
+              </div>
+            </div>
+
+            {/* Yeni Belge Türü Ekle Formu */}
+            <div className="bg-gray-50 dark:bg-slate-900/40 p-4 rounded-xl border border-gray-200/60 dark:border-slate-700/60 space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Belge Türü Adı</label>
+                  <input
+                    type="text"
+                    placeholder="Örn: Çevre İzin Belgesi, Atık Beyanı..."
+                    value={newDefTypeLabel}
+                    onChange={(e) => setNewDefTypeLabel(e.target.value)}
+                    className="w-full p-2.5 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Ekip Üyesi Seçimi</label>
+                  <select
+                    value={selectedDefTypeMemberId}
+                    onChange={(e) => setSelectedDefTypeMemberId(e.target.value)}
+                    className="w-full p-2.5 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">Tüm Ekip (Ortak Tanım)</option>
+                    {teamMembers.map(m => (
+                      <option key={m.id} value={m.id}>{m.full_name} ({roleLabels[m.role] || m.role})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <button
+                disabled={savingDef}
+                onClick={handleAddTabDocType}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-bold text-sm transition flex items-center justify-center gap-1.5 shadow-md shadow-blue-100 dark:shadow-none"
+              >
+                {savingDef ? <Loader size={16} className="animate-spin" /> : <Plus size={16} />} Belge Türü Ekle
+              </button>
+            </div>
+
+            {/* Belge Türleri Listesi */}
+            <div className="max-h-[350px] overflow-y-auto border border-gray-100 dark:border-slate-700 rounded-xl divide-y divide-gray-100 dark:divide-slate-700">
+              {defTabTypes.length === 0 ? (
+                <div className="p-8 text-center text-xs text-gray-400 italic">Tanımlı belge türü bulunamadı.</div>
+              ) : (
+                defTabTypes.map((type) => (
+                  <div key={type.id} className="p-3.5 flex justify-between items-center bg-gray-50/50 dark:bg-slate-900/10 hover:bg-gray-100/50 dark:hover:bg-slate-800/50 transition group">
+                    <div>
+                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">{type.label}</span>
+                      <div className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1">
+                        <User size={10} /> Sahibi: {type.user?.full_name || 'Bilinmeyen'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteTabDefinition(type.id)}
+                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition"
+                      title="Sil"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* LOKASYON TANIMLARI */}
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 space-y-6">
+            <div className="flex items-center gap-3 border-b border-gray-100 dark:border-slate-700 pb-4">
+              <div className="p-2.5 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-xl">
+                <MapPin size={22} />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold">Lokasyon & İşletme Tanımları</h2>
+                <p className="text-xs text-gray-400">Ekip üyeleri veya tüm ekip için lokasyonları yönetin</p>
+              </div>
+            </div>
+
+            {/* Yeni Lokasyon Ekle Formu */}
+            <div className="bg-gray-50 dark:bg-slate-900/40 p-4 rounded-xl border border-gray-200/60 dark:border-slate-700/60 space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Lokasyon Adı</label>
+                  <input
+                    type="text"
+                    placeholder="Örn: A Şubesi, Merkez Saha..."
+                    value={newDefLocLabel}
+                    onChange={(e) => setNewDefLocLabel(e.target.value)}
+                    className="w-full p-2.5 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Ekip Üyesi Seçimi</label>
+                  <select
+                    value={selectedDefMemberId}
+                    onChange={(e) => setSelectedDefMemberId(e.target.value)}
+                    className="w-full p-2.5 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">Tüm Ekip (Ortak Tanım)</option>
+                    {teamMembers.map(m => (
+                      <option key={m.id} value={m.id}>{m.full_name} ({roleLabels[m.role] || m.role})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <button
+                disabled={savingDef}
+                onClick={handleAddTabLocation}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-lg font-bold text-sm transition flex items-center justify-center gap-1.5 shadow-md shadow-emerald-100 dark:shadow-none"
+              >
+                {savingDef ? <Loader size={16} className="animate-spin" /> : <Plus size={16} />} Lokasyon Ekle
+              </button>
+            </div>
+
+            {/* Lokasyonlar Listesi */}
+            <div className="max-h-[350px] overflow-y-auto border border-gray-100 dark:border-slate-700 rounded-xl divide-y divide-gray-100 dark:divide-slate-700">
+              {defTabLocs.length === 0 ? (
+                <div className="p-8 text-center text-xs text-gray-400 italic">Tanımlı lokasyon bulunamadı.</div>
+              ) : (
+                defTabLocs.map((loc) => {
+                  const isBusiness = clientNames.some(
+                    cName => cName && loc.label && cName.trim().toLowerCase() === loc.label.trim().toLowerCase()
+                  );
+                  return (
+                    <div key={loc.id} className="p-3.5 flex justify-between items-center bg-gray-50/50 dark:bg-slate-900/10 hover:bg-gray-100/50 dark:hover:bg-slate-800/50 transition group">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">{loc.label}</span>
+                          {isBusiness && (
+                            <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">
+                              İşletme
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1">
+                          <User size={10} /> Sahibi: {loc.user?.full_name || 'Bilinmeyen'}
+                        </div>
+                      </div>
+                      {!isBusiness && (
+                        <button
+                          onClick={() => handleDeleteTabDefinition(loc.id)}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition"
+                          title="Sil"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Assign Personnel Modal */}

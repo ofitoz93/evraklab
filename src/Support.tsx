@@ -14,6 +14,7 @@ import {
   HelpCircle,
   ChevronDown,
   ChevronUp,
+  Check,
 } from 'lucide-react';
 
 export default function Support() {
@@ -276,10 +277,16 @@ export default function Support() {
                     Talep No: #{activeTicket.id.slice(0, 8)}
                   </p>
                 </div>
-                <span className="bg-white/20 px-3 py-1 rounded-full text-xs font-bold backdrop-blur-sm">
-                  {activeTicket.status === 'open'
-                    ? 'Yanıt Bekleniyor'
-                    : 'Yanıtlandı'}
+                <span className={`px-3 py-1 rounded-full text-xs font-bold shadow-sm flex items-center gap-1 text-gray-900 bg-white/95`}>
+                  {activeTicket.status === 'open' ? (
+                    <>
+                      <Clock size={12} className="text-amber-500" /> Onay Bekleniyor
+                    </>
+                  ) : (
+                    <>
+                      <Loader size={12} className="animate-spin text-blue-500" /> Üzerinde Çalışılıyor
+                    </>
+                  )}
                 </span>
               </div>
 
@@ -434,7 +441,9 @@ export default function Support() {
                 <div key={t.id} className="p-4 border border-gray-100 rounded-xl hover:border-blue-200 transition group bg-gray-50">
                   <div className="flex justify-between items-start mb-2">
                     <h4 className="font-bold text-gray-800 text-sm group-hover:text-blue-600 transition">{t.subject}</h4>
-                    <span className="bg-gray-200 text-gray-600 text-[10px] px-2 py-0.5 rounded font-bold uppercase">Kapalı</span>
+                    <span className="bg-green-50 text-green-700 border border-green-200 text-[10px] px-2 py-0.5 rounded font-bold uppercase flex items-center gap-0.5">
+                      <Check size={10} className="text-green-600" /> Tamamlandı
+                    </span>
                   </div>
                   <div className="text-xs text-gray-400 mb-3">{new Date(t.created_at).toLocaleDateString()}</div>
                   <button onClick={() => openPastTicketModal(t)} className="w-full text-xs bg-white border border-gray-200 py-2 rounded-lg font-bold text-gray-600 hover:text-blue-600 transition flex items-center justify-center gap-1">

@@ -6,20 +6,12 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function main() {
-  const { data, error } = await supabase
-    .from('organizations')
-    .insert([
-      {
-        id: '380d3c87-0804-45e6-916e-d799c42eb55b',
-        name: 'Cemko Çevre Danışmanlık',
-        is_environmental_consultant: true,
-        subscription_end_date: '2030-12-31T23:59:59Z'
-      }
-    ]);
+  console.log('--- EMAIL LOGS ---');
+  const { data: logs, error } = await supabase.from('email_logs').select('*').order('sent_at', { ascending: false }).limit(20);
   if (error) {
-    console.error('Error inserting organization:', error);
+    console.error('Error fetching email_logs:', error);
   } else {
-    console.log('Inserted organization successfully:', data);
+    console.log(logs);
   }
 }
 

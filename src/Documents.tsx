@@ -142,7 +142,7 @@ export default function Documents() {
       const { data: profile } = await supabase
         .from('profiles')
         .select(
-          'organization_id, role, permissions, organization:organizations(subscription_end_date, is_environmental_consultant), subscription_end_date'
+          'organization_id, role, permissions, extra_permissions, organization:organizations(subscription_end_date, is_environmental_consultant), subscription_end_date'
         )
         .eq('id', session.user.id)
         .single();
@@ -183,6 +183,19 @@ export default function Documents() {
       setIsPremium(hasActivePremium);
       setIsEnvConsultant(!!(profile?.organization as any)?.is_environmental_consultant);
 
+      // Fetch assignments to restrict documents for chiefs/staff if they don't have can_view_all_clients
+      let assignedClientNames: string[] = [];
+      const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
+      const perms = profile?.extra_permissions || {};
+
+      if (isRestrictedRole && !perms.can_view_all_clients) {
+        const { data: assigns } = await supabase
+          .from('consultant_assignments')
+          .select('client:client_id(name)')
+          .eq('user_id', session.user.id);
+        assignedClientNames = assigns?.map((a: any) => a.client?.name).filter(Boolean) || [];
+      }
+
       let query = supabase
         .from('documents')
         .select(
@@ -217,6 +230,14 @@ export default function Documents() {
           if (!isCorporateDoc) return isMyDoc;
           if (isCorporateDoc) {
             if (!myOrgId || doc.organization_id !== myOrgId) return false;
+            
+            // Restrict visibility for chiefs/staff if they don't have can_view_all_clients
+            if (isRestrictedRole && !perms.can_view_all_clients) {
+              const docLocLabel = doc.location_def?.label;
+              const isAssigned = docLocLabel && assignedClientNames.includes(docLocLabel);
+              return isMyDoc || isAssigned;
+            }
+
             if (isMyDoc) return true;
             if (canViewTeam) return true;
           }

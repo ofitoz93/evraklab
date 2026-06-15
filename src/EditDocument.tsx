@@ -46,11 +46,12 @@ export default function EditDocument() {
   const [editValue, setEditValue] = useState('');
   const [newDefLabel, setNewDefLabel] = useState('');
 
-  const fetchCorporateClients = async (orgId: string, role: string, userId: string) => {
+  const fetchCorporateClients = async (orgId: string, role: string, userId: string, perms?: any) => {
     try {
       let query = supabase.from('consultant_clients').select('id, name');
       
-      if (role === 'corporate_staff') {
+      const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
+      if (isRestrictedRole && !perms?.can_view_all_clients) {
         const { data: assignments } = await supabase
           .from('consultant_assignments')
           .select('client_id')
@@ -94,15 +95,17 @@ export default function EditDocument() {
     
     let currentRole = '';
     let currentOrgId: string | null = null;
+    let currentPerms: any = null;
     
     if (session) {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role, organization_id')
+        .select('role, organization_id, extra_permissions')
         .eq('id', session.user.id)
         .single();
       currentRole = profile?.role || 'normal';
       currentOrgId = profile?.organization_id || null;
+      currentPerms = profile?.extra_permissions || null;
       
       setUserRole(currentRole);
       setMyOrgId(currentOrgId);
@@ -128,7 +131,7 @@ export default function EditDocument() {
       setDocScope(scope);
 
       if (currentOrgId) {
-        await fetchCorporateClients(currentOrgId, currentRole, session?.user.id || '');
+        await fetchCorporateClients(currentOrgId, currentRole, session?.user.id || '', currentPerms);
       }
 
       await fetchDefinitions(session?.user.id || '', scope === 'corporate', currentOrgId);
@@ -152,37 +155,54 @@ export default function EditDocument() {
   };
 
   const fetchDefinitions = async (userId: string, isCorporate = false, orgId: string | null = null) => {
-    let userIds = [userId];
     const targetOrgId = orgId || myOrgId;
+    let query = supabase.from('user_definitions').select('*');
     if (isCorporate && targetOrgId) {
-      const { data: orgProfiles, error: pErr } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('organization_id', targetOrgId);
-      if (pErr) {
-        console.error('fetchDefinitions profiles fetch error:', pErr);
-      }
-      if (orgProfiles && orgProfiles.length > 0) {
-        userIds = orgProfiles.map((p) => p.id);
-      }
+      query = query.eq('user_id', userId).eq('organization_id', targetOrgId);
+    } else {
+      query = query.eq('user_id', userId).is('organization_id', null);
     }
-    const { data: defs, error: dErr } = await supabase
-      .from('user_definitions')
-      .select('*')
-      .in('user_id', userIds)
-      .order('created_at', { ascending: true });
+    const { data: defs, error: dErr } = await query.order('created_at', { ascending: true });
     if (dErr) {
       console.error('fetchDefinitions user_definitions fetch error:', dErr);
     }
     if (defs) {
-      setTypeOptions(defs.filter((d) => d.category === 'doc_type'));
-      setLocOptions(defs.filter((d) => d.category === 'location'));
+      // Filter out duplicate names, prioritizing the current user's definition row
+      const uniqueTypesMap = new Map<string, any>();
+      defs.filter((d) => d.category === 'doc_type').forEach(d => {
+        if (!d.label) return;
+        const key = d.label.trim().toLowerCase();
+        const existing = uniqueTypesMap.get(key);
+        if (!existing || d.user_id === userId) {
+          uniqueTypesMap.set(key, d);
+        }
+      });
+      setTypeOptions(Array.from(uniqueTypesMap.values()));
+
+      const uniqueLocsMap = new Map<string, any>();
+      defs.filter((d) => d.category === 'location').forEach(d => {
+        if (!d.label) return;
+        const key = d.label.trim().toLowerCase();
+        const existing = uniqueLocsMap.get(key);
+        if (!existing || d.user_id === userId) {
+          uniqueLocsMap.set(key, d);
+        }
+      });
+      setLocOptions(Array.from(uniqueLocsMap.values()));
     }
   };
 
   // --- YENİ KONTROLLÜ EKLEME FONKSİYONU ---
   const handleAddDefinition = async () => {
     if (!newDefLabel.trim()) return;
+
+    if (manageCategory === 'location') {
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      if (!canCreateLoc) {
+        alert("Hata: Kurumsal dökümanlar için lokasyon ekleme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından ekleyebilir.");
+        return;
+      }
+    }
 
     const normalizedLabel = newDefLabel.trim(); // Boşlukları al
 
@@ -193,7 +213,7 @@ export default function EditDocument() {
 
     // İsmi küçük harfe çevirip karşılaştır (Büyük/Küçük harf duyarlılığı olmasın)
     const exists = currentList.some(
-      (item) => item.label.toLowerCase() === normalizedLabel.toLowerCase()
+      (item) => item.label && item.label.toLowerCase() === normalizedLabel.toLowerCase()
     );
 
     if (exists) {
@@ -212,6 +232,7 @@ export default function EditDocument() {
         user_id: session.user.id,
         category: manageCategory,
         label: normalizedLabel,
+        organization_id: docScope === 'corporate' ? myOrgId : null,
       },
     ]);
 
@@ -232,12 +253,49 @@ export default function EditDocument() {
   };
 
   const handleDeleteDefinition = async (id: string) => {
+    if (manageCategory === 'location') {
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      if (!canCreateLoc) {
+        alert("Hata: Kurumsal dökümanlar için lokasyon silme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından yönetebilir.");
+        return;
+      }
+    }
+
+    const item = (manageCategory === 'doc_type' ? typeOptions : locOptions).find(o => o.id === id);
+    if (item && manageCategory === 'location' && docScope === 'corporate') {
+      const isBusiness = corporateClients.some(
+        c => c?.name && item?.label && c.name.trim().toLowerCase() === item.label.trim().toLowerCase()
+      );
+      if (isBusiness) {
+        alert('⛔ Kayıtlı bir işletmeye ait lokasyon silinemez!');
+        return;
+      }
+    }
+
     if (!window.confirm('Silmek istediğinize emin misiniz?')) return;
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    await supabase.from('user_definitions').delete().eq('id', id);
-    if (session) fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
+    if (session) {
+      if (docScope === 'corporate' && myOrgId && item) {
+        const targetOrgId = myOrgId;
+        const { data: orgProfiles } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('organization_id', targetOrgId);
+        const userIds = orgProfiles?.map(p => p.id) || [];
+        
+        await supabase
+          .from('user_definitions')
+          .delete()
+          .in('user_id', userIds)
+          .eq('category', manageCategory)
+          .ilike('label', item.label);
+      } else {
+        await supabase.from('user_definitions').delete().eq('id', id);
+      }
+      fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
+    }
   };
 
   const startEditing = (id: string, label: string) => {
@@ -245,9 +303,16 @@ export default function EditDocument() {
     setEditValue(label);
   };
   // --- KONTROLLÜ DÜZENLEME FONKSİYONU ---
-  // --- KONTROLLÜ DÜZENLEME FONKSİYONU ---
   const saveEditing = async (id: string) => {
     if (!editValue.trim()) return;
+
+    if (manageCategory === 'location') {
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      if (!canCreateLoc) {
+        alert("Hata: Kurumsal dökümanlar için lokasyon düzenleme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından yönetebilir.");
+        return;
+      }
+    }
 
     const normalizedLabel = editValue.trim();
 
@@ -307,50 +372,18 @@ export default function EditDocument() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      let finalLocId = null;
-      if (docScope === 'corporate' && location) {
-        const clientName = location;
-        let orgUserIds: string[] = [session.user.id];
-        if (myOrgId) {
-          const { data: orgProfiles } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('organization_id', myOrgId);
-          if (orgProfiles && orgProfiles.length > 0) {
-            orgUserIds = orgProfiles.map(p => p.id);
-          }
-        }
-        
-        const { data: existingLoc } = await supabase
+      // LOKASYON KONTROLÜ (Ortak)
+      let finalLocId = (location && location !== 'NEW_LOC') ? location : null;
+      const manualLocName = (window as any).tempManualLoc;
+
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      if (location === 'NEW_LOC' && manualLocName && canCreateLoc) {
+        const { data: newLoc } = await supabase
           .from('user_definitions')
-          .select('id')
-          .eq('category', 'location')
-          .ilike('label', clientName)
-          .in('user_id', orgUserIds)
-          .maybeSingle();
-
-        if (existingLoc) {
-          finalLocId = existingLoc.id;
-        } else {
-          const { data: newLoc } = await supabase
-            .from('user_definitions')
-            .insert([{ user_id: session.user.id, category: 'location', label: clientName }])
-            .select('id')
-            .single();
-          if (newLoc) finalLocId = newLoc.id;
-        }
-      } else {
-        finalLocId = (location && location !== 'NEW_LOC') ? location : null;
-        const manualLocName = (window as any).tempManualLoc;
-
-        if (location === 'NEW_LOC' && manualLocName) {
-          const { data: newLoc } = await supabase
-            .from('user_definitions')
-            .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
-            .select()
-            .single();
-          if (newLoc) finalLocId = newLoc.id;
-        }
+          .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
+          .select()
+          .single();
+        if (newLoc) finalLocId = newLoc.id;
       }
 
       const selectedType = typeOptions.find(t => t.id === docType);
@@ -432,7 +465,7 @@ export default function EditDocument() {
           <div>
             <label className="font-bold block mb-1 flex justify-between">
               Lokasyon
-              {docScope === 'personal' && (
+              {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
                 <button
                   type="button"
                   onClick={() => openManageModal('location')}
@@ -447,29 +480,28 @@ export default function EditDocument() {
               value={location}
               onChange={(e) => setLocation(e.target.value)}
             >
-              {docScope === 'corporate' ? (
-                <>
-                  <option value="">Belirtilmemiş</option>
-                  {corporateClients.map((cc) => (
-                    <option key={cc.id} value={cc.name}>
-                      {cc.name}
-                    </option>
-                  ))}
-                </>
-              ) : (
-                <>
-                  <option value="">Belirtilmemiş</option>
-                  {location && !locOptions.find((l) => l.id === location) && (
-                    <option value={location}>Eski Kayıt</option>
-                  )}
-                  {locOptions.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.label}
-                    </option>
-                  ))}
-                </>
+              <option value="">Belirtilmemiş</option>
+              {location && !locOptions.find((l) => l.id === location) && (
+                <option value={location}>Eski Kayıt</option>
+              )}
+              {locOptions.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+              {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
               )}
             </select>
+            {location === 'NEW_LOC' && (
+              <input
+                type="text"
+                className="w-full mt-2 p-2 border rounded border-blue-300 bg-blue-50 text-sm font-bold"
+                placeholder="Yeni lokasyon ismini yazın..."
+                autoFocus
+                onChange={(e) => (window as any).tempManualLoc = e.target.value}
+              />
+            )}
           </div>
 
           {/* TARİHLER (Aynısı) */}
@@ -571,56 +603,63 @@ export default function EditDocument() {
             </div>
             <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-60 pr-2">
               {(manageCategory === 'doc_type' ? typeOptions : locOptions).map(
-                (item) => (
-                  <div
-                    key={item.id}
-                    className="flex justify-between items-center p-2 bg-gray-50 rounded border group hover:border-blue-200 transition text-gray-900"
-                  >
-                    {editingId === item.id ? (
-                      <div className="flex gap-2 w-full">
-                        <input
-                          type="text"
-                          className="flex-1 p-1 border rounded text-sm text-gray-900 bg-white"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          autoFocus
-                        />
-                        <button
-                          onClick={() => saveEditing(item.id)}
-                          className="text-green-600"
-                        >
-                          <Save size={16} />
-                        </button>
-                        <button
-                          onClick={() => setEditingId(null)}
-                          className="text-red-500"
-                        >
-                          <X size={16} />
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <span className="text-sm font-medium text-gray-900">
-                          {item.label}
-                        </span>
-                        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition">
+                (item) => {
+                  const isBusiness = manageCategory === 'location' && docScope === 'corporate' && corporateClients.some(
+                    c => c?.name && item?.label && c.name.trim().toLowerCase() === item.label.trim().toLowerCase()
+                  );
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex justify-between items-center p-2 bg-gray-50 rounded border group hover:border-blue-200 transition text-gray-900"
+                    >
+                      {editingId === item.id ? (
+                        <div className="flex gap-2 w-full">
+                          <input
+                            type="text"
+                            className="flex-1 p-1 border rounded text-sm text-gray-900 bg-white"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            autoFocus
+                          />
                           <button
-                            onClick={() => startEditing(item.id, item.label)}
-                            className="text-blue-500"
+                            onClick={() => saveEditing(item.id)}
+                            className="text-green-600"
                           >
-                            <Edit2 size={14} />
+                            <Save size={16} />
                           </button>
                           <button
-                            onClick={() => handleDeleteDefinition(item.id)}
+                            onClick={() => setEditingId(null)}
                             className="text-red-500"
                           >
-                            <Trash2 size={14} />
+                            <X size={16} />
                           </button>
                         </div>
-                      </>
-                    )}
-                  </div>
-                )
+                      ) : (
+                        <>
+                          <span className="text-sm font-medium text-gray-900">
+                            {item.label}
+                          </span>
+                          {!isBusiness && (
+                            <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition">
+                              <button
+                                onClick={() => startEditing(item.id, item.label)}
+                                className="text-blue-500"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteDefinition(item.id)}
+                                className="text-red-500"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                }
               )}
             </div>
             <div className="flex gap-2 border-t pt-4">

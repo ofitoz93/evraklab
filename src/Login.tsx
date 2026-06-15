@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Link, useNavigate } from 'react-router-dom'; // Yönlendirme için Link eklendi
 import { Shield, Mail, Lock, LogIn, ArrowRight } from 'lucide-react';
@@ -8,6 +8,18 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase
+      .from('email_settings')
+      .select('value')
+      .eq('key', 'system_logo_url')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data && data.value) setLogoUrl(data.value);
+      });
+  }, []);
 
   // --- GOOGLE İLE GİRİŞ ---
   const handleGoogleLogin = async () => {
@@ -52,8 +64,12 @@ export default function Login() {
       <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-100 dark:border-slate-700">
         {/* Üst Kısım: Logo ve Başlık */}
         <div className="text-center mb-8">
-          <div className="bg-blue-100 dark:bg-blue-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600 dark:text-blue-400">
-            <Shield size={32} />
+          <div className="bg-blue-100 dark:bg-blue-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600 dark:text-blue-400 overflow-hidden">
+            {logoUrl ? (
+              <img src={logoUrl} className="w-full h-full object-contain p-2" alt="Logo" />
+            ) : (
+              <Shield size={32} />
+            )}
           </div>
           <h2 className="text-2xl font-extrabold text-gray-800 dark:text-white">
             Hoş Geldiniz

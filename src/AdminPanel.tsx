@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase, supabaseUrl, supabaseKey } from './supabaseClient';
 import { createClient } from '@supabase/supabase-js';
-import AdminRegulations from './AdminRegulations';
 import {
   Shield,
   Search,
@@ -18,7 +17,6 @@ import {
   Lock,
   Bell,
   Loader,
-  Scale,
   Mail,
   UserPlus,
   Calendar,
@@ -26,13 +24,25 @@ import {
   Key,
   Phone,
   ShieldAlert,
+  Settings,
 } from 'lucide-react';
 
 export default function AdminPanel() {
   // YENİ: 'notifications' sekmesi eklendi
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'regulations' | 'tickets' | 'notifications'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings'
   >('tickets');
+
+  // --- E-Posta Hatırlatma Ayarları State'leri ---
+  const [emailProvider, setEmailProvider] = useState<'google_script' | 'resend' | 'brevo'>('google_script');
+  const [apiKey, setApiKey] = useState('');
+  const [senderEmail, setSenderEmail] = useState('');
+  const [scriptUrl, setScriptUrl] = useState('');
+  const [emailLogs, setEmailLogs] = useState<any[]>([]);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [fetchingSettings, setFetchingSettings] = useState(false);
+  const [fetchingLogs, setFetchingLogs] = useState(false);
+
 
   const [users, setUsers] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
@@ -49,13 +59,17 @@ export default function AdminPanel() {
 
   // --- YENİ: Bildirim Gönderme State'leri ---
   const [targetUser, setTargetUser] = useState('all');
+  const [userSearchTerm, setUserSearchTerm] = useState('📢 TÜM KULLANICILARA GÖNDER');
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [notifTitle, setNotifTitle] = useState('');
   const [notifMessage, setNotifMessage] = useState('');
   const [sendingNotif, setSendingNotif] = useState(false);
 
+  // --- YENİ: E-Posta & Sistem Ayarları State'leri ---
+  const [systemLogoUrl, setSystemLogoUrl] = useState('');
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+
   // --- Kullanıcı ve Şirket State'leri ---
-  const [newCanViewRegulations, setNewCanViewRegulations] = useState(false);
-  const [newCanManageRegulations, setNewCanManageRegulations] = useState(false);
   const [userQuotaMB, setUserQuotaMB] = useState(0);
   const [companyQuotaMB, setCompanyQuotaMB] = useState(0);
   
@@ -71,7 +85,6 @@ export default function AdminPanel() {
   const [compLimit, setCompLimit] = useState(0);
   const [compDate, setCompDate] = useState('');
   const [compIsEnvConsultant, setCompIsEnvConsultant] = useState(false);
-  const [orgsWithRegs, setOrgsWithRegs] = useState<Set<string>>(new Set());
 
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
   const [teamList, setTeamList] = useState<any[]>([]);
@@ -91,8 +104,6 @@ export default function AdminPanel() {
   const [createOrgId, setCreateOrgId] = useState('');
   const [createEndDate, setCreateEndDate] = useState('');
   const [createQuotaMB, setCreateQuotaMB] = useState(50);
-  const [createCanViewRegulations, setCreateCanViewRegulations] = useState(false);
-  const [createCanManageRegulations, setCreateCanManageRegulations] = useState(false);
   const [createUserLoading, setCreateUserLoading] = useState(false);
 
   const roleLabels: any = {
@@ -111,7 +122,152 @@ export default function AdminPanel() {
     if (activeTab === 'users' || activeTab === 'notifications') fetchUsers();
     else if (activeTab === 'companies') fetchCompanies();
     else if (activeTab === 'tickets') fetchTickets();
+    else if (activeTab === 'email_settings') {
+      fetchEmailSettings();
+      fetchEmailLogs();
+    } else if (activeTab === 'system_settings') {
+      fetchSystemLogoSettings();
+    }
   }, [activeTab]);
+
+  const fetchEmailSettings = async () => {
+    setFetchingSettings(true);
+    try {
+      const { data, error } = await supabase.from('email_settings').select('*');
+      if (error) throw error;
+      if (data) {
+        data.forEach((item: any) => {
+          if (item.key === 'email_provider') setEmailProvider(item.value);
+          if (item.key === 'api_key') setApiKey(item.value);
+          if (item.key === 'sender_email') setSenderEmail(item.value);
+          if (item.key === 'script_url') setScriptUrl(item.value);
+          if (item.key === 'system_logo_url') setSystemLogoUrl(item.value);
+        });
+      }
+    } catch (err: any) {
+      console.error('E-posta ayarları yüklenemedi:', err.message);
+    } finally {
+      setFetchingSettings(false);
+    }
+  };
+
+  const fetchEmailLogs = async () => {
+    setFetchingLogs(true);
+    try {
+      const { data, error } = await supabase
+        .from('email_logs')
+        .select('*, document:documents(title)')
+        .order('sent_at', { ascending: false });
+      if (error) throw error;
+      setEmailLogs(data || []);
+    } catch (err: any) {
+      console.error('E-posta günlükleri yüklenemedi:', err.message);
+    } finally {
+      setFetchingLogs(false);
+    }
+  };
+
+  const handleUploadSystemLogo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingLogo(true);
+    try {
+      const fileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+      const filePath = `system_logo/${fileName}`;
+      const { data, error } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file);
+      if (error) throw error;
+      const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath);
+      setSystemLogoUrl(urlData.publicUrl);
+      alert('Sistem logosu başarıyla yüklendi! Lütfen ayarları kaydedin.');
+    } catch (err: any) {
+      console.error('Logo yükleme hatası:', err.message);
+      alert('Logo yüklenemedi: ' + err.message);
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  const [savingLogo, setSavingLogo] = useState(false);
+
+  const fetchSystemLogoSettings = async () => {
+    setFetchingSettings(true);
+    try {
+      const { data, error } = await supabase
+        .from('email_settings')
+        .select('*')
+        .eq('key', 'system_logo_url')
+        .maybeSingle();
+      if (error) throw error;
+      if (data) {
+        setSystemLogoUrl(data.value);
+      }
+    } catch (err: any) {
+      console.error('Sistem logosunu çekme hatası:', err.message);
+    } finally {
+      setFetchingSettings(false);
+    }
+  };
+
+  const handleSaveSystemLogo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingLogo(true);
+    try {
+      const { error } = await supabase
+        .from('email_settings')
+        .upsert({ key: 'system_logo_url', value: systemLogoUrl });
+      if (error) throw error;
+      alert('Sistem logosu başarıyla kaydedildi!');
+      window.location.reload();
+    } catch (err: any) {
+      console.error('Logo kaydedilirken hata:', err.message);
+      alert('Logo kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingLogo(false);
+    }
+  };
+
+  const handleSaveEmailSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSettings(true);
+    try {
+      const settings = [
+        { key: 'email_provider', value: emailProvider },
+        { key: 'api_key', value: apiKey },
+        { key: 'sender_email', value: senderEmail },
+        { key: 'script_url', value: scriptUrl },
+      ];
+      const { error } = await supabase.from('email_settings').upsert(settings);
+      if (error) throw error;
+      alert('E-posta ayarları başarıyla kaydedildi!');
+    } catch (err: any) {
+      console.error('E-posta ayarları kaydedilirken hata:', err.message);
+      alert('Ayarlar kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const [triggeringReminders, setTriggeringReminders] = useState(false);
+  const handleTriggerEmailReminders = async () => {
+    if (!window.confirm('E-posta hatırlatıcılarını şimdi manuel olarak tetiklemek istiyor musunuz? Bu işlem, koşulları sağlayan belgelere sahip tüm kullanıcılara hatırlatma e-postaları gönderecektir.')) {
+      return;
+    }
+    setTriggeringReminders(true);
+    try {
+      const { error } = await supabase.rpc('send_expiry_reminders');
+      if (error) throw error;
+      alert('E-posta hatırlatma fonksiyonu başarıyla tetiklendi!');
+      fetchEmailLogs();
+    } catch (err: any) {
+      console.error('Hatırlatma tetikleme hatası:', err.message);
+      alert('Hata: ' + err.message);
+    } finally {
+      setTriggeringReminders(false);
+    }
+  };
+
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -134,11 +290,6 @@ export default function AdminPanel() {
           ...u,
           organization: companyMap.get(u.organization_id) || null
       }));
-
-      // Firmalara atanmış mevzuatları çek
-      const { data: compRegs } = await supabase.from('company_pdf_regulations').select('company_id');
-      const orgSet = new Set<string>((compRegs || []).map(r => r.company_id));
-      setOrgsWithRegs(orgSet);
 
       setUsers(mergedUsers);
     } catch (err: any) {
@@ -386,8 +537,6 @@ export default function AdminPanel() {
     setSelectedOrgId(user.organization_id || '');
     setNewOrgNameForUser('');
     setUserQuotaMB(Math.round((user.storage_limit || 0) / 1048576));
-    setNewCanViewRegulations(!!user.can_view_regulations || !!(user.organization_id && orgsWithRegs.has(user.organization_id)));
-    setNewCanManageRegulations(!!user.can_manage_regulations);
     await fetchCompanies();
   };
 
@@ -438,8 +587,6 @@ export default function AdminPanel() {
 
       const updates: any = { 
         role: newRole,
-        can_view_regulations: newCanViewRegulations,
-        can_manage_regulations: newCanManageRegulations,
         storage_limit: userQuotaMB * 1048576,
       };
       if (isCorporateRole(newRole)) {
@@ -519,8 +666,6 @@ export default function AdminPanel() {
         full_name: createFullName,
         phone: createPhone,
         role: createRole,
-        can_view_regulations: createCanViewRegulations,
-        can_manage_regulations: createCanManageRegulations,
         storage_limit: createQuotaMB * 1048576,
       };
 
@@ -561,9 +706,7 @@ export default function AdminPanel() {
       setCreateOrgId('');
       setCreateEndDate('');
       setCreateQuotaMB(50);
-      setCreateCanViewRegulations(false);
-      setCreateCanManageRegulations(false);
-      
+      setShowCreateUserModal(false);
       fetchUsers();
     } catch (err: any) {
       console.error("Kullanıcı oluşturma hatası:", err);
@@ -740,16 +883,7 @@ export default function AdminPanel() {
         >
           Şirketler
         </button>
-        <button
-          onClick={() => setActiveTab('regulations')}
-          className={`py-3 px-4 font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
-            activeTab === 'regulations'
-              ? 'text-red-600 border-red-600'
-              : 'text-gray-500 border-transparent'
-          }`}
-        >
-          <Scale size={16} /> Mevzuat Yönetimi
-        </button>
+
         <button
           onClick={() => setActiveTab('tickets')}
           className={`py-3 px-4 font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
@@ -776,10 +910,30 @@ export default function AdminPanel() {
         >
           <Bell size={16} /> Bildirim Gönder
         </button>
+        <button
+          onClick={() => setActiveTab('email_settings')}
+          className={`py-3 px-4 font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'email_settings'
+              ? 'text-indigo-600 border-indigo-600'
+              : 'text-gray-500 border-transparent'
+          }`}
+        >
+          <Mail size={16} /> E-Posta Ayarları
+        </button>
+        <button
+          onClick={() => setActiveTab('system_settings')}
+          className={`py-3 px-4 font-bold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+            activeTab === 'system_settings'
+              ? 'text-indigo-600 border-indigo-600'
+              : 'text-gray-500 border-transparent'
+          }`}
+        >
+          <Settings size={16} /> Sistem Ayarları
+        </button>
       </div>
 
       <div className="bg-white p-4 rounded-b-xl shadow-sm border space-y-4 min-h-[500px]">
-        {activeTab !== 'tickets' && activeTab !== 'notifications' && (
+        {activeTab !== 'tickets' && activeTab !== 'notifications' && activeTab !== 'email_settings' && activeTab !== 'system_settings' && (
           <div className="flex items-center gap-2 bg-gray-50 p-2 rounded border">
             <Search className="text-gray-400" />
             <input
@@ -855,11 +1009,7 @@ export default function AdminPanel() {
                         <span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold border w-fit">
                           {roleLabels[user.role] || user.role}
                         </span>
-                        {(user.can_view_regulations || (user.organization_id && orgsWithRegs.has(user.organization_id)) || user.role === 'admin' || user.role === 'system_admin') && (
-                          <span className="flex items-center gap-1 text-[10px] font-bold text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 w-fit">
-                            <Scale size={10} /> Mevzuat Yetkili
-                          </span>
-                        )}
+
                       </div>
                     </td>
                     <td className="p-3 text-xs font-mono">
@@ -1027,24 +1177,80 @@ export default function AdminPanel() {
             </div>
 
             <form onSubmit={handleSendNotification} className="space-y-6">
-              <div>
+              <div className="relative">
                 <label className="block text-sm font-bold text-gray-700 mb-2">
                   Kime Gönderilecek?
                 </label>
-                <select
-                  className="w-full p-3 rounded-xl border border-gray-300 bg-white outline-none focus:ring-2 focus:ring-teal-500"
-                  value={targetUser}
-                  onChange={(e) => setTargetUser(e.target.value)}
-                >
-                  <option value="all">📢 TÜM KULLANICILARA GÖNDER</option>
-                  <optgroup label="Tek Kullanıcı Seç">
-                    {users.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.full_name || 'İsimsiz'} ({u.email})
-                      </option>
-                    ))}
-                  </optgroup>
-                </select>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      placeholder="Tüm kullanıcılar veya bir kullanıcı ara (isim/email)..."
+                      className="w-full p-3 rounded-xl border border-gray-300 outline-none focus:ring-2 focus:ring-teal-500 bg-white"
+                      value={userSearchTerm}
+                      onChange={(e) => {
+                        setUserSearchTerm(e.target.value);
+                        setShowUserDropdown(true);
+                      }}
+                      onFocus={() => setShowUserDropdown(true)}
+                      onBlur={() => setTimeout(() => setShowUserDropdown(false), 250)}
+                    />
+                    {showUserDropdown && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                        <div
+                          className="p-3 hover:bg-teal-50 cursor-pointer font-bold text-teal-600 border-b border-gray-100 text-sm"
+                          onMouseDown={() => {
+                            setTargetUser('all');
+                            setUserSearchTerm('📢 TÜM KULLANICILARA GÖNDER');
+                            setShowUserDropdown(false);
+                          }}
+                        >
+                          📢 TÜM KULLANICILARA GÖNDER
+                        </div>
+                        {users
+                          .filter((u) => {
+                            const term = userSearchTerm.toLowerCase();
+                            if (term === '📢 tüm kullanicilara gönder' || term === '') return true;
+                            return (
+                              (u.full_name || '').toLowerCase().includes(term) ||
+                              (u.email || '').toLowerCase().includes(term)
+                            );
+                          })
+                          .map((u) => (
+                            <div
+                              key={u.id}
+                              className="p-3 hover:bg-gray-50 cursor-pointer text-sm text-gray-700 flex justify-between items-center"
+                              onMouseDown={() => {
+                                setTargetUser(u.id);
+                                setUserSearchTerm(`${u.full_name || 'İsimsiz'} (${u.email})`);
+                                setShowUserDropdown(false);
+                              }}
+                            >
+                              <span className="font-semibold">{u.full_name || 'İsimsiz'}</span>
+                              <span className="text-xs text-gray-500">{u.email}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  {targetUser !== 'all' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTargetUser('all');
+                        setUserSearchTerm('📢 TÜM KULLANICILARA GÖNDER');
+                      }}
+                      className="bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 rounded-xl text-xs font-semibold border transition"
+                    >
+                      Sıfırla
+                    </button>
+                  )}
+                </div>
+                {targetUser !== 'all' && (
+                  <div className="mt-2 text-xs text-teal-600 font-semibold flex items-center gap-1">
+                    ✓ Seçili Kullanıcı: <span className="font-mono bg-teal-50 px-1 py-0.5 rounded border border-teal-100">{targetUser}</span>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1088,10 +1294,335 @@ export default function AdminPanel() {
           </div>
         )}
 
-        {/* --- YENİ TAB: MEVZUAT YÖNETİMİ --- */}
-        {activeTab === 'regulations' && (
-          <div className="animate-fadeIn">
-            <AdminRegulations />
+
+
+        {/* --- YENİ TAB: E-POSTA AYARLARI --- */}
+        {activeTab === 'email_settings' && (
+          <div className="animate-fadeIn space-y-6">
+            <div className="bg-indigo-50 border border-indigo-100 p-6 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h2 className="text-xl font-bold text-indigo-800 flex items-center gap-2 mb-2">
+                  <Mail className="text-indigo-600" /> E-Posta Bildirim Ayarları
+                </h2>
+                <p className="text-indigo-600 text-sm">
+                  Premium üyelerin belgelerinin bitiş tarihine yaklaşınca gönderilecek e-posta hatırlatıcılarının ayarlarını buradan yapabilirsiniz.
+                  Sistem her gün Türkiye saati ile 09:00'da (06:00 UTC) otomatik olarak tarama yapacaktır.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleTriggerEmailReminders}
+                disabled={triggeringReminders}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-lg shadow-indigo-100 disabled:opacity-50 shrink-0"
+              >
+                {triggeringReminders ? (
+                  <Loader className="animate-spin" size={14} />
+                ) : (
+                  <Send size={14} />
+                )}
+                {triggeringReminders ? 'Tetikleniyor...' : 'Hatırlatıcıları Şimdi Çalıştır'}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Form Ayarları */}
+              <div className="md:col-span-1 bg-gray-50/50 p-6 rounded-2xl border border-gray-150 space-y-6 h-fit">
+                <h3 className="font-bold text-gray-800 text-base border-b pb-2">Sağlayıcı Yapılandırması</h3>
+                {fetchingSettings ? (
+                  <div className="flex items-center justify-center p-8 text-gray-500 gap-2">
+                    <Loader className="animate-spin" size={16} />
+                    Ayarlar Yükleniyor...
+                  </div>
+                ) : (
+                  <form onSubmit={handleSaveEmailSettings} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                        E-Posta Sağlayıcısı
+                      </label>
+                      <select
+                        className="w-full p-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-semibold text-gray-700 cursor-pointer"
+                        value={emailProvider}
+                        onChange={(e: any) => setEmailProvider(e.target.value)}
+                      >
+                        <option value="google_script">Google Apps Script (Gmail - Ücretsiz)</option>
+                        <option value="brevo">Brevo (Sendinblue - Ücretsiz SMTP)</option>
+                        <option value="resend">Resend (Profesyonel E-Posta)</option>
+                      </select>
+                    </div>
+
+                    {emailProvider === 'google_script' && (
+                      <div className="space-y-3 animate-fadeIn">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                            Google Script URL'si
+                          </label>
+                          <input
+                            type="url"
+                            required
+                            placeholder="https://script.google.com/macros/s/.../exec"
+                            className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-medium"
+                            value={scriptUrl}
+                            onChange={(e) => setScriptUrl(e.target.value)}
+                          />
+                        </div>
+                        <p className="text-[10px] text-gray-500 leading-relaxed bg-white p-3 rounded-lg border">
+                          💡 <strong>Google Script Kurulumu:</strong> Google Apps Script ile kişisel Gmail adresinizden ücretsiz olarak günde 100 adet e-posta gönderebilirsiniz. 
+                          Kullanıcının belirlediği script URL'sine POST isteği gönderilerek mailler iletilir.
+                        </p>
+                      </div>
+                    )}
+
+                    {emailProvider === 'resend' && (
+                      <div className="space-y-3 animate-fadeIn">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                            Resend API Key
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            placeholder="re_..."
+                            className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-medium"
+                            value={apiKey}
+                            onChange={(e) => setApiKey(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                            Gönderen E-Posta (Sender Email)
+                          </label>
+                          <input
+                            type="email"
+                            required
+                            placeholder="info@evraklab.com"
+                            className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-medium"
+                            value={senderEmail}
+                            onChange={(e) => setSenderEmail(e.target.value)}
+                          />
+                        </div>
+                        <p className="text-[10px] text-gray-500 leading-relaxed bg-white p-3 rounded-lg border">
+                          💡 <strong>Resend Entegrasyonu:</strong> Kendi alan adınızı (domain) doğrulatıp profesyonel e-postalar göndermek için idealdir. Aylık 3.000 mail ücretsizdir.
+                        </p>
+                      </div>
+                    )}
+
+                    {emailProvider === 'brevo' && (
+                      <div className="space-y-3 animate-fadeIn">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                            Brevo API Key v3
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            placeholder="xkeysib-..."
+                            className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-medium"
+                            value={apiKey}
+                            onChange={(e) => setApiKey(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                            Gönderen E-Posta (Brevo Verified Email)
+                          </label>
+                          <input
+                            type="email"
+                            required
+                            placeholder="gonderen@gmail.com"
+                            className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition text-sm font-medium"
+                            value={senderEmail}
+                            onChange={(e) => setSenderEmail(e.target.value)}
+                          />
+                        </div>
+                        <p className="text-[10px] text-gray-500 leading-relaxed bg-white p-3 rounded-lg border">
+                          💡 <strong>Brevo Entegrasyonu:</strong> Kişisel `@gmail.com` adresinizi doğrulatıp gönderen olarak kullanmanıza olanak tanır. Günde 300 mail tamamen ücretsizdir.
+                        </p>
+                      </div>
+                    )}
+
+
+                    <button
+                      type="submit"
+                      disabled={savingSettings}
+                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition shadow-lg shadow-indigo-100 disabled:opacity-50"
+                    >
+                      {savingSettings ? <Loader className="animate-spin" size={16} /> : <Shield size={16} />}
+                      {savingSettings ? 'Kaydediliyor...' : 'Ayarları Kaydet'}
+                    </button>
+                  </form>
+                )}
+              </div>
+
+              {/* Log Geçmişi */}
+              <div className="md:col-span-2 bg-white rounded-2xl border border-gray-150 p-6 flex flex-col space-y-4">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <h3 className="font-bold text-gray-800 text-base">E-Posta Gönderim Günlüğü (Logs)</h3>
+                  <button
+                    onClick={fetchEmailLogs}
+                    disabled={fetchingLogs}
+                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                  >
+                    {fetchingLogs && <Loader className="animate-spin" size={10} />}
+                    Yenile
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[450px]">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead className="bg-gray-50 text-gray-500 uppercase sticky top-0">
+                      <tr>
+                        <th className="p-2.5">Belge</th>
+                        <th className="p-2.5">Alıcı E-Posta</th>
+                        <th className="p-2.5">Konu</th>
+                        <th className="p-2.5">Durum</th>
+                        <th className="p-2.5">Tarih</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {fetchingLogs ? (
+                        <tr>
+                          <td colSpan={5} className="p-8 text-center text-gray-400">
+                            Günlükler Yükleniyor...
+                          </td>
+                        </tr>
+                      ) : emailLogs.length > 0 ? (
+                        emailLogs.map((log: any) => (
+                          <tr key={log.id} className="hover:bg-gray-50">
+                            <td className="p-2.5 font-semibold text-gray-750">
+                              {log.document?.title || <span className="text-gray-400 italic">Silinmiş Belge</span>}
+                            </td>
+                            <td className="p-2.5 text-gray-600 font-mono">{log.recipient_email}</td>
+                            <td className="p-2.5 text-gray-700 truncate max-w-[180px]" title={log.subject}>{log.subject}</td>
+                            <td className="p-2.5">
+                              <span
+                                className={`px-2 py-0.5 rounded-full font-bold uppercase text-[9px] ${
+                                  log.status === 'sent'
+                                    ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                                    : log.status === 'expired'
+                                    ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                                    : 'bg-red-100 text-red-700 border border-red-200'
+                                }`}
+                              >
+                                {log.status === 'sent' ? 'Süresi Yaklaştı' : log.status === 'expired' ? 'Süresi Geçti' : log.status}
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-gray-400 font-mono whitespace-nowrap">
+                              {new Date(log.sent_at).toLocaleString()}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={5} className="p-8 text-center text-gray-400 italic">
+                            Henüz herhangi bir hatırlatma e-postası gönderilmedi.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- SİSTEM AYARLARI TAB --- */}
+        {activeTab === 'system_settings' && (
+          <div className="animate-fadeIn space-y-6">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-slate-800 to-slate-700 p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-lg">
+              <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2 mb-1">
+                  <Settings className="text-slate-300" size={22} /> Sistem Ayarları
+                </h2>
+                <p className="text-slate-400 text-sm">
+                  Uygulamanın genel görünümünü ve sistem logosunu buradan yönetebilirsiniz.
+                </p>
+              </div>
+            </div>
+
+            <div className="max-w-xl mx-auto bg-white rounded-2xl border border-gray-100 shadow-sm p-8 space-y-6">
+              <h3 className="font-bold text-gray-800 text-base border-b pb-3 flex items-center gap-2">
+                <Settings size={16} className="text-slate-500" />
+                Sistem Logosu (Favicon ve Sol Üst)
+              </h3>
+
+              {fetchingSettings ? (
+                <div className="flex items-center justify-center p-8 text-gray-500 gap-2">
+                  <Loader className="animate-spin" size={18} />
+                  Yükleniyor...
+                </div>
+              ) : (
+                <form onSubmit={handleSaveSystemLogo} className="space-y-5">
+                  {/* Preview */}
+                  <div className="flex flex-col items-center gap-4 bg-gray-50 rounded-xl border border-dashed border-gray-200 p-6">
+                    {systemLogoUrl ? (
+                      <img
+                        src={systemLogoUrl}
+                        alt="Logo Önizleme"
+                        className="w-24 h-24 object-contain rounded-xl border bg-white p-2 shadow-sm"
+                      />
+                    ) : (
+                      <div className="w-24 h-24 rounded-xl border border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 bg-white gap-1">
+                        <Settings size={28} className="opacity-30" />
+                        <span className="text-[10px]">Logo Yok</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleUploadSystemLogo}
+                        disabled={uploadingLogo}
+                        className="hidden"
+                        id="system-logo-upload-input-settings"
+                      />
+                      <label
+                        htmlFor="system-logo-upload-input-settings"
+                        className="px-4 py-2 rounded-xl border border-gray-200 text-sm font-semibold hover:bg-gray-100 transition cursor-pointer text-gray-700 bg-white shadow-sm"
+                      >
+                        {uploadingLogo ? (
+                          <span className="flex items-center gap-1.5"><Loader className="animate-spin" size={13} /> Yükleniyor...</span>
+                        ) : '📁 Logo Yükle'}
+                      </label>
+                      {systemLogoUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setSystemLogoUrl('')}
+                          className="px-4 py-2 rounded-xl border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-50 transition bg-white shadow-sm"
+                        >
+                          🗑 Kaldır
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* URL Input */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                      Veya Logo URL'si Girin
+                    </label>
+                    <input
+                      type="url"
+                      placeholder="https://ornek.com/logo.png"
+                      className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-slate-500/20 focus:border-slate-500 transition text-sm font-medium"
+                      value={systemLogoUrl}
+                      onChange={(e) => setSystemLogoUrl(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Save Button */}
+                  <button
+                    type="submit"
+                    disabled={savingLogo}
+                    className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition shadow-lg disabled:opacity-50"
+                  >
+                    {savingLogo ? <Loader className="animate-spin" size={16} /> : <Settings size={16} />}
+                    {savingLogo ? 'Kaydediliyor...' : 'Sistem Logosunu Kaydet'}
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
         )}
 
@@ -1493,41 +2024,7 @@ export default function AdminPanel() {
                 </div>
               </div>
 
-              <div className="bg-teal-50/40 p-4 rounded-2xl border border-teal-100 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="create-view-regs"
-                  className="mt-1 w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500 cursor-pointer"
-                  checked={createCanViewRegulations}
-                  onChange={(e) => setCreateCanViewRegulations(e.target.checked)}
-                />
-                <label htmlFor="create-view-regs" className="flex flex-col cursor-pointer select-none">
-                  <span className="text-sm font-bold text-teal-900 flex items-center gap-2">
-                    Mevzuat Sayfası Erişimi
-                  </span>
-                  <span className="text-[10px] text-teal-600/80 font-medium">
-                    Bu kullanıcının sistem genelindeki Mevzuat modülünü görüntüleme yetkisi olsun.
-                  </span>
-                </label>
-              </div>
 
-              <div className="bg-orange-50/40 p-4 rounded-2xl border border-orange-100 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="create-manage-regs"
-                  className="mt-1 w-4 h-4 text-orange-600 border-slate-300 rounded focus:ring-orange-500 cursor-pointer"
-                  checked={createCanManageRegulations}
-                  onChange={(e) => setCreateCanManageRegulations(e.target.checked)}
-                />
-                <label htmlFor="create-manage-regs" className="flex flex-col cursor-pointer select-none">
-                  <span className="text-sm font-bold text-orange-900">
-                    Mevzuat Yönetme Yetkisi
-                  </span>
-                  <span className="text-[10px] text-orange-600/80 font-medium">
-                    Kendi şirketi adına yeni mevzuat maddeleri/dosyaları ekleyip düzenleyebilsin.
-                  </span>
-                </label>
-              </div>
 
               <div className="flex gap-3 pt-4 border-t border-slate-100">
                 <button
@@ -1703,46 +2200,7 @@ export default function AdminPanel() {
                 </div>
               </div>
 
-              <div className="bg-teal-50/40 p-4 rounded-2xl border border-teal-100 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="view-regs"
-                  className="mt-1 w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500 cursor-pointer"
-                  checked={newCanViewRegulations}
-                  onChange={(e) => setNewCanViewRegulations(e.target.checked)}
-                />
-                <label htmlFor="view-regs" className="flex flex-col cursor-pointer select-none">
-                  <span className="text-sm font-bold text-teal-900 flex items-center gap-2">
-                    Mevzuat Sayfası Erişimi
-                    {editingUser?.organization_id && orgsWithRegs.has(editingUser.organization_id) && (
-                      <span className="bg-teal-600 text-white text-[8px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
-                        <Building size={8} /> Firmadan Aktif
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-[10px] text-teal-600/80 font-medium">
-                    Bu kullanıcının sistem genelindeki Mevzuat modülünü görüntüleme yetkisi olsun.
-                  </span>
-                </label>
-              </div>
 
-              <div className="bg-orange-50/40 p-4 rounded-2xl border border-orange-100 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="manage-regs"
-                  className="mt-1 w-4 h-4 text-orange-600 border-slate-300 rounded focus:ring-orange-500 cursor-pointer"
-                  checked={newCanManageRegulations}
-                  onChange={(e) => setNewCanManageRegulations(e.target.checked)}
-                />
-                <label htmlFor="manage-regs" className="flex flex-col cursor-pointer select-none">
-                  <span className="text-sm font-bold text-orange-900">
-                    Mevzuat Yönetme Yetkisi
-                  </span>
-                  <span className="text-[10px] text-orange-600/80 font-medium">
-                    Kendi şirketi adına yeni mevzuat maddeleri/dosyaları ekleyip düzenleyebilsin.
-                  </span>
-                </label>
-              </div>
 
               <div className="flex gap-3 pt-4 border-t border-slate-100">
                 <button

@@ -99,7 +99,7 @@ export default function EnvReportForm() {
       setUserMode('consultant');
       let query = supabase.from('consultant_clients').select('*');
 
-      const isRestrictedRole = profile.role === 'corporate_staff';
+      const isRestrictedRole = profile.role === 'corporate_staff' || profile.role === 'corporate_chief';
 
       if (profile.role !== 'admin' && isRestrictedRole && !perms.can_view_all_clients) {
         // Personel: sadece atandığı firmalar
@@ -265,20 +265,30 @@ export default function EnvReportForm() {
         const typeLabel = reportType === 'monthly' ? 'Aylık Faaliyet Raporu' : 'Yıllık İç Tetkik Raporu';
         let typeDefId = null;
 
-        const { data: existingType } = await supabase
-          .from('user_definitions')
+        let typeQuery = supabase.from('user_definitions')
           .select('id')
           .eq('category', 'doc_type')
-          .ilike('label', typeLabel)
-          .in('user_id', orgUserIds)
-          .maybeSingle();
+          .ilike('label', typeLabel);
+
+        if (!isPersonal && userProfile.organization_id) {
+          typeQuery = typeQuery.eq('organization_id', userProfile.organization_id);
+        } else {
+          typeQuery = typeQuery.eq('user_id', userProfile.id).is('organization_id', null);
+        }
+        
+        const { data: existingType } = await typeQuery.maybeSingle();
 
         if (existingType) {
           typeDefId = existingType.id;
         } else {
           const { data: newType } = await supabase
             .from('user_definitions')
-            .insert([{ user_id: userProfile.id, category: 'doc_type', label: typeLabel }])
+            .insert([{ 
+              user_id: userProfile.id, 
+              category: 'doc_type', 
+              label: typeLabel,
+              organization_id: !isPersonal ? userProfile.organization_id : null
+            }])
             .select('id')
             .single();
           if (newType) typeDefId = newType.id;
@@ -287,20 +297,30 @@ export default function EnvReportForm() {
         // 3. Lokasyon bul veya oluştur (şahsi raporda lokasyon yok)
         let locationDefId = null;
         if (!isPersonal) {
-          const { data: existingLoc } = await supabase
-            .from('user_definitions')
+          let locQuery = supabase.from('user_definitions')
             .select('id')
             .eq('category', 'location')
-            .ilike('label', clientName)
-            .in('user_id', orgUserIds)
-            .maybeSingle();
+            .ilike('label', clientName);
+
+          if (userProfile.organization_id) {
+            locQuery = locQuery.eq('organization_id', userProfile.organization_id);
+          } else {
+            locQuery = locQuery.eq('user_id', userProfile.id).is('organization_id', null);
+          }
+          
+          const { data: existingLoc } = await locQuery.maybeSingle();
 
           if (existingLoc) {
             locationDefId = existingLoc.id;
           } else {
             const { data: newLoc } = await supabase
               .from('user_definitions')
-              .insert([{ user_id: userProfile.id, category: 'location', label: clientName }])
+              .insert([{ 
+                user_id: userProfile.id, 
+                category: 'location', 
+                label: clientName,
+                organization_id: userProfile.organization_id || null
+              }])
               .select('id')
               .single();
             if (newLoc) locationDefId = newLoc.id;
