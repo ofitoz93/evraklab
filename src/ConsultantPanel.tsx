@@ -20,8 +20,169 @@ import {
   MapPin,
   Tag,
   Loader,
+  Scale,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  Check,
+  XCircle,
+  PlusCircle,
+  Bell,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { extractTextFromPdf } from './localScanner';
+
+function formatArticleContent(content: string): string {
+  // Clean multiple spaces
+  let text = content.replace(/[ \t]+/g, ' ').trim();
+  
+  // Format paragraphs/bents with newlines
+  text = text.replace(/ \(([0-9]+)\)/g, '\n($1)');
+  text = text.replace(/ ([a-zçğıöşü])\)/gi, '\n$1)');
+  text = text.replace(/ ([0-9]+)\)/g, '\n$1)');
+  
+  return text.split('\n').map(line => line.trim()).filter(Boolean).join('\n');
+}
+
+function parseLegislationText(text: string) {
+  // Regex to find "MADDE 1", "GEÇİCİ MADDE 2", etc.
+  const regex = /\b(MADDE|GEÇİCİ\s+MADDE|Geçici\s+Madde|Madde)\s+(\d+)\b/gi;
+  const articles: any[] = [];
+  
+  const matches: { index: number; length: number; prefix: string; num: string }[] = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    matches.push({
+      index: match.index,
+      length: match[0].length,
+      prefix: match[1],
+      num: match[2]
+    });
+  }
+  
+  // Helper to extract bents from an article content
+  const extractBents = (articleNo: string, articleTitle: string, rawContent: string, startOrderIndex: number) => {
+    // Split text into lines
+    const lines = rawContent.split('\n').map(l => l.trim()).filter(Boolean);
+    const bents: any[] = [];
+    
+    let currentPara = ''; // e.g. "(1)"
+    let currentSub = '';  // e.g. "a)"
+    let currentBentText = '';
+    let currentBentKey = '';
+    
+    const pushCurrentBent = () => {
+      if (currentBentText.trim()) {
+        const key = currentBentKey || articleNo;
+        bents.push({
+          article_no: key,
+          title: articleTitle,
+          content: currentBentText.trim(),
+        });
+      }
+    };
+    
+    for (const line of lines) {
+      // Check if line starts with paragraph number, e.g., (1) or (12)
+      const paraMatch = line.match(/^(\([0-9]+\))\s*(.*)/);
+      // Check if line starts with letter, e.g., a) or ç)
+      const letterMatch = line.match(/^([a-zçğıöşüA-Z]\))\s*(.*)/);
+      // Check if line starts with number dot or number parenthese, e.g. 1) or 1.
+      const numMatch = line.match(/^([0-9]+[\)\.])\s*(.*)/);
+      
+      if (paraMatch) {
+        pushCurrentBent();
+        currentPara = paraMatch[1];
+        currentSub = '';
+        currentBentKey = `${articleNo} ${currentPara}`;
+        currentBentText = line; // Include the marker in content
+      } else if (letterMatch) {
+        pushCurrentBent();
+        currentSub = letterMatch[1];
+        currentBentKey = `${articleNo} ${currentPara ? currentPara + ' ' : ''}${currentSub}`;
+        currentBentText = line;
+      } else if (numMatch) {
+        pushCurrentBent();
+        currentSub = numMatch[1];
+        currentBentKey = `${articleNo} ${currentPara ? currentPara + ' ' : ''}${currentSub}`;
+        currentBentText = line;
+      } else {
+        // Continuation of previous bent
+        if (bents.length === 0 && !currentBentText) {
+          // If we haven't started any bent, treat this as part of the main article text
+          currentBentKey = articleNo;
+          currentBentText = line;
+        } else {
+          currentBentText += '\n' + line;
+        }
+      }
+    }
+    pushCurrentBent();
+    
+    // Fallback if no bents found
+    if (bents.length === 0) {
+      bents.push({
+        article_no: articleNo,
+        title: articleTitle,
+        content: rawContent,
+      });
+    }
+    
+    return bents;
+  };
+
+  if (matches.length === 0) {
+    if (text.trim()) {
+      const parsedBents = extractBents('Madde 1', 'Genel Hükümler', text.trim(), 1);
+      parsedBents.forEach((b, idx) => {
+        articles.push({
+          ...b,
+          order_index: idx + 1
+        });
+      });
+    }
+    return articles;
+  }
+  
+  let orderCounter = 1;
+  for (let i = 0; i < matches.length; i++) {
+    const currentMatch = matches[i];
+    const nextIndex = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const rawContent = text.substring(currentMatch.index + currentMatch.length, nextIndex).trim();
+    
+    let articleNo = `${currentMatch.prefix} ${currentMatch.num}`;
+    let title = articleNo;
+    let content = rawContent;
+    
+    // Search for first paragraph marker like (1) or a) to separate title from content
+    const paraIndex = rawContent.search(/(?:\([0-9]+\)|^[a-zçğıöşü]\)|^[0-9]+\))/i);
+    if (paraIndex > 0) {
+      const potentialTitle = rawContent.substring(0, paraIndex).replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
+      if (potentialTitle && potentialTitle.length < 150) {
+        title = potentialTitle;
+        content = rawContent.substring(paraIndex).trim();
+      }
+    } else {
+      const lines = rawContent.split('\n');
+      if (lines.length > 1 && lines[0].trim().length < 100 && !lines[0].includes('(')) {
+        title = lines[0].trim().replace(/^[-–—:\s]+|[-–—:\s]+$/g, '');
+        content = lines.slice(1).join('\n').trim();
+      }
+    }
+    
+    content = formatArticleContent(content);
+    
+    const parsedBents = extractBents(articleNo, title, content, orderCounter);
+    parsedBents.forEach(b => {
+      articles.push({
+        ...b,
+        order_index: orderCounter++
+      });
+    });
+  }
+  
+  return articles;
+}
 
 interface Client {
   id: string;
@@ -50,7 +211,50 @@ interface Report {
 }
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations'>('clients');
+
+  // --- MEVZUAT TAKİP BÖLÜMÜ STATE'LERİ ---
+  const [assignedGlobalLegislations, setAssignedGlobalLegislations] = useState<any[]>([]);
+  const [allGlobalRegulations, setAllGlobalRegulations] = useState<any[]>([]);
+  const [importingLegId, setImportingLegId] = useState<string | null>(null);
+  const [clientRegulations, setClientRegulations] = useState<any[]>([]);
+  const [staffRequests, setStaffRequests] = useState<any[]>([]);
+  const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments' | 'requests'>('pool');
+  
+  const [showAssignClientLegModal, setShowAssignClientLegModal] = useState(false);
+  const [assigningGlobalLeg, setAssigningGlobalLeg] = useState<any>(null);
+  const [selectedClientIdForLeg, setSelectedClientIdForLeg] = useState('');
+  const [selectedStaffIdForLeg, setSelectedStaffIdForLeg] = useState('');
+
+  const [selectedClientRegulation, setSelectedClientRegulation] = useState<any>(null);
+  const [selectedClientRegulationArticles, setSelectedClientRegulationArticles] = useState<any[]>([]);
+  const [loadingLegArticles, setLoadingLegArticles] = useState(false);
+
+  const [showAddRequestModal, setShowAddRequestModal] = useState(false);
+  const [requestTitle, setRequestTitle] = useState('');
+  const [requestDescription, setRequestDescription] = useState('');
+  const [selectedReqClientId, setSelectedReqClientId] = useState('');
+  const [selectedReqRegulationId, setSelectedReqRegulationId] = useState('');
+  const [submittingRequest, setSubmittingRequest] = useState(false);
+
+  // Özel Mevzuat Ekleme (Custom Regulations for Consultants)
+  const [showAddCustomLegModal, setShowAddCustomLegModal] = useState(false);
+  const [legTitle, setLegTitle] = useState('');
+  const [legCategory, setLegCategory] = useState('Yönetmelik');
+  const [legPubDate, setLegPubDate] = useState('');
+  const [legEffDate, setLegEffDate] = useState('');
+  const [legRgNo, setLegRgNo] = useState('');
+  const [legRgDate, setLegRgDate] = useState('');
+  const [legArticles, setLegArticles] = useState<any[]>([]);
+  const [pasteText, setPasteText] = useState('');
+  const [parsingPdf, setParsingPdf] = useState(false);
+  const [parsingTextMode, setParsingTextMode] = useState(false);
+  const [savingLegislation, setSavingLegislation] = useState(false);
+
+  // Mevcut Durum (Current Status Notes) states
+  const [editingNotesArtId, setEditingNotesArtId] = useState<string | null>(null);
+  const [tempNotesVal, setTempNotesVal] = useState('');
+
   const [clients, setClients] = useState<Client[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,7 +312,7 @@ export default function ConsultantPanel() {
   }, []);
 
   useEffect(() => {
-    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions') && orgId) {
+    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions' || activeTab === 'legislations') && orgId) {
       fetchTeamMembers();
     }
     if (activeTab === 'team' && orgId) {
@@ -116,6 +320,10 @@ export default function ConsultantPanel() {
     }
     if (activeTab === 'definitions' && orgId) {
       fetchDefinitionsTab();
+    }
+    if (activeTab === 'legislations' && orgId) {
+      fetchConsultantLegislations();
+      fetchConsultantRequests();
     }
   }, [activeTab, orgId]);
 
@@ -700,6 +908,473 @@ export default function ConsultantPanel() {
     }
   };
 
+  const fetchConsultantLegislations = async () => {
+    try {
+      const { data: compLegs, error: err1 } = await supabase
+        .from('company_pdf_regulations')
+        .select('*, regulation:pdf_regulations(*)')
+        .eq('company_id', orgId);
+      
+      if (err1) throw err1;
+      setAssignedGlobalLegislations(compLegs?.map((cl: any) => cl.regulation).filter(Boolean) || []);
+
+      const { data: allRegs, error: errGlobal } = await supabase
+        .from('pdf_regulations')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!errGlobal && allRegs) {
+        setAllGlobalRegulations(allRegs);
+      }
+
+      const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
+      let clientIds: string[] = [];
+      if (isRestrictedRole && !currentUserPerms?.can_view_all_clients) {
+        const { data: assigns } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', userId);
+        clientIds = assigns?.map((a: any) => a.client_id) || [];
+      } else {
+        clientIds = clients.map((c: any) => c.id);
+      }
+
+      if (clientIds.length > 0) {
+        const { data: clientLegs, error: err2 } = await supabase
+          .from('client_regulations')
+          .select('*, client:consultant_clients(name), parent:pdf_regulations(id, title)')
+          .in('client_id', clientIds)
+          .order('created_at', { ascending: false });
+        if (err2) throw err2;
+        setClientRegulations(clientLegs || []);
+      } else {
+        setClientRegulations([]);
+      }
+    } catch (err: any) {
+      console.error('Mevzuatlar yüklenirken hata:', err.message);
+    }
+  };
+
+  const fetchConsultantRequests = async () => {
+    try {
+      const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
+      let clientIds: string[] = [];
+      if (isRestrictedRole && !currentUserPerms?.can_view_all_clients) {
+        const { data: assigns } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', userId);
+        clientIds = assigns?.map((a: any) => a.client_id) || [];
+      } else {
+        clientIds = clients.map((c: any) => c.id);
+      }
+
+      let query = supabase
+        .from('regulation_requests')
+        .select('*, requester:profiles!requested_by(full_name, email), client:consultant_clients!client_id(name), target_regulation:pdf_regulations!target_regulation_id(title)')
+        .order('created_at', { ascending: false });
+
+      if (userRole === 'premium_corporate') {
+        if (clientIds.length > 0) {
+          query = query.or(`organization_id.eq.${orgId},client_id.in.(${clientIds.join(',')})`);
+        } else {
+          query = query.eq('organization_id', orgId);
+        }
+      } else {
+        query = query.eq('requested_by', userId);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setStaffRequests(data || []);
+    } catch (err: any) {
+      console.error('Mevzuat talepleri yüklenirken hata:', err.message);
+    }
+  };
+
+  const handleParseText = () => {
+    if (!pasteText.trim()) return;
+    const parsed = parseLegislationText(pasteText);
+    setLegArticles(parsed);
+    setPasteText('');
+    setParsingTextMode(false);
+    alert(`✅ Metin başarıyla ayrıştırıldı! ${parsed.length} madde bulundu. Lütfen aşağıdaki listeden inceleyin.`);
+  };
+
+  const handleParsePdf = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setParsingPdf(true);
+    try {
+      const text = await extractTextFromPdf(file);
+      const parsed = parseLegislationText(text);
+      setLegArticles(parsed);
+      alert(`✅ PDF başarıyla ayrıştırıldı! ${parsed.length} madde bulundu. Lütfen aşağıdaki listeden inceleyin.`);
+    } catch (err: any) {
+      alert('PDF ayrıştırılamadı: ' + err.message);
+    } finally {
+      setParsingPdf(false);
+    }
+  };
+
+  const handleSaveLegislation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!legTitle.trim()) return alert('Lütfen mevzuat başlığını girin.');
+    if (legArticles.length === 0) {
+      if (!window.confirm('Bu mevzuatta hiç madde bulunmuyor. Yine de kaydetmek istiyor musunuz?')) return;
+    }
+
+    setSavingLegislation(true);
+    try {
+      // Create new regulation
+      const { data: newReg, error: regErr } = await supabase
+        .from('pdf_regulations')
+        .insert({
+          title: legTitle.trim(),
+          category: legCategory,
+          publication_date: legPubDate || null,
+          effective_date: legEffDate || null,
+          rg_no: legRgNo || null,
+          rg_date: legRgDate || null,
+          company_id: orgId, // Associate with consultant company!
+          created_by: userId
+        })
+        .select()
+        .single();
+      if (regErr) throw regErr;
+
+      // Insert articles
+      if (legArticles.length > 0) {
+        const artsToInsert = legArticles.map(a => ({
+          regulation_id: newReg.id,
+          article_no: a.article_no,
+          title: a.title,
+          content: a.content,
+          order_index: a.order_index
+        }));
+        const { error: artsErr } = await supabase
+          .from('pdf_articles')
+          .insert(artsToInsert);
+        if (artsErr) throw artsErr;
+      }
+
+      // Automatically assign to company pool (company_pdf_regulations)
+      const { error: poolErr } = await supabase
+        .from('company_pdf_regulations')
+        .insert({
+          company_id: orgId,
+          regulation_id: newReg.id
+        });
+      if (poolErr) throw poolErr;
+
+      alert('✅ Özel mevzuat başarıyla havuzunuza eklendi!');
+      setShowAddCustomLegModal(false);
+      // Reset fields
+      setLegTitle('');
+      setLegCategory('Yönetmelik');
+      setLegPubDate('');
+      setLegEffDate('');
+      setLegRgNo('');
+      setLegRgDate('');
+      setLegArticles([]);
+      setPasteText('');
+      setParsingTextMode(false);
+      
+      // Refresh pool
+      fetchConsultantLegislations();
+    } catch (err: any) {
+      alert('Kaydedilirken hata oluştu: ' + err.message);
+    } finally {
+      setSavingLegislation(false);
+    }
+  };
+
+  const handleImportGlobalRegulation = async (regulationId: string) => {
+    setImportingLegId(regulationId);
+    try {
+      const { error } = await supabase
+        .from('company_pdf_regulations')
+        .insert({
+          company_id: orgId,
+          regulation_id: regulationId
+        });
+      if (error) throw error;
+      alert('Mevzuat başarıyla firmanızın havuzuna eklendi!');
+      await fetchConsultantLegislations();
+    } catch (err: any) {
+      alert('Mevzuat eklenirken hata: ' + err.message);
+    } finally {
+      setImportingLegId(null);
+    }
+  };
+
+  const handleRemoveRegulationFromCompany = async (regulationId: string) => {
+    if (!window.confirm('Bu mevzuatı firmanızın havuzundan çıkarmak istediğinize emin misiniz?')) return;
+    try {
+      const { error } = await supabase
+        .from('company_pdf_regulations')
+        .delete()
+        .eq('company_id', orgId)
+        .eq('regulation_id', regulationId);
+      if (error) throw error;
+      alert('Mevzuat firmanızın havuzundan çıkarıldı.');
+      await fetchConsultantLegislations();
+    } catch (err: any) {
+      alert('Mevzuat çıkarılırken hata: ' + err.message);
+    }
+  };
+
+  const handleAssignRegulationToClient = async () => {
+    if (!selectedClientIdForLeg || !assigningGlobalLeg) return;
+    try {
+      // Check if already assigned
+      const { data: existing, error: checkErr } = await supabase
+        .from('client_regulations')
+        .select('id')
+        .eq('client_id', selectedClientIdForLeg)
+        .eq('parent_regulation_id', assigningGlobalLeg.id)
+        .maybeSingle();
+
+      if (checkErr) throw checkErr;
+      if (existing) {
+        return alert('Bu yönetmelik bu firmaya zaten atanmış!');
+      }
+
+      const { data: cr, error: err1 } = await supabase
+        .from('client_regulations')
+        .insert({
+          client_id: selectedClientIdForLeg,
+          parent_regulation_id: assigningGlobalLeg.id,
+          title: assigningGlobalLeg.title,
+          description: `${assigningGlobalLeg.title} - Müşteri firmaya tanımlandı.`,
+          created_by: userId
+        })
+        .select()
+        .single();
+      if (err1) throw err1;
+
+      const { data: parentArticles, error: err2 } = await supabase
+        .from('pdf_articles')
+        .select('*')
+        .eq('regulation_id', assigningGlobalLeg.id);
+      
+      if (!err2 && parentArticles && parentArticles.length > 0) {
+        const articlesToInsert = parentArticles.map(art => ({
+          client_regulation_id: cr.id,
+          parent_article_id: art.id,
+          article_no: art.article_no,
+          title: art.title,
+          content: art.content,
+          is_mandatory: true,
+          order_index: art.order_index
+        }));
+
+        const { error: err3 } = await supabase
+          .from('client_regulation_articles')
+          .insert(articlesToInsert);
+        if (err3) throw err3;
+      }
+
+      if (selectedStaffIdForLeg) {
+        const { data: existingAssign } = await supabase
+          .from('consultant_assignments')
+          .select('id')
+          .eq('client_id', selectedClientIdForLeg)
+          .eq('user_id', selectedStaffIdForLeg)
+          .maybeSingle();
+
+        if (!existingAssign) {
+          await supabase
+             .from('consultant_assignments')
+             .insert({
+               client_id: selectedClientIdForLeg,
+               user_id: selectedStaffIdForLeg
+             });
+        }
+      }
+
+      alert('Mevzuat işletmeye başarıyla atandı ve maddeler kopyalandı!');
+      setShowAssignClientLegModal(false);
+      setAssigningGlobalLeg(null);
+      setSelectedClientIdForLeg('');
+      setSelectedStaffIdForLeg('');
+      fetchConsultantLegislations();
+    } catch (err: any) {
+      alert('Atama yapılırken hata: ' + err.message);
+    }
+  };
+
+  const fetchClientRegulationArticles = async (cr: any) => {
+    setSelectedClientRegulation(cr);
+    setLoadingLegArticles(true);
+    try {
+      const { data, error } = await supabase
+        .from('client_regulation_articles')
+        .select('*, updater:profiles!last_updated_by(full_name)')
+        .eq('client_regulation_id', cr.id)
+        .order('order_index', { ascending: true });
+      if (error) throw error;
+      setSelectedClientRegulationArticles(data || []);
+    } catch (err: any) {
+      console.error('Maddeler yüklenemedi:', err.message);
+    } finally {
+      setLoadingLegArticles(false);
+    }
+  };
+
+  const handleToggleArticleMandatory = async (articleId: string, currentStatus: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('client_regulation_articles')
+        .update({ is_mandatory: !currentStatus, last_updated_by: userId })
+        .eq('id', articleId);
+      if (error) throw error;
+      
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Madde güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleUpdateArticleCompliance = async (articleId: string, status: 'compliant' | 'non_compliant') => {
+    try {
+      const { error } = await supabase
+        .from('client_regulation_articles')
+        .update({ compliance_status: status, last_updated_by: userId })
+        .eq('id', articleId);
+      if (error) throw error;
+      
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Madde uyum durumu güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleSaveArticleNotes = async (articleId: string) => {
+    try {
+      const { error } = await supabase
+        .from('client_regulation_articles')
+        .update({
+          current_status_notes: tempNotesVal.trim() || null,
+          current_status_requested: false,
+          last_updated_by: userId
+        })
+        .eq('id', articleId);
+      if (error) throw error;
+      
+      setEditingNotesArtId(null);
+      setTempNotesVal('');
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Mevcut durum notu kaydedilirken hata: ' + err.message);
+    }
+  };
+
+  const handleRequestArticleNotes = async (articleId: string) => {
+    try {
+      const { error } = await supabase
+        .from('client_regulation_articles')
+        .update({ current_status_requested: true })
+        .eq('id', articleId);
+      if (error) throw error;
+      
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+      alert('Mevcut durum notu girişi talep edildi.');
+    } catch (err: any) {
+      alert('Talep iletilirken hata: ' + err.message);
+    }
+  };
+
+  const handleRemoveClientRegulation = async (crId: string, title: string) => {
+    if (!window.confirm(`"${title}" mevzuatını bu işletmeden kaldırmak istiyor musunuz? İşletmeye ait tüm madde uyum kayıtları silinecektir.`)) return;
+    try {
+      const { error } = await supabase
+        .from('client_regulations')
+        .delete()
+        .eq('id', crId);
+      if (error) throw error;
+      alert('Mevzuat işletmeden kaldırıldı.');
+      fetchConsultantLegislations();
+      if (selectedClientRegulation?.id === crId) {
+        setSelectedClientRegulation(null);
+        setSelectedClientRegulationArticles([]);
+      }
+    } catch (err: any) {
+      alert('Kaldırılırken hata: ' + err.message);
+    }
+  };
+
+  const handleSubmitLegislationRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!requestTitle.trim() || !requestDescription.trim()) return alert('Lütfen başlık ve açıklama alanlarını doldurun.');
+
+    try {
+      setSubmittingRequest(true);
+      const isOwner = userRole === 'premium_corporate';
+      const reqType = isOwner ? 'owner_to_admin' : 'staff_to_owner';
+
+      const { error } = await supabase
+        .from('regulation_requests')
+        .insert({
+          title: requestTitle.trim(),
+          description: requestDescription.trim(),
+          requested_by: userId,
+          client_id: selectedReqClientId || null,
+          organization_id: orgId,
+          target_regulation_id: selectedReqRegulationId || null,
+          request_type: reqType,
+          status: 'pending'
+        });
+
+      if (error) throw error;
+      alert('Talebiniz başarıyla iletildi!');
+      setShowAddRequestModal(false);
+      setRequestTitle('');
+      setRequestDescription('');
+      setSelectedReqClientId('');
+      setSelectedReqRegulationId('');
+      fetchConsultantRequests();
+    } catch (err: any) {
+      alert('Talep gönderilirken hata: ' + err.message);
+    } finally {
+      setSubmittingRequest(false);
+    }
+  };
+
+  const handleEscalateRequestToAdmin = async (req: any) => {
+    try {
+      const { error } = await supabase
+        .from('regulation_requests')
+        .insert({
+          title: `[YÖNLENDİRİLDİ] ${req.title}`,
+          description: `Personel ${req.requester?.full_name || 'Çalışan'} tarafından iletilen talep:\n${req.description}`,
+          requested_by: userId,
+          organization_id: orgId,
+          target_regulation_id: req.target_regulation_id || null,
+          request_type: 'owner_to_admin',
+          status: 'pending'
+        });
+      if (error) throw error;
+      
+      await supabase
+        .from('regulation_requests')
+        .update({ status: 'approved', admin_notes: 'Talep Sistem Adminine iletildi.' })
+        .eq('id', req.id);
+
+      alert('Talep Sistem Yöneticisine (Admin) başarıyla iletildi!');
+      fetchConsultantRequests();
+    } catch (err: any) {
+      alert('İletilirken hata: ' + err.message);
+    }
+  };
+
   const fetchClients = async (oId: string, role: string, uId: string, perms?: any) => {
     let query = supabase.from('consultant_clients').select('*');
     
@@ -1004,6 +1679,16 @@ export default function ConsultantPanel() {
             <SettingsIcon size={16} /> Tanımlamalar
           </button>
         )}
+        <button
+          onClick={() => setActiveTab('legislations')}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'legislations'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Scale size={16} /> Mevzuatlar
+        </button>
       </div>
 
       {activeTab === 'clients' && (
@@ -1729,6 +2414,661 @@ export default function ConsultantPanel() {
         </div>
       )}
 
+      {/* LEGISLATIONS TAB */}
+      {activeTab === 'legislations' && (
+        <div className="animate-fadeIn space-y-6">
+          <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <div>
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Scale className="text-teal-600" /> Mevzuat Yönetimi
+              </h2>
+              <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
+                Yönetmelik ve kanunları inceleyin, hizmet verdiğiniz işletmelere atama yapın ve maddeleri özelleştirin.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setSelectedReqClientId('');
+                setSelectedReqRegulationId('');
+                setRequestTitle('');
+                setRequestDescription('');
+                setShowAddRequestModal(true);
+              }}
+              className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition"
+            >
+              <PlusCircle size={16} /> {userRole === 'premium_corporate' ? 'Admin\'den Mevzuat Talep Et' : 'Yeni Mevzuat Talep Et'}
+            </button>
+          </div>
+
+          {/* Alt Sekmeler Menüsü */}
+          <div className="flex flex-wrap border-b border-gray-200 dark:border-slate-700 gap-2 bg-white dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-slate-700">
+            <button
+              onClick={() => setLegSubTab('pool')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                legSubTab === 'pool'
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <BookOpen size={14} /> Mevzuat Havuzu (Sistem & Firma)
+            </button>
+            <button
+              onClick={() => setLegSubTab('assignments')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                legSubTab === 'assignments'
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <Building size={14} /> İşletme Atamaları
+            </button>
+            <button
+              onClick={() => setLegSubTab('requests')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                legSubTab === 'requests'
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <Bell size={14} /> Mevzuat Talepleri
+            </button>
+          </div>
+
+          <div className="animate-fadeIn">
+            {/* 1. SEKME: MEVZUAT HAVUZU */}
+            {legSubTab === 'pool' && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Sistem Mevzuat Havuzu */}
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+                  <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
+                    <BookOpen size={18} className="text-blue-600" />
+                    Sistem Mevzuat Havuzu (Admin Yüklemeleri)
+                  </h3>
+                  
+                  <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
+                    {allGlobalRegulations.length === 0 ? (
+                      <p className="text-center py-6 text-xs text-gray-400 italic">
+                        Sistem havuzunda henüz mevzuat bulunmuyor.
+                      </p>
+                    ) : (
+                      allGlobalRegulations.map(leg => {
+                        const isImported = assignedGlobalLegislations.some(al => al.id === leg.id);
+                        return (
+                          <div key={leg.id} className="py-3.5 flex justify-between items-center gap-2">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase border border-blue-100 dark:border-blue-900">
+                                  {leg.category}
+                                </span>
+                                <span className="font-bold text-sm text-gray-800 dark:text-gray-250">{leg.title}</span>
+                              </div>
+                              <div className="text-[10px] text-gray-400 mt-1">
+                                {leg.rg_no && <span className="mr-2">RG No: <b>{leg.rg_no}</b></span>}
+                                {leg.rg_date && <span>RG Tarihi: <b>{new Date(leg.rg_date).toLocaleDateString()}</b></span>}
+                              </div>
+                            </div>
+                            <div>
+                              {isImported ? (
+                                <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-bold bg-green-50 dark:bg-green-950/20 px-2.5 py-1.5 rounded-lg border border-green-200 dark:border-green-900">
+                                  <Check size={14} /> Havuzumuzda
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => handleImportGlobalRegulation(leg.id)}
+                                  disabled={importingLegId === leg.id}
+                                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow disabled:opacity-50 whitespace-nowrap"
+                                >
+                                  {importingLegId === leg.id ? 'Ekleniyor...' : 'Firmamıza Ekle'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* Firma Mevzuat Havuzu */}
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+                  <div className="flex justify-between items-center border-b pb-2 border-gray-100 dark:border-slate-700">
+                    <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
+                      <BookOpen size={18} className="text-teal-600" />
+                      Firma Mevzuat Havuzu (Bizim Havuzumuz)
+                    </h3>
+                    {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                      <button
+                        onClick={() => {
+                          setLegTitle('');
+                          setLegCategory('Yönetmelik');
+                          setLegPubDate('');
+                          setLegEffDate('');
+                          setLegRgNo('');
+                          setLegRgDate('');
+                          setLegArticles([]);
+                          setPasteText('');
+                          setParsingTextMode(false);
+                          setShowAddCustomLegModal(true);
+                        }}
+                        className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 transition shadow-sm"
+                      >
+                        <Plus size={10} /> Özel Mevzuat Ekle
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
+                    {assignedGlobalLegislations.length === 0 ? (
+                      <p className="text-center py-6 text-xs text-gray-400 italic">
+                        Firmanıza tanımlanmış global mevzuat bulunmuyor. Sistem havuzundan ekleme yapabilirsiniz.
+                      </p>
+                    ) : (
+                      assignedGlobalLegislations.map(leg => (
+                        <div key={leg.id} className="py-3.5 flex justify-between items-center gap-2">
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="bg-teal-50 dark:bg-teal-950/20 text-teal-700 dark:text-teal-400 text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase border border-teal-100 dark:border-teal-900">
+                                {leg.category}
+                              </span>
+                              <span className="font-bold text-sm text-gray-800 dark:text-gray-250">{leg.title}</span>
+                            </div>
+                            <div className="text-[10px] text-gray-400 mt-1">
+                              {leg.rg_no && <span className="mr-2">RG No: <b>{leg.rg_no}</b></span>}
+                              {leg.rg_date && <span>RG Tarihi: <b>{new Date(leg.rg_date).toLocaleDateString()}</b></span>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {(userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setAssigningGlobalLeg(leg);
+                                    setSelectedClientIdForLeg('');
+                                    setSelectedStaffIdForLeg('');
+                                    setShowAssignClientLegModal(true);
+                                  }}
+                                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow whitespace-nowrap"
+                                >
+                                  İşletmeye Ata
+                                </button>
+                                <button
+                                  onClick={() => handleRemoveRegulationFromCompany(leg.id)}
+                                  className="bg-red-50 hover:bg-red-100 text-red-650 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400 whitespace-nowrap"
+                                >
+                                  Havuzdan Çıkar
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 2. SEKME: İŞLETME ATAMALARI */}
+            {legSubTab === 'assignments' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn">
+                {/* Sol Taraf: İşletme Mevzuat Listesi */}
+                <div className="lg:col-span-2 space-y-6">
+                  <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+                    <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
+                      <Building size={18} className="text-blue-600" />
+                      İşletmelere Atanan Mevzuatlar
+                    </h3>
+
+                    <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
+                      {clientRegulations.length === 0 ? (
+                        <p className="text-center py-6 text-xs text-gray-400 italic">
+                          Hizmet verdiğiniz işletmelere henüz atanmış bir mevzuat bulunmuyor.
+                        </p>
+                      ) : (
+                        clientRegulations.map(cr => (
+                          <div key={cr.id} className={`py-3.5 flex justify-between items-start gap-4 animate-fadeIn transition-colors p-2 rounded-lg ${selectedClientRegulation?.id === cr.id ? 'bg-teal-50/30 dark:bg-teal-950/10' : ''}`}>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm text-gray-850 dark:text-gray-200">{cr.title}</span>
+                                <span className="bg-teal-50 dark:bg-teal-950/20 text-teal-700 dark:text-teal-400 text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase border border-teal-100 dark:border-teal-900">
+                                  {cr.client?.name || 'Bilinmeyen İşletme'}
+                                </span>
+                              </div>
+                              {cr.description && (
+                                <p className="text-xs text-gray-450 dark:text-gray-500 mt-1">{cr.description}</p>
+                              )}
+                              <div className="text-[10px] text-gray-400 mt-1">
+                                Atanma Tarihi: <b>{new Date(cr.created_at).toLocaleDateString()}</b>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => fetchClientRegulationArticles(cr)}
+                                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition border flex items-center gap-1 ${
+                                  selectedClientRegulation?.id === cr.id
+                                    ? 'bg-teal-650 text-white border-teal-600'
+                                    : 'bg-white dark:bg-slate-900 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:bg-gray-50'
+                                }`}
+                              >
+                                <Eye size={12} /> {selectedClientRegulation?.id === cr.id ? 'Maddeler Açık' : 'Maddeleri İncele'}
+                              </button>
+                              {(userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                                <button
+                                  onClick={() => handleRemoveClientRegulation(cr.id, cr.title)}
+                                  className="bg-red-50 hover:bg-red-100 text-red-650 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400"
+                                >
+                                  Kaldır
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sağ Taraf: Maddeler Listesi */}
+                <div className="col-span-1">
+                  <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+                    <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
+                      <Scale size={18} className="text-teal-600" />
+                      Madde & Bent İstisnaları
+                    </h3>
+
+                    {!selectedClientRegulation ? (
+                      <div className="p-8 text-center text-xs text-gray-400 italic">
+                        Maddeleri görmek ve muafiyet durumlarını yönetmek için sol listeden bir mevzuat seçin.
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
+                          <div className="text-slate-400 uppercase tracking-wide">Seçili Mevzuat:</div>
+                          <div className="font-bold text-slate-800 dark:text-slate-200 text-sm mt-0.5">{selectedClientRegulation.title}</div>
+                          <div className="text-teal-600 font-bold mt-0.5">{selectedClientRegulation.client?.name}</div>
+                        </div>
+
+                        {loadingLegArticles ? (
+                          <div className="flex items-center justify-center p-8">
+                            <Loader className="animate-spin text-teal-600" size={24} />
+                          </div>
+                        ) : (
+                          <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
+                            {selectedClientRegulationArticles.length === 0 ? (
+                              <p className="text-center text-xs text-gray-400 italic py-4">Bu mevzuata ait madde bulunamadı.</p>
+                            ) : (
+                              selectedClientRegulationArticles.map((art) => (
+                                <div key={art.id} className="p-4 rounded-xl border border-gray-150 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/10 space-y-3">
+                                  <div className="flex justify-between items-start gap-2">
+                                    <div>
+                                      <div className="font-bold text-xs text-slate-750 dark:text-slate-200">
+                                        {art.article_no} {art.title ? `- ${art.title}` : ''}
+                                      </div>
+                                      
+                                      {/* Last Updated By Info */}
+                                      {art.updater?.full_name && (
+                                        <div className="text-[10px] text-slate-500 mt-1">
+                                          Son Güncelleyen: <b>{art.updater.full_name}</b>
+                                        </div>
+                                      )}
+
+                                      {/* Requested Status Badge */}
+                                      {art.current_status_requested && (
+                                        <div className="mt-1 text-[9px] font-bold text-amber-600 bg-amber-50 dark:bg-amber-950/20 px-2 py-0.5 rounded border border-amber-200 w-fit">
+                                          ⚠️ Mevcut Durum Notu Girişi Talep Edildi
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    <div className="flex flex-col gap-1.5 items-end">
+                                      <button
+                                        onClick={() => handleToggleArticleMandatory(art.id, art.is_mandatory)}
+                                        className={`px-2 py-0.5 text-[9px] font-extrabold rounded-full border uppercase transition ${
+                                          art.is_mandatory
+                                            ? 'bg-green-50 text-green-700 border-green-250 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
+                                            : 'bg-red-50 text-red-700 border-red-250 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
+                                        }`}
+                                      >
+                                        {art.is_mandatory ? 'Uyum Zorunlu' : 'Muaf'}
+                                      </button>
+                                      {art.is_mandatory && (
+                                        <div className="flex gap-1">
+                                          <button
+                                            onClick={() => handleUpdateArticleCompliance(art.id, 'compliant')}
+                                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition ${
+                                              art.compliance_status !== 'non_compliant'
+                                                ? 'bg-green-650 border-transparent text-white shadow-sm'
+                                                : 'bg-white hover:bg-slate-50 border-slate-200 text-green-650'
+                                            }`}
+                                          >
+                                            Uygun
+                                          </button>
+                                          <button
+                                            onClick={() => handleUpdateArticleCompliance(art.id, 'non_compliant')}
+                                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition ${
+                                              art.compliance_status === 'non_compliant'
+                                                ? 'bg-red-600 border-transparent text-white shadow-sm'
+                                                : 'bg-white hover:bg-slate-50 border-slate-200 text-red-600'
+                                            }`}
+                                          >
+                                            Uygun Değil
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <p className="text-xs text-gray-650 dark:text-gray-400 leading-relaxed whitespace-pre-wrap">{art.content}</p>
+
+                                  {/* Mevcut Durum Notu (Current Status Note) Section */}
+                                  {art.is_mandatory && (
+                                    <div className="pt-2 border-t border-gray-150 dark:border-slate-800 space-y-2">
+                                      {editingNotesArtId === art.id ? (
+                                        <div className="space-y-2">
+                                          <label className="block text-[10px] font-bold text-gray-400 uppercase">Mevcut Durum Girişi</label>
+                                          <textarea
+                                            rows={2}
+                                            value={tempNotesVal}
+                                            onChange={(e) => setTempNotesVal(e.target.value)}
+                                            placeholder="Bu madde için mevcut durumu/açıklamayı yazın..."
+                                            className="w-full p-2 border rounded-lg text-xs bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-slate-755 dark:text-slate-200"
+                                          />
+                                          <div className="flex gap-2 justify-end">
+                                            <button
+                                              onClick={() => handleSaveArticleNotes(art.id)}
+                                              className="bg-green-650 hover:bg-green-750 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition"
+                                            >
+                                              Kaydet
+                                            </button>
+                                            <button
+                                              onClick={() => {
+                                                setEditingNotesArtId(null);
+                                                setTempNotesVal('');
+                                              }}
+                                              className="border hover:bg-gray-50 dark:hover:bg-slate-800 text-[10px] font-bold px-3 py-1.5 rounded-lg transition text-gray-700 dark:text-gray-300"
+                                            >
+                                              İptal
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="flex justify-between items-start gap-4 flex-wrap">
+                                          <div className="flex-1 bg-slate-50 dark:bg-slate-900/60 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
+                                            <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Mevcut Durum</div>
+                                            <p className="text-slate-750 dark:text-slate-350 mt-0.5 whitespace-pre-wrap leading-relaxed">
+                                              {art.current_status_notes || <span className="italic text-gray-400">Durum girilmemiş</span>}
+                                            </p>
+                                          </div>
+                                          <div className="flex gap-2">
+                                            <button
+                                              onClick={() => {
+                                                setEditingNotesArtId(art.id);
+                                                setTempNotesVal(art.current_status_notes || '');
+                                              }}
+                                              className="text-[10px] font-bold text-teal-650 hover:bg-teal-50 dark:hover:bg-teal-950/20 border border-teal-200 px-2.5 py-1 rounded transition"
+                                            >
+                                              Düzenle
+                                            </button>
+                                            {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && !art.current_status_requested && (
+                                              <button
+                                                onClick={() => handleRequestArticleNotes(art.id)}
+                                                className="text-[10px] font-bold text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20 border border-amber-250 px-2.5 py-1 rounded transition"
+                                              >
+                                                Mevcut Durum Talep Et
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 3. SEKME: MEVZUAT TALEPLERİ */}
+            {legSubTab === 'requests' && (
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4 animate-fadeIn">
+                <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
+                  <Bell size={18} className="text-teal-600" />
+                  Mevzuat & Güncelleme Talepleri
+                </h3>
+
+                <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
+                  {staffRequests.length === 0 ? (
+                    <p className="text-center py-8 text-xs text-gray-400 italic">
+                      Henüz iletilmiş bir mevzuat talebi bulunmuyor.
+                    </p>
+                  ) : (
+                    staffRequests.map((req) => (
+                      <div key={req.id} className="py-4 flex justify-between items-start gap-4 animate-fadeIn">
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm text-gray-850 dark:text-gray-200">{req.title}</span>
+                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border ${
+                              req.status === 'pending'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+                                : req.status === 'approved'
+                                ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
+                                : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
+                            }`}>
+                              {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                            </span>
+                            <span className="text-[10px] text-gray-450 dark:text-gray-500 bg-gray-50 dark:bg-slate-900/50 px-2 py-0.5 rounded border border-gray-150 dark:border-slate-750">
+                              {req.request_type === 'owner_to_admin' ? 'Admin Talebi' : 'Firma İçi Talep'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-600 dark:text-gray-400">{req.description}</p>
+                          <div className="text-[10px] text-gray-400 dark:text-gray-500 flex items-center gap-3 pt-1">
+                            <span>Talep Eden: <b>{req.requester?.full_name || 'Bilinmeyen'} ({req.requester?.email})</b></span>
+                            {req.client?.name && <span>İşletme: <b>{req.client.name}</b></span>}
+                            {req.target_regulation?.title && <span>İlgili Mevzuat: <b>{req.target_regulation.title}</b></span>}
+                            <span>Tarih: <b>{new Date(req.created_at).toLocaleDateString()}</b></span>
+                          </div>
+                          {req.admin_notes && (
+                            <div className="text-xs bg-slate-50 dark:bg-slate-900/40 p-2.5 rounded-lg border border-slate-150 dark:border-slate-750 text-slate-750 dark:text-slate-300 mt-2">
+                              <b>Not:</b> {req.admin_notes}
+                            </div>
+                          )}
+                        </div>
+                        {req.status === 'pending' && userRole === 'premium_corporate' && req.request_type === 'staff_to_owner' && (
+                          <button
+                            onClick={() => handleEscalateRequestToAdmin(req)}
+                            className="bg-teal-650 hover:bg-teal-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <PlusCircle size={12} /> Admin'e Yönlendir
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* --- YENİ: MEVZUAT FİRMA/İŞLETME ATAMA MODALI --- */}
+      {showAssignClientLegModal && assigningGlobalLeg && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-fadeIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <Building size={18} className="text-blue-600" />
+                Müşteri Firmaya Mevzuat Ata
+              </h3>
+              <button 
+                onClick={() => setShowAssignClientLegModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
+                <div className="text-slate-400 uppercase tracking-wide">Atanacak Mevzuat:</div>
+                <div className="font-bold text-slate-850 dark:text-slate-200 text-sm mt-0.5">{assigningGlobalLeg.title}</div>
+                <div className="text-teal-600 font-bold mt-0.5 uppercase">{assigningGlobalLeg.category}</div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Hedef İşletme Seçin</label>
+                <select
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={selectedClientIdForLeg}
+                  onChange={(e) => setSelectedClientIdForLeg(e.target.value)}
+                >
+                  <option value="">-- Müşteri Seçin --</option>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Sorumlu Personel Seçin (Opsiyonel)</label>
+                <select
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={selectedStaffIdForLeg}
+                  onChange={(e) => setSelectedStaffIdForLeg(e.target.value)}
+                >
+                  <option value="">-- Personel Seçin --</option>
+                  {teamMembers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.full_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-100 dark:border-slate-700">
+                <button
+                  onClick={handleAssignRegulationToClient}
+                  disabled={!selectedClientIdForLeg}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-blue-100 disabled:shadow-none"
+                >
+                  Atamayı Kaydet
+                </button>
+                <button
+                  onClick={() => setShowAssignClientLegModal(false)}
+                  className="flex-1 border border-slate-200 py-2.5 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+                >
+                  İptal
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- YENİ: MEVZUAT TALEP ETME MODALI --- */}
+      {showAddRequestModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-fadeIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <PlusCircle size={18} className="text-teal-600" />
+                Mevzuat Talebi Oluştur
+              </h3>
+              <button 
+                onClick={() => setShowAddRequestModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitLegislationRequest} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Hangi İşletme İçin? (Opsiyonel)</label>
+                <select
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-medium text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={selectedReqClientId}
+                  onChange={(e) => setSelectedReqClientId(e.target.value)}
+                >
+                  <option value="">-- İşletme Seçin --</option>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Hangi Mevzuat Güncellenecek? (Opsiyonel)</label>
+                <select
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-medium text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={selectedReqRegulationId}
+                  onChange={(e) => setSelectedReqRegulationId(e.target.value)}
+                >
+                  <option value="">-- Mevzuat Seçin --</option>
+                  {assignedGlobalLegislations.map((leg) => (
+                    <option key={leg.id} value={leg.id}>
+                      {leg.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Talep Başlığı *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Yeni Atık Yönetimi Yönetmeliği"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={requestTitle}
+                  onChange={(e) => setRequestTitle(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Detaylar *</label>
+                <textarea
+                  required
+                  rows={4}
+                  placeholder="Lütfen talebinizin detaylarını veya mevzuatın linkini buraya yazın..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-xs text-slate-700 dark:text-slate-300 font-medium resize-none"
+                  value={requestDescription}
+                  onChange={(e) => setRequestDescription(e.target.value)}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-100 dark:border-slate-700">
+                <button
+                  type="submit"
+                  disabled={submittingRequest}
+                  className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-teal-100 disabled:shadow-none"
+                >
+                  {submittingRequest ? <Loader size={16} className="animate-spin" /> : <PlusCircle size={16} />}
+                  Talebi Gönder
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddRequestModal(false)}
+                  className="flex-1 border border-slate-200 py-2.5 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+                >
+                  İptal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Assign Personnel Modal */}
       {showAssignModal && selectedClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -1962,6 +3302,185 @@ export default function ConsultantPanel() {
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium"
                 >
                   Kaydet
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* --- YENİ: ÖZEL MEVZUAT EKLEME MODALİ --- */}
+      {showAddCustomLegModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-4xl p-6 border border-slate-100 dark:border-slate-700 animate-fadeIn flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <BookOpen size={18} className="text-teal-600" />
+                Yeni Özel Mevzuat & Yönetmelik Ekle
+              </h3>
+              <button 
+                onClick={() => setShowAddCustomLegModal(false)}
+                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full text-slate-400 hover:text-slate-650 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveLegislation} className="overflow-y-auto space-y-6 pr-2 flex-1">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Mevzuat / Yönetmelik Başlığı *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Örn: BCD İşletmesi Özel İSG Prosedürü"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={legTitle}
+                    onChange={(e) => setLegTitle(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Kategori</label>
+                  <select
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={legCategory}
+                    onChange={(e) => setLegCategory(e.target.value)}
+                  >
+                    <option value="Yönetmelik">Yönetmelik</option>
+                    <option value="Kanun">Kanun</option>
+                    <option value="Yönerge">Yönerge</option>
+                    <option value="Diğer">Diğer</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Yayın Tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={legPubDate}
+                    onChange={(e) => setLegPubDate(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Yürürlük Tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={legEffDate}
+                    onChange={(e) => setLegEffDate(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">RG No</label>
+                  <input
+                    type="text"
+                    placeholder="Örn: RG-12345"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={legRgNo}
+                    onChange={(e) => setLegRgNo(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">RG Tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-sm font-semibold text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={legRgDate}
+                    onChange={(e) => setLegRgDate(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Maddeleri Ayrıştırma Bölümü */}
+              <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl border border-slate-150 dark:border-slate-750 space-y-4">
+                <div className="flex justify-between items-center flex-wrap gap-2">
+                  <div>
+                    <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <PlusCircle size={16} className="text-teal-650" />
+                      Maddeleri Otomatik Ayrıştır
+                    </h4>
+                    <p className="text-[10px] text-slate-450 dark:text-slate-500">
+                      Mevzuat metnini yapıştırarak ya da PDF yükleyerek "MADDE X" şeklinde otomatik ayrıştırabilirsiniz.
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setParsingTextMode(!parsingTextMode)}
+                      className="text-[11px] font-bold text-slate-700 hover:bg-slate-100 bg-white border border-slate-200 px-3 py-1.5 rounded-xl transition"
+                    >
+                      {parsingTextMode ? 'Kapat' : 'Metin Yapıştır'}
+                    </button>
+                    <label className="text-[11px] font-bold text-white hover:bg-teal-700 bg-teal-600 px-3 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1">
+                      <Upload size={12} />
+                      {parsingPdf ? 'PDF Ayrıştırılıyor...' : 'PDF Yükle'}
+                      <input
+                        type="file"
+                        accept=".pdf"
+                        disabled={parsingPdf}
+                        onChange={handleParsePdf}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {parsingTextMode && (
+                  <div className="space-y-2 animate-fadeIn">
+                    <textarea
+                      rows={6}
+                      placeholder="Mevzuat metnini buraya yapıştırın (Örn: MADDE 1 - Bu yönetmeliğin amacı...)"
+                      className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300 outline-none resize-none font-mono"
+                      value={pasteText}
+                      onChange={(e) => setPasteText(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleParseText}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-xl text-xs transition"
+                    >
+                      Metni Ayrıştır
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Maddeler Listesi Önizleme */}
+              {legArticles.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="font-bold text-xs text-slate-400 uppercase tracking-wider">Ayrıştırılan Maddeler ({legArticles.length} Adet)</h4>
+                  <div className="border border-slate-150 dark:border-slate-750 rounded-2xl divide-y max-h-60 overflow-y-auto bg-slate-50/20">
+                    {legArticles.map((art, idx) => (
+                      <div key={idx} className="p-3.5 space-y-1 bg-white dark:bg-slate-900/10">
+                        <div className="font-bold text-xs text-slate-800 dark:text-slate-200 flex justify-between">
+                          <span>{art.article_no} - {art.title}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">Sıra: {art.order_index}</span>
+                        </div>
+                        <p className="text-xs text-slate-650 dark:text-slate-400 whitespace-pre-wrap leading-relaxed">{art.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Butonlar */}
+              <div className="flex gap-3 pt-3 border-t border-gray-150 dark:border-slate-750">
+                <button
+                  type="submit"
+                  disabled={savingLegislation}
+                  className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-teal-100 disabled:shadow-none text-sm"
+                >
+                  {savingLegislation ? <Loader size={16} className="animate-spin" /> : <Check size={16} />}
+                  Kaydet & Havuza Ekle
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomLegModal(false)}
+                  className="flex-1 border border-slate-200 py-3 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition text-sm"
+                >
+                  İptal
                 </button>
               </div>
             </form>

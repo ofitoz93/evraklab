@@ -26,28 +26,32 @@ async function extractTextWithMarker(file: File): Promise<string | null> {
         const formData = new FormData();
         formData.append('file', file);
 
-        // Marker built-in server genelde bu endpointleri kullanir
-        // Versiyon farklarina gore /convert veya /upload denenebilir
-        const response = await fetch('http://localhost:8001/convert', {
-            method: 'POST',
-            body: formData,
-        });
+        // Vite proxy'si (/marker-api) kullanılarak CORS engeli aşılır.
+        // Farklı sunucu sürümlerine göre sırasıyla /convert, /convert/single ve /marker denenir.
+        const endpoints = [
+            '/marker-api/convert',
+            '/marker-api/convert/single',
+            '/marker-api/marker'
+        ];
 
-        if (!response.ok) {
-            // Alternatif endpoint dene
-            const retryResponse = await fetch('http://localhost:8001/upload', {
-                method: 'POST',
-                body: formData,
-            });
-            if (!retryResponse.ok) return null;
-            const data = await retryResponse.json();
-            return data.markdown || data.text || null;
+        for (const endpoint of endpoints) {
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    const text = data.markdown || data.text || data.content || data.markdown_text;
+                    if (text) return text;
+                }
+            } catch (err) {
+                console.warn(`${endpoint} denemesinde hata oluştu, bir sonrakine geçiliyor:`, err);
+            }
         }
-
-        const data = await response.json();
-        return data.markdown || data.text || null;
+        return null;
     } catch (error) {
-        console.warn('Marker sunucusuna baglanilamadi (localhost:8001). Yerel tarayici kullaniliyor.');
+        console.warn('Marker sunucusuna bağlanılamadı. Yerel tarayıcı (pdf.js) kullanılıyor.');
         return null;
     }
 }
@@ -69,10 +73,35 @@ export async function extractTextFromPdf(file: File): Promise<string> {
     for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items
-            .map((item: any) => item.str)
-            .join(' ');
-        fullText += pageText + '\n';
+        // Reconstruct text lines by grouping items on the same line (approximate coordinate matching)
+        const lineGroups = textContent.items.reduce((acc: any[], item: any) => {
+            if (!item.transform) return acc;
+            const x = item.transform[4];
+            const y = item.transform[5];
+            
+            // Look for a line group with y-coordinate within 3 units tolerance
+            const tolerance = 3;
+            let group = acc.find(g => Math.abs(g.y - y) < tolerance);
+            if (group) {
+                group.items.push({ str: item.str, x });
+            } else {
+                acc.push({ y, items: [{ str: item.str, x }] });
+            }
+            return acc;
+        }, []);
+
+        // Sort lines descending (from top of the page to bottom)
+        lineGroups.sort((a, b) => b.y - a.y);
+
+        // Sort items inside each line ascending (from left to right) and join with space
+        const pageLines = lineGroups.map(group => {
+            return group.items
+                .sort((a: any, b: any) => a.x - b.x)
+                .map((item: any) => item.str)
+                .join(' ');
+        });
+
+        fullText += pageLines.join('\n') + '\n';
     }
     
     return fullText;
