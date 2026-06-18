@@ -211,7 +211,7 @@ interface Report {
 }
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions'>('clients');
 
   // --- MEVZUAT TAKİP BÖLÜMÜ STATE'LERİ ---
   const [assignedGlobalLegislations, setAssignedGlobalLegislations] = useState<any[]>([]);
@@ -219,7 +219,7 @@ export default function ConsultantPanel() {
   const [importingLegId, setImportingLegId] = useState<string | null>(null);
   const [clientRegulations, setClientRegulations] = useState<any[]>([]);
   const [staffRequests, setStaffRequests] = useState<any[]>([]);
-  const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments' | 'requests'>('pool');
+  const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments'>('pool');
   
   const [showAssignClientLegModal, setShowAssignClientLegModal] = useState(false);
   const [assigningGlobalLeg, setAssigningGlobalLeg] = useState<any>(null);
@@ -254,6 +254,66 @@ export default function ConsultantPanel() {
   // Mevcut Durum (Current Status Notes) states
   const [editingNotesArtId, setEditingNotesArtId] = useState<string | null>(null);
   const [tempNotesVal, setTempNotesVal] = useState('');
+
+  // --- AKSİYON TAKİP SİSTEMİ STATE'LERİ ---
+  const [complianceActions, setComplianceActions] = useState<any[]>([]);
+  const [articleActions, setArticleActions] = useState<any[]>([]);
+  const [loadingActions, setLoadingActions] = useState(false);
+  const [selectedClientAction, setSelectedClientAction] = useState<any>(null);
+  
+  const [showCreateActionModal, setShowCreateActionModal] = useState(false);
+  const [showCompleteActionModal, setShowCompleteActionModal] = useState(false);
+  const [showCorrectionModal, setShowCorrectionModal] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [selectedActionDetails, setSelectedActionDetails] = useState<any>(null);
+  
+  const [actionsFilterClient, setActionsFilterClient] = useState('');
+  const [actionsFilterAssignee, setActionsFilterAssignee] = useState('');
+  const [actionsFilterStatus, setActionsFilterStatus] = useState('');
+  
+  // Yeni Aksiyon Oluşturma Formu
+  const [newActionTitle, setNewActionTitle] = useState('');
+  const [newActionDesc, setNewActionDesc] = useState('');
+  const [newActionClientId, setNewActionClientId] = useState('');
+  const [newActionAssigneeId, setNewActionAssigneeId] = useState('');
+  const [newActionDueDate, setNewActionDueDate] = useState('');
+  
+  // Aksiyon Tamamlama Formu
+  const [actionNotes, setActionNotes] = useState('');
+  const [actionEvidenceFile, setActionEvidenceFile] = useState<File | null>(null);
+  const [uploadingEvidence, setUploadingEvidence] = useState(false);
+  
+  // Aksiyon Düzeltme Formu
+  const [correctionComment, setCorrectionComment] = useState('');
+  const [correctionDueDate, setCorrectionDueDate] = useState('');
+
+  // Zorunlu Açıklama Modalı (Compliance Status Explanation Modal)
+  const [showComplianceNoteModal, setShowComplianceNoteModal] = useState(false);
+  const [complianceExpiryDate, setComplianceExpiryDate] = useState('');
+  const [isComplianceExpiryless, setIsComplianceExpiryless] = useState(true);
+  const [complianceNoteData, setComplianceNoteData] = useState<{
+    articleId: string;
+    type: 'compliant' | 'non_compliant' | 'exempt';
+    articleNo: string;
+    title: string;
+    currentNotes?: string;
+    currentMandatoryState?: boolean;
+  } | null>(null);
+  const [complianceNoteValue, setComplianceNoteValue] = useState('');
+  const [savingComplianceNote, setSavingComplianceNote] = useState(false);
+  const [articleFilter, setArticleFilter] = useState<string>('all');
+  const [userDocuments, setUserDocuments] = useState<any[]>([]);
+  const [selectedEvidenceDocUrl, setSelectedEvidenceDocUrl] = useState<string>('');
+  const [evidenceMode, setEvidenceMode] = useState<'upload' | 'select'>('upload');
+  const [legFilterClientId, setLegFilterClientId] = useState<string>('');
+
+  // Mevzuat Maddesinden Aksiyon Açma Formu
+  const [showRequestNotesModal, setShowRequestNotesModal] = useState(false);
+  const [reqNotesArticleId, setReqNotesArticleId] = useState('');
+  const [reqNotesClientId, setReqNotesClientId] = useState('');
+  const [reqNotesAssigneeId, setReqNotesAssigneeId] = useState('');
+  const [reqNotesDueDate, setReqNotesDueDate] = useState('');
+  const [reqNotesDesc, setReqNotesDesc] = useState('');
 
   const [clients, setClients] = useState<Client[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -321,9 +381,10 @@ export default function ConsultantPanel() {
     if (activeTab === 'definitions' && orgId) {
       fetchDefinitionsTab();
     }
-    if (activeTab === 'legislations' && orgId) {
+    if ((activeTab === 'legislations' || activeTab === 'actions' || activeTab === 'requests') && orgId) {
       fetchConsultantLegislations();
       fetchConsultantRequests();
+      fetchComplianceActions();
     }
   }, [activeTab, orgId]);
 
@@ -858,6 +919,41 @@ export default function ConsultantPanel() {
     }
   };
 
+  const getStatusStyles = (art: any) => {
+    if (!art.is_mandatory) {
+      return 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/50 opacity-70';
+    }
+    if (art.compliance_status === 'compliant') {
+      return 'border-emerald-250 dark:border-emerald-800 bg-emerald-50/10 dark:bg-emerald-950/5';
+    }
+    if (art.compliance_status === 'non_compliant') {
+      return 'border-rose-250 dark:border-rose-800 bg-rose-50/10 dark:bg-rose-950/5';
+    }
+    return 'border-amber-250 dark:border-amber-800 bg-amber-50/10 dark:bg-amber-950/5';
+  };
+
+  const fetchUserDocuments = async (uid: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('documents')
+        .select('id, title, file_url')
+        .eq('uploader_id', uid)
+        .eq('is_archived', false)
+        .order('created_at', { ascending: false });
+      if (!error && data) {
+        setUserDocuments(data);
+      }
+    } catch (err) {
+      console.error('Error fetching user documents:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (userId) {
+      fetchUserDocuments(userId);
+    }
+  }, [userId]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -1214,6 +1310,18 @@ export default function ConsultantPanel() {
         .order('order_index', { ascending: true });
       if (error) throw error;
       setSelectedClientRegulationArticles(data || []);
+
+      // Fetch compliance actions linked to articles for this client
+      const { data: acts, error: errActs } = await supabase
+        .from('compliance_actions')
+        .select('*, assignee:profiles!assigned_to(full_name)')
+        .eq('client_id', cr.client_id)
+        .not('article_id', 'is', null);
+      if (!errActs && acts) {
+        setArticleActions(acts);
+      } else {
+        setArticleActions([]);
+      }
     } catch (err: any) {
       console.error('Maddeler yüklenemedi:', err.message);
     } finally {
@@ -1222,34 +1330,105 @@ export default function ConsultantPanel() {
   };
 
   const handleToggleArticleMandatory = async (articleId: string, currentStatus: boolean) => {
-    try {
-      const { error } = await supabase
-        .from('client_regulation_articles')
-        .update({ is_mandatory: !currentStatus, last_updated_by: userId })
-        .eq('id', articleId);
-      if (error) throw error;
-      
-      if (selectedClientRegulation) {
-        await fetchClientRegulationArticles(selectedClientRegulation);
+    const art = selectedClientRegulationArticles.find(a => a.id === articleId);
+    if (!art) return;
+    
+    if (currentStatus) {
+      // Toggling to false (Hariç Tut / Muaf) -> Prompt for note
+      setComplianceNoteData({
+        articleId: art.id,
+        type: 'exempt',
+        articleNo: art.article_no,
+        title: art.title || '',
+        currentNotes: art.current_status_notes || '',
+        currentExpiryDate: art.expiry_date || '',
+        currentMandatoryState: true
+      });
+      setComplianceNoteValue(art.current_status_notes || '');
+      setComplianceExpiryDate(art.expiry_date || '');
+      setIsComplianceExpiryless(!art.expiry_date);
+      setShowComplianceNoteModal(true);
+    } else {
+      // Toggling to true (Aktif Yap) -> Directly update without modal
+      try {
+        const { error } = await supabase
+          .from('client_regulation_articles')
+          .update({ is_mandatory: true, compliance_status: null, last_updated_by: userId })
+          .eq('id', articleId);
+        if (error) throw error;
+        
+        if (selectedClientRegulation) {
+          await fetchClientRegulationArticles(selectedClientRegulation);
+        }
+      } catch (err: any) {
+        alert('Madde güncellenirken hata: ' + err.message);
       }
-    } catch (err: any) {
-      alert('Madde güncellenirken hata: ' + err.message);
     }
   };
 
   const handleUpdateArticleCompliance = async (articleId: string, status: 'compliant' | 'non_compliant') => {
+    const art = selectedClientRegulationArticles.find(a => a.id === articleId);
+    if (!art) return;
+    
+    setComplianceNoteData({
+      articleId: art.id,
+      type: status,
+      articleNo: art.article_no,
+      title: art.title || '',
+      currentNotes: art.current_status_notes || '',
+      currentExpiryDate: art.expiry_date || ''
+    });
+    setComplianceNoteValue(art.current_status_notes || '');
+    setComplianceExpiryDate(art.expiry_date || '');
+    setIsComplianceExpiryless(!art.expiry_date);
+    setShowComplianceNoteModal(true);
+  };
+
+  const handleSaveComplianceNote = async () => {
+    if (!complianceNoteData) return;
+    if (!complianceNoteValue.trim()) {
+      alert('Açıklama alanı zorunludur!');
+      return;
+    }
+    
+    setSavingComplianceNote(true);
     try {
+      const { articleId, type } = complianceNoteData;
+      let updateData: any = {
+        current_status_notes: complianceNoteValue.trim(),
+        last_updated_by: userId,
+        expiry_date: isComplianceExpiryless ? null : (complianceExpiryDate || null)
+      };
+      
+      if (type === 'compliant' || type === 'non_compliant') {
+        updateData.compliance_status = type;
+        updateData.is_mandatory = true;
+      } else if (type === 'exempt') {
+        updateData.is_mandatory = false;
+        updateData.compliance_status = null;
+        updateData.expiry_date = null;
+      }
+      
       const { error } = await supabase
         .from('client_regulation_articles')
-        .update({ compliance_status: status, last_updated_by: userId })
+        .update(updateData)
         .eq('id', articleId);
+        
       if (error) throw error;
+      
+      setShowComplianceNoteModal(false);
+      setComplianceNoteData(null);
+      setComplianceNoteValue('');
+      setComplianceExpiryDate('');
+      setIsComplianceExpiryless(true);
       
       if (selectedClientRegulation) {
         await fetchClientRegulationArticles(selectedClientRegulation);
       }
     } catch (err: any) {
-      alert('Madde uyum durumu güncellenirken hata: ' + err.message);
+      alert('Güncelleme yapılırken hata: ' + err.message);
+    } finally {
+      setSavingComplianceNote(false);
     }
   };
 
@@ -1275,20 +1454,345 @@ export default function ConsultantPanel() {
     }
   };
 
-  const handleRequestArticleNotes = async (articleId: string) => {
+  const handleRequestArticleNotes = async (art: any) => {
+    setReqNotesArticleId(art.id);
+    setReqNotesClientId(selectedClientRegulation?.client_id || '');
+    
+    // Auto-select assignee from client assignments
+    try {
+      const { data: assignments } = await supabase
+        .from('consultant_assignments')
+        .select('user_id')
+        .eq('client_id', selectedClientRegulation?.client_id);
+      
+      if (userRole === 'corporate_staff') {
+        setReqNotesAssigneeId(userId);
+      } else if (assignments && assignments.length > 0) {
+        setReqNotesAssigneeId(assignments[0].user_id);
+      } else {
+        setReqNotesAssigneeId('');
+      }
+    } catch (err) {
+      console.error('Error fetching assignments:', err);
+      if (userRole === 'corporate_staff') {
+        setReqNotesAssigneeId(userId);
+      }
+    }
+    
+    setReqNotesDueDate('');
+    setReqNotesDesc('');
+    setNewActionTitle(`${art.article_no} Mevcut Durum Talebi`);
+    setShowRequestNotesModal(true);
+  };
+
+  const handleOpenActionForArticle = async (art: any) => {
+    setNewActionTitle(`[${art.article_no}] Aksiyon`);
+    setNewActionDesc(`Bu madde için aksiyon tamamlanması gerekmektedir.\nİlgili Madde: ${art.article_no} - ${art.title || ''}`);
+    setNewActionClientId(selectedClientRegulation?.client_id || '');
+    setReqNotesArticleId(art.id); // Also associate this action with the article ID if saved through the normal form
+    
+    // Auto-select assignee from client assignments
+    try {
+      const { data: assignments } = await supabase
+        .from('consultant_assignments')
+        .select('user_id')
+        .eq('client_id', selectedClientRegulation?.client_id);
+      
+      if (userRole === 'corporate_staff') {
+        setNewActionAssigneeId(userId);
+      } else if (assignments && assignments.length > 0) {
+        setNewActionAssigneeId(assignments[0].user_id);
+      } else {
+        setNewActionAssigneeId('');
+      }
+    } catch (err) {
+      console.error('Error fetching assignments:', err);
+      if (userRole === 'corporate_staff') {
+        setNewActionAssigneeId(userId);
+      }
+    }
+    
+    setNewActionDueDate('');
+    setShowCreateActionModal(true);
+  };
+
+  const fetchComplianceActions = async () => {
+    if (!orgId) return;
+    setLoadingActions(true);
+    try {
+      let query = supabase
+        .from('compliance_actions')
+        .select('*, client:consultant_clients(name), assignee:profiles!assigned_to(full_name), creator:profiles!created_by(full_name)');
+      
+      const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
+      
+      if (isRestrictedRole && !currentUserPerms?.can_view_all_clients) {
+        // Query assignments to filter by client
+        const { data: assignments } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', userId);
+        const cIds = assignments?.map((a) => a.client_id) || [];
+        
+        if (cIds.length > 0) {
+          query = query.or(`assigned_to.eq.${userId},client_id.in.(${cIds.join(',')})`);
+        } else {
+          query = query.eq('assigned_to', userId);
+        }
+      } else {
+        // For managers, fetch actions where client is in their organization clients
+        const { data: clientsData } = await supabase
+          .from('consultant_clients')
+          .select('id')
+          .eq('consultant_company_id', orgId);
+        const oClientIds = clientsData?.map((c) => c.id) || [];
+        if (oClientIds.length > 0) {
+          query = query.in('client_id', oClientIds);
+        } else {
+          setComplianceActions([]);
+          setLoadingActions(false);
+          return;
+        }
+      }
+      
+      const { data, error } = await query.order('created_at', { ascending: false });
+      if (error) throw error;
+      setComplianceActions(data || []);
+    } catch (err: any) {
+      console.error('Aksiyonlar yüklenirken hata:', err.message);
+    } finally {
+      setLoadingActions(false);
+    }
+  };
+
+  const handleCreateAction = async (isArticleAction = false, articleId: string | null = null, clientId: string | null = null) => {
+    const title = isArticleAction ? `${newActionTitle}` : newActionTitle.trim();
+    const desc = isArticleAction ? reqNotesDesc.trim() : newActionDesc.trim();
+    const cId = isArticleAction ? clientId : newActionClientId;
+    const aId = isArticleAction ? reqNotesAssigneeId : newActionAssigneeId;
+    const dDate = isArticleAction ? reqNotesDueDate : newActionDueDate;
+    
+    if (!title || !cId || !aId || !dDate) {
+      alert('Lütfen tüm zorunlu alanları doldurun.');
+      return;
+    }
+    
     try {
       const { error } = await supabase
-        .from('client_regulation_articles')
-        .update({ current_status_requested: true })
-        .eq('id', articleId);
+        .from('compliance_actions')
+        .insert({
+          client_id: cId,
+          article_id: articleId || reqNotesArticleId || null,
+          title: title,
+          description: desc || null,
+          due_date: dDate,
+          created_by: userId,
+          assigned_to: aId,
+          status: 'pending'
+        });
+        
       if (error) throw error;
       
+      alert('Aksiyon başarıyla oluşturuldu.');
+      setShowCreateActionModal(false);
+      setShowRequestNotesModal(false);
+      
+      setNewActionTitle('');
+      setNewActionDesc('');
+      setNewActionClientId('');
+      setNewActionAssigneeId('');
+      setNewActionDueDate('');
+      setReqNotesArticleId('');
+      setReqNotesClientId('');
+      setReqNotesAssigneeId('');
+      setReqNotesDueDate('');
+      setReqNotesDesc('');
+      
+      await fetchComplianceActions();
+      
+      if (isArticleAction && selectedClientRegulation) {
+        if (articleId) {
+          await supabase
+            .from('client_regulation_articles')
+            .update({ current_status_requested: true })
+            .eq('id', articleId);
+        }
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Aksiyon oluşturulurken hata: ' + err.message);
+    }
+  };
+
+  const handleUploadEvidence = async (file: File): Promise<string> => {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `evidence_${Math.random()}.${fileExt}`;
+    const filePath = `evidence/${fileName}`;
+    
+    const { error: uploadError } = await supabase.storage
+      .from('client_assets')
+      .upload(filePath, file);
+      
+    if (uploadError) throw uploadError;
+    
+    const { data } = supabase.storage
+      .from('client_assets')
+      .getPublicUrl(filePath);
+      
+    return data.publicUrl;
+  };
+
+  const handleCompleteAction = async (actionId: string, notesVal: string, file: File | null, articleId: string | null = null, selectedDocUrl: string | null = null) => {
+    if (!notesVal.trim()) {
+      alert('Lütfen açıklama/mevcut durum notu yazın.');
+      return;
+    }
+    
+    setUploadingEvidence(true);
+    try {
+      let evidenceUrl = selectedDocUrl || null;
+      if (file) {
+        evidenceUrl = await handleUploadEvidence(file);
+      }
+      
+      const updates: any = {
+        notes: notesVal.trim(),
+        status: 'completed',
+        updated_at: new Date().toISOString()
+      };
+      
+      if (evidenceUrl) {
+        updates.evidence_url = evidenceUrl;
+      }
+      
+      const { error } = await supabase
+        .from('compliance_actions')
+        .update(updates)
+        .eq('id', actionId);
+        
+      if (error) throw error;
+      
+      if (articleId) {
+        await supabase
+          .from('client_regulation_articles')
+          .update({
+            current_status_notes: notesVal.trim(),
+            last_updated_by: userId
+          })
+          .eq('id', articleId);
+      }
+      
+      alert('Aksiyon tamamlandı ve şef/yönetici onayına gönderildi!');
+      setShowCompleteActionModal(false);
+      setActionNotes('');
+      setActionEvidenceFile(null);
+      setSelectedClientAction(null);
+      
+      await fetchComplianceActions();
       if (selectedClientRegulation) {
         await fetchClientRegulationArticles(selectedClientRegulation);
       }
-      alert('Mevcut durum notu girişi talep edildi.');
     } catch (err: any) {
-      alert('Talep iletilirken hata: ' + err.message);
+      alert('Aksiyon tamamlanırken hata: ' + err.message);
+    } finally {
+      setUploadingEvidence(false);
+    }
+  };
+
+  const handleApproveAction = async (action: any) => {
+    if (!window.confirm('Bu aksiyonu ve personelin girdiği mevcut durumu onaylamak istiyor musunuz?')) return;
+    
+    try {
+      const { error } = await supabase
+        .from('compliance_actions')
+        .update({
+          status: 'approved',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', action.id);
+        
+      if (error) throw error;
+      
+      if (action.article_id) {
+        await supabase
+          .from('client_regulation_articles')
+          .update({
+            current_status_requested: false,
+            current_status_notes: action.notes,
+            last_updated_by: action.assigned_to
+          })
+          .eq('id', action.article_id);
+      }
+      
+      alert('Aksiyon başarıyla onaylandı!');
+      await fetchComplianceActions();
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Onaylama işlemi sırasında hata: ' + err.message);
+    }
+  };
+
+  const handleRequestCorrection = async (action: any, comment: string, newDueDate: string) => {
+    if (!comment.trim() || !newDueDate) {
+      alert('Lütfen düzeltme gerekçesini ve yeni son teslim tarihini girin.');
+      return;
+    }
+    
+    try {
+      const { error } = await supabase
+        .from('compliance_actions')
+        .update({
+          status: 'correction_requested',
+          manager_comment: comment.trim(),
+          due_date: newDueDate,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', action.id);
+        
+      if (error) throw error;
+      
+      alert('Düzeltme talebi başarıyla iletildi.');
+      setShowCorrectionModal(false);
+      setCorrectionComment('');
+      setCorrectionDueDate('');
+      setSelectedClientAction(null);
+      
+      await fetchComplianceActions();
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Düzeltme talebi iletilirken hata: ' + err.message);
+    }
+  };
+
+  const handleDeleteAction = async (actionId: string, articleId: string | null = null) => {
+    if (!window.confirm('Bu aksiyonu silmek istediğinize emin misiniz?')) return;
+    
+    try {
+      const { error } = await supabase
+        .from('compliance_actions')
+        .delete()
+        .eq('id', actionId);
+        
+      if (error) throw error;
+      
+      if (articleId) {
+        await supabase
+          .from('client_regulation_articles')
+          .update({ current_status_requested: false })
+          .eq('id', articleId);
+      }
+      
+      alert('Aksiyon silindi.');
+      await fetchComplianceActions();
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Aksiyon silinirken hata: ' + err.message);
     }
   };
 
@@ -1688,6 +2192,26 @@ export default function ConsultantPanel() {
           }`}
         >
           <Scale size={16} /> Mevzuatlar
+        </button>
+        <button
+          onClick={() => setActiveTab('actions')}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'actions'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <CheckCircle size={16} /> Aksiyon Takip
+        </button>
+        <button
+          onClick={() => setActiveTab('requests')}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'requests'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Bell size={16} /> Gönderilen Mevzuat Talepleri
         </button>
       </div>
 
@@ -2462,16 +2986,6 @@ export default function ConsultantPanel() {
             >
               <Building size={14} /> İşletme Atamaları
             </button>
-            <button
-              onClick={() => setLegSubTab('requests')}
-              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
-                legSubTab === 'requests'
-                  ? 'bg-teal-600 text-white shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
-              }`}
-            >
-              <Bell size={14} /> Mevzuat Talepleri
-            </button>
           </div>
 
           <div className="animate-fadeIn">
@@ -2593,7 +3107,7 @@ export default function ConsultantPanel() {
                                 </button>
                                 <button
                                   onClick={() => handleRemoveRegulationFromCompany(leg.id)}
-                                  className="bg-red-50 hover:bg-red-100 text-red-650 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400 whitespace-nowrap"
+                                  className="bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400 whitespace-nowrap"
                                 >
                                   Havuzdan Çıkar
                                 </button>
@@ -2614,18 +3128,38 @@ export default function ConsultantPanel() {
                 {/* Sol Taraf: İşletme Mevzuat Listesi */}
                 <div className="lg:col-span-2 space-y-6">
                   <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
-                    <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
-                      <Building size={18} className="text-blue-600" />
-                      İşletmelere Atanan Mevzuatlar
-                    </h3>
+                    <div className="flex items-center justify-between gap-4 border-b pb-2 border-gray-100 dark:border-slate-700 flex-wrap">
+                      <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
+                        <Building size={18} className="text-blue-600" />
+                        İşletmelere Atanan Mevzuatlar
+                      </h3>
+                      <select
+                        value={legFilterClientId}
+                        onChange={(e) => setLegFilterClientId(e.target.value)}
+                        className="p-1.5 rounded-lg border bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-xs font-semibold text-slate-700 dark:text-slate-350 max-w-[200px]"
+                      >
+                        <option value="">Tüm İşletmeler (Filtrele)</option>
+                        {clients.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
 
                     <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
-                      {clientRegulations.length === 0 ? (
-                        <p className="text-center py-6 text-xs text-gray-400 italic">
-                          Hizmet verdiğiniz işletmelere henüz atanmış bir mevzuat bulunmuyor.
-                        </p>
-                      ) : (
-                        clientRegulations.map(cr => (
+                      {(() => {
+                        const filteredClientRegulations = legFilterClientId
+                          ? clientRegulations.filter(cr => cr.client_id === legFilterClientId)
+                          : clientRegulations;
+
+                        if (filteredClientRegulations.length === 0) {
+                          return (
+                            <p className="text-center py-6 text-xs text-gray-400 italic">
+                              Seçili filtreye veya kriterlere uygun atanan mevzuat bulunamadı.
+                            </p>
+                          );
+                        }
+
+                        return filteredClientRegulations.map(cr => (
                           <div key={cr.id} className={`py-3.5 flex justify-between items-start gap-4 animate-fadeIn transition-colors p-2 rounded-lg ${selectedClientRegulation?.id === cr.id ? 'bg-teal-50/30 dark:bg-teal-950/10' : ''}`}>
                             <div className="flex-1">
                               <div className="flex items-center gap-2 flex-wrap">
@@ -2655,15 +3189,15 @@ export default function ConsultantPanel() {
                               {(userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
                                 <button
                                   onClick={() => handleRemoveClientRegulation(cr.id, cr.title)}
-                                  className="bg-red-50 hover:bg-red-100 text-red-650 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400"
+                                  className="bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400"
                                 >
                                   Kaldır
                                 </button>
                               )}
                             </div>
                           </div>
-                        ))
-                      )}
+                        ));
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -2682,10 +3216,27 @@ export default function ConsultantPanel() {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
-                          <div className="text-slate-400 uppercase tracking-wide">Seçili Mevzuat:</div>
-                          <div className="font-bold text-slate-800 dark:text-slate-200 text-sm mt-0.5">{selectedClientRegulation.title}</div>
-                          <div className="text-teal-600 font-bold mt-0.5">{selectedClientRegulation.client?.name}</div>
+                        <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750 flex flex-col gap-2">
+                          <div>
+                            <div className="text-slate-400 uppercase tracking-wide">Seçili Mevzuat:</div>
+                            <div className="font-bold text-slate-800 dark:text-slate-200 text-sm mt-0.5">{selectedClientRegulation.title}</div>
+                            <div className="text-teal-600 font-bold mt-0.5">{selectedClientRegulation.client?.name}</div>
+                          </div>
+                          <div className="pt-2 border-t border-slate-200/20 dark:border-slate-700 flex items-center justify-between">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase">Madde Filtresi:</label>
+                            <select
+                              value={articleFilter}
+                              onChange={(e) => setArticleFilter(e.target.value)}
+                              className="p-1 rounded-lg border bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-[10px] font-bold text-slate-700 dark:text-slate-350"
+                            >
+                              <option value="all">Tüm Maddeler</option>
+                              <option value="missing_notes">Mevcut Durumu Eksik</option>
+                              <option value="requested">Talep Edilenler</option>
+                              <option value="compliant">Uyum: Uygun</option>
+                              <option value="non_compliant">Uyum: Uygun Değil</option>
+                              <option value="exempt">Uyum: Hariç Tutulanlar</option>
+                            </select>
+                          </div>
                         </div>
 
                         {loadingLegArticles ? (
@@ -2694,11 +3245,39 @@ export default function ConsultantPanel() {
                           </div>
                         ) : (
                           <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
-                            {selectedClientRegulationArticles.length === 0 ? (
-                              <p className="text-center text-xs text-gray-400 italic py-4">Bu mevzuata ait madde bulunamadı.</p>
-                            ) : (
-                              selectedClientRegulationArticles.map((art) => (
-                                <div key={art.id} className="p-4 rounded-xl border border-gray-150 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/10 space-y-3">
+                            {(() => {
+                              const filtered = selectedClientRegulationArticles.filter((art) => {
+                                if (articleFilter === 'missing_notes') {
+                                  return !art.current_status_notes || !art.current_status_notes.trim();
+                                }
+                                if (articleFilter === 'requested') {
+                                  return art.current_status_requested === true;
+                                }
+                                if (articleFilter === 'compliant') {
+                                  return art.is_mandatory && art.compliance_status === 'compliant';
+                                }
+                                if (articleFilter === 'non_compliant') {
+                                  return art.is_mandatory && art.compliance_status === 'non_compliant';
+                                }
+                                if (articleFilter === 'exempt') {
+                                  return !art.is_mandatory;
+                                }
+                                return true;
+                              });
+
+                              if (filtered.length === 0) {
+                                return (
+                                  <p className="text-center text-xs text-gray-400 italic py-6">
+                                    Filtreye uygun madde bulunamadı.
+                                  </p>
+                                );
+                              }
+
+                              return filtered.map((art) => (
+                                <div
+                                  key={art.id}
+                                  className={`p-4 rounded-xl border transition shadow-sm bg-white ${getStatusStyles(art)}`}
+                                >
                                   <div className="flex justify-between items-start gap-2">
                                     <div>
                                       <div className="font-bold text-xs text-slate-750 dark:text-slate-200">
@@ -2712,6 +3291,13 @@ export default function ConsultantPanel() {
                                         </div>
                                       )}
 
+                                      {/* Validity Date Info */}
+                                      {art.is_mandatory && (
+                                        <div className="text-[10px] text-slate-500 mt-1">
+                                          Geçerlilik Süresi: <span className="font-extrabold text-teal-600 dark:text-teal-400">{art.expiry_date ? new Date(art.expiry_date).toLocaleDateString('tr-TR') : 'Süresiz'}</span>
+                                        </div>
+                                      )}
+
                                       {/* Requested Status Badge */}
                                       {art.current_status_requested && (
                                         <div className="mt-1 text-[9px] font-bold text-amber-600 bg-amber-50 dark:bg-amber-950/20 px-2 py-0.5 rounded border border-amber-200 w-fit">
@@ -2720,111 +3306,328 @@ export default function ConsultantPanel() {
                                       )}
                                     </div>
 
-                                    <div className="flex flex-col gap-1.5 items-end">
-                                      <button
-                                        onClick={() => handleToggleArticleMandatory(art.id, art.is_mandatory)}
-                                        className={`px-2 py-0.5 text-[9px] font-extrabold rounded-full border uppercase transition ${
-                                          art.is_mandatory
-                                            ? 'bg-green-50 text-green-700 border-green-250 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
-                                            : 'bg-red-50 text-red-700 border-red-250 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
-                                        }`}
-                                      >
-                                        {art.is_mandatory ? 'Uyum Zorunlu' : 'Muaf'}
-                                      </button>
-                                      {art.is_mandatory && (
-                                        <div className="flex gap-1">
+                                    <div className="flex flex-row sm:flex-col gap-2 shrink-0 items-center sm:items-end w-full sm:w-auto justify-end">
+                                      {art.is_mandatory ? (
+                                        <div className="flex items-center gap-1.5">
                                           <button
                                             onClick={() => handleUpdateArticleCompliance(art.id, 'compliant')}
-                                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition ${
-                                              art.compliance_status !== 'non_compliant'
-                                                ? 'bg-green-650 border-transparent text-white shadow-sm'
-                                                : 'bg-white hover:bg-slate-50 border-slate-200 text-green-650'
+                                            className={`text-[10px] font-bold px-3 py-1.5 rounded-xl border flex items-center gap-1.5 transition-all duration-200 shadow-sm ${
+                                              art.compliance_status === 'compliant'
+                                                ? 'bg-emerald-600 border-transparent text-white shadow-emerald-600/10'
+                                                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50/20 hover:border-emerald-200'
                                             }`}
                                           >
+                                            <CheckCircle size={12} />
                                             Uygun
                                           </button>
                                           <button
                                             onClick={() => handleUpdateArticleCompliance(art.id, 'non_compliant')}
-                                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded border transition ${
+                                            className={`text-[10px] font-bold px-3 py-1.5 rounded-xl border flex items-center gap-1.5 transition-all duration-200 shadow-sm ${
                                               art.compliance_status === 'non_compliant'
-                                                ? 'bg-red-600 border-transparent text-white shadow-sm'
-                                                : 'bg-white hover:bg-slate-50 border-slate-200 text-red-600'
+                                                ? 'bg-rose-600 border-transparent text-white shadow-rose-600/10'
+                                                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400 hover:text-rose-600 hover:bg-rose-50/20 hover:border-rose-200'
                                             }`}
                                           >
+                                            <AlertCircle size={12} />
                                             Uygun Değil
+                                          </button>
+                                          <button
+                                            onClick={() => handleToggleArticleMandatory(art.id, art.is_mandatory)}
+                                            className="text-[10px] font-bold px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 hover:text-purple-600 hover:bg-purple-50/30 hover:border-purple-200 transition-all duration-200"
+                                          >
+                                            Hariç Tut
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-250/50 dark:border-slate-800">
+                                          <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold px-2 py-0.5 rounded-lg">Hariç Tutuldu (Muaf)</span>
+                                          <button
+                                            onClick={() => handleToggleArticleMandatory(art.id, art.is_mandatory)}
+                                            className="bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-extrabold px-3 py-1.5 rounded-xl transition-all duration-200 flex items-center gap-1 shadow-sm shadow-purple-600/20"
+                                          >
+                                            <Plus size={12} />
+                                            Aktif Yap
                                           </button>
                                         </div>
                                       )}
                                     </div>
                                   </div>
 
-                                  <p className="text-xs text-gray-650 dark:text-gray-400 leading-relaxed whitespace-pre-wrap">{art.content}</p>
+                                  <p className="text-xs text-slate-600 dark:text-slate-350 leading-relaxed whitespace-pre-wrap">{art.content}</p>
 
                                   {/* Mevcut Durum Notu (Current Status Note) Section */}
-                                  {art.is_mandatory && (
-                                    <div className="pt-2 border-t border-gray-150 dark:border-slate-800 space-y-2">
-                                      {editingNotesArtId === art.id ? (
-                                        <div className="space-y-2">
-                                          <label className="block text-[10px] font-bold text-gray-400 uppercase">Mevcut Durum Girişi</label>
-                                          <textarea
-                                            rows={2}
-                                            value={tempNotesVal}
-                                            onChange={(e) => setTempNotesVal(e.target.value)}
-                                            placeholder="Bu madde için mevcut durumu/açıklamayı yazın..."
-                                            className="w-full p-2 border rounded-lg text-xs bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-slate-755 dark:text-slate-200"
-                                          />
-                                          <div className="flex gap-2 justify-end">
-                                            <button
-                                              onClick={() => handleSaveArticleNotes(art.id)}
-                                              className="bg-green-650 hover:bg-green-750 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition"
-                                            >
-                                              Kaydet
-                                            </button>
-                                            <button
-                                              onClick={() => {
-                                                setEditingNotesArtId(null);
-                                                setTempNotesVal('');
-                                              }}
-                                              className="border hover:bg-gray-50 dark:hover:bg-slate-800 text-[10px] font-bold px-3 py-1.5 rounded-lg transition text-gray-700 dark:text-gray-300"
-                                            >
-                                              İptal
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div className="flex justify-between items-start gap-4 flex-wrap">
-                                          <div className="flex-1 bg-slate-50 dark:bg-slate-900/60 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
-                                            <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Mevcut Durum</div>
-                                            <p className="text-slate-750 dark:text-slate-350 mt-0.5 whitespace-pre-wrap leading-relaxed">
-                                              {art.current_status_notes || <span className="italic text-gray-400">Durum girilmemiş</span>}
-                                            </p>
-                                          </div>
-                                          <div className="flex gap-2">
-                                            <button
-                                              onClick={() => {
-                                                setEditingNotesArtId(art.id);
-                                                setTempNotesVal(art.current_status_notes || '');
-                                              }}
-                                              className="text-[10px] font-bold text-teal-650 hover:bg-teal-50 dark:hover:bg-teal-950/20 border border-teal-200 px-2.5 py-1 rounded transition"
-                                            >
-                                              Düzenle
-                                            </button>
-                                            {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && !art.current_status_requested && (
+                                  {art.is_mandatory && (() => {
+                                    const artAction = articleActions.find((a: any) => a.article_id === art.id);
+                                    
+                                    if (artAction) {
+                                      const isAssignee = artAction.assigned_to === userId;
+                                      const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+                                      
+                                      return (
+                                        <div className="pt-2.5 border-t border-gray-150 dark:border-slate-800 space-y-3">
+                                          {/* Action Status Badge */}
+                                          <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                                                artAction.status === 'pending'
+                                                  ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400'
+                                                  : artAction.status === 'completed'
+                                                  ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400'
+                                                  : artAction.status === 'correction_requested'
+                                                  ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400'
+                                                  : 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400'
+                                              }`}>
+                                                {artAction.status === 'pending' && 'Aksiyon Bekliyor'}
+                                                {artAction.status === 'completed' && 'Onay Bekliyor'}
+                                                {artAction.status === 'correction_requested' && 'Düzeltme İstendi'}
+                                                {artAction.status === 'approved' && 'Onaylandı'}
+                                              </span>
+                                              <span className="text-[10px] text-gray-500 font-medium">
+                                                Son Tarih: <b>{new Date(artAction.due_date).toLocaleDateString('tr-TR')}</b>
+                                              </span>
+                                            </div>
+                                            {isManager && (
                                               <button
-                                                onClick={() => handleRequestArticleNotes(art.id)}
-                                                className="text-[10px] font-bold text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20 border border-amber-250 px-2.5 py-1 rounded transition"
+                                                onClick={() => handleDeleteAction(artAction.id, art.id)}
+                                                className="text-[10px] text-red-500 hover:text-red-700 font-bold"
+                                                title="Talebi İptal Et"
                                               >
-                                                Mevcut Durum Talep Et
+                                                Talebi İptal Et
                                               </button>
                                             )}
                                           </div>
+
+                                          {/* Correction Comment */}
+                                          {artAction.status === 'correction_requested' && artAction.manager_comment && (
+                                            <div className="bg-rose-50/50 dark:bg-rose-950/10 p-2 rounded-lg border border-rose-100 dark:border-rose-900/30 text-xs text-rose-800 dark:text-rose-350">
+                                              <div className="font-bold text-[9px] uppercase tracking-wide mb-0.5">Düzeltme Gerekçesi</div>
+                                              <p className="italic">{artAction.manager_comment}</p>
+                                            </div>
+                                          )}
+
+                                          {/* Action Notes Editor for Assignee */}
+                                          {(artAction.status === 'pending' || artAction.status === 'correction_requested') && editingNotesArtId === art.id ? (
+                                            <div className="space-y-2.5">
+                                              <div>
+                                                <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Mevcut Durum Açıklaması</label>
+                                                <textarea
+                                                  rows={3}
+                                                  value={tempNotesVal}
+                                                  onChange={(e) => setTempNotesVal(e.target.value)}
+                                                  placeholder="Bu madde için mevcut durumu/açıklamayı buraya yazın..."
+                                                  className="w-full p-2 border rounded-lg text-xs bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-slate-755 dark:text-slate-200"
+                                                />
+                                              </div>
+                                              <div>
+                                                <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Kanıt Belgesi</label>
+                                                  <div className="flex border-b border-gray-200 dark:border-slate-700 mb-2 text-[10px]">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setEvidenceMode('upload')}
+                                                      className={`py-1 px-2 font-semibold transition border-b-2 ${evidenceMode === 'upload' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-450'}`}
+                                                    >
+                                                      Dosya Yükle
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        setEvidenceMode('select');
+                                                        if (userId) fetchUserDocuments(userId);
+                                                      }}
+                                                      className={`py-1 px-2 font-semibold transition border-b-2 ${evidenceMode === 'select' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-450'}`}
+                                                    >
+                                                      Evraklarımdan Seç
+                                                    </button>
+                                                  </div>
+
+                                                  {evidenceMode === 'upload' ? (
+                                                    <input
+                                                      type="file"
+                                                      onChange={(e) => setActionEvidenceFile(e.target.files?.[0] || null)}
+                                                      className="w-full text-xs text-slate-500 file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100"
+                                                    />
+                                                  ) : (
+                                                    <select
+                                                      className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-bold text-xs text-slate-700 dark:text-slate-350 border-slate-200"
+                                                      value={selectedEvidenceDocUrl}
+                                                      onChange={(e) => setSelectedEvidenceDocUrl(e.target.value)}
+                                                    >
+                                                      <option value="">-- Evrak Seçin --</option>
+                                                      {userDocuments.map(d => (
+                                                        <option key={d.id} value={d.file_url}>{d.title}</option>
+                                                      ))}
+                                                    </select>
+                                                  )}
+                                                </div>
+                                              <div className="flex gap-2 justify-end pt-1">
+                                                <button
+                                                    onClick={() => handleCompleteAction(artAction.id, tempNotesVal, evidenceMode === 'upload' ? actionEvidenceFile : null, art.id, evidenceMode === 'select' ? selectedEvidenceDocUrl : null)}
+                                                  disabled={uploadingEvidence}
+                                                  className="bg-green-600 hover:bg-green-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+                                                >
+                                                  {uploadingEvidence ? 'Yükleniyor...' : 'Tamamla ve Gönder'}
+                                                </button>
+                                                <button
+                                                  onClick={() => {
+                                                    setEditingNotesArtId(null);
+                                                    setTempNotesVal('');
+                                                    setActionEvidenceFile(null);
+                                                  }}
+                                                  className="border hover:bg-gray-50 dark:hover:bg-slate-800 text-[10px] font-bold px-3 py-1.5 rounded-lg transition text-gray-700 dark:text-gray-300"
+                                                >
+                                                  İptal
+                                                </button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="space-y-2">
+                                              {/* Action Notes Display */}
+                                              {(artAction.status === 'completed' || artAction.status === 'approved' || artAction.notes) && (
+                                                <div className="bg-slate-50 dark:bg-slate-900/60 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
+                                                  <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Girilen Mevcut Durum</div>
+                                                  <p className="text-slate-750 dark:text-slate-350 mt-0.5 whitespace-pre-wrap leading-relaxed">
+                                                    {artAction.notes || <span className="italic text-gray-400">Açıklama yazılmamış</span>}
+                                                  </p>
+                                                  
+                                                  {artAction.evidence_url && (
+                                                    <div className="mt-2 pt-2 border-t border-slate-200/50 dark:border-slate-800 flex items-center justify-between">
+                                                      <span className="text-[10px] text-slate-400">Yüklenen Belge:</span>
+                                                      <a
+                                                        href={artAction.evidence_url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-[10px] text-teal-600 dark:text-teal-400 hover:underline font-bold"
+                                                      >
+                                                        Belgeyi Yeni Sekmede Aç ↗
+                                                      </a>
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              )}
+
+                                              {/* Action Controls */}
+                                              <div className="flex justify-end gap-2">
+                                                {(artAction.status === 'pending' || artAction.status === 'correction_requested') && isAssignee && (
+                                                  <button
+                                                    onClick={() => {
+                                                      setEditingNotesArtId(art.id);
+                                                      setTempNotesVal(artAction.notes || '');
+                                                    }}
+                                                    className="text-[10px] font-bold text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-950/20 border border-teal-200 px-3 py-1 rounded transition"
+                                                  >
+                                                    {artAction.status === 'correction_requested' ? 'Düzeltme Yap' : 'Mevcut Durum Gir'}
+                                                  </button>
+                                                )}
+
+                                                {(() => {
+                                                   const isCreator = artAction.created_by === userId;
+                                                   return artAction.status === 'completed' && (isManager || isCreator) && (
+                                                     <>
+                                                       <button
+                                                         onClick={() => handleApproveAction(artAction)}
+                                                         className="text-[10px] font-bold bg-green-600 text-white hover:bg-green-700 px-3 py-1 rounded transition shadow-sm"
+                                                       >
+                                                         Onayla
+                                                       </button>
+                                                       <button
+                                                         onClick={() => {
+                                                           setSelectedClientAction(artAction);
+                                                           setCorrectionDueDate(artAction.due_date || '');
+                                                           setCorrectionComment('');
+                                                           setShowCorrectionModal(true);
+                                                         }}
+                                                         className="text-[10px] font-bold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 border border-rose-200 px-3 py-1 rounded transition"
+                                                       >
+                                                         Düzeltme İstenecek
+                                                       </button>
+                                                     </>
+                                                   );
+                                                 })()}
+                                              </div>
+                                            </div>
+                                          )}
                                         </div>
-                                      )}
-                                    </div>
-                                  )}
+                                      );
+                                    } else {
+                                      // No action exists
+                                      const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+                                      
+                                      return (
+                                        <div className="pt-2 border-t border-gray-150 dark:border-slate-800 space-y-2">
+                                          {editingNotesArtId === art.id ? (
+                                            <div className="space-y-2">
+                                              <label className="block text-[10px] font-bold text-gray-400 uppercase">Mevcut Durum Girişi</label>
+                                              <textarea
+                                                rows={2}
+                                                value={tempNotesVal}
+                                                onChange={(e) => setTempNotesVal(e.target.value)}
+                                                placeholder="Bu madde için mevcut durumu/açıklamayı yazın..."
+                                                className="w-full p-2 border rounded-lg text-xs bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-slate-755 dark:text-slate-200"
+                                              />
+                                              <div className="flex gap-2 justify-end">
+                                                <button
+                                                  onClick={() => handleSaveArticleNotes(art.id)}
+                                                  className="bg-green-600 hover:bg-green-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition"
+                                                >
+                                                  Kaydet
+                                                </button>
+                                                <button
+                                                  onClick={() => {
+                                                    setEditingNotesArtId(null);
+                                                    setTempNotesVal('');
+                                                  }}
+                                                  className="border hover:bg-gray-50 dark:hover:bg-slate-800 text-[10px] font-bold px-3 py-1.5 rounded-lg transition text-gray-700 dark:text-gray-300"
+                                                >
+                                                  İptal
+                                                </button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="flex justify-between items-start gap-4 flex-wrap">
+                                              <div className="flex-1 bg-slate-50 dark:bg-slate-900/60 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
+                                                <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Mevcut Durum</div>
+                                                <p className="text-slate-750 dark:text-slate-350 mt-0.5 whitespace-pre-wrap leading-relaxed">
+                                                  {art.current_status_notes || <span className="italic text-gray-400">Durum girilmemiş</span>}
+                                                </p>
+                                              </div>
+                                              <div className="flex gap-2">
+                                                <button
+                                                  onClick={() => {
+                                                    setEditingNotesArtId(art.id);
+                                                    setTempNotesVal(art.current_status_notes || '');
+                                                  }}
+                                                  className="text-[10px] font-bold text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-950/20 border border-teal-200 px-2.5 py-1 rounded transition"
+                                                >
+                                                  Düzenle
+                                                </button>
+                                                {isManager && (
+                                                  <>
+                                                    <button
+                                                      onClick={() => handleRequestArticleNotes(art)}
+                                                      className="text-[10px] font-bold text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20 border border-amber-250 px-2.5 py-1 rounded transition"
+                                                      title="Mevcut Durum veya Evrak Talep Et"
+                                                    >
+                                                      Evrak Talep Et
+                                                    </button>
+                                                    <button
+                                                      onClick={() => handleOpenActionForArticle(art)}
+                                                      className="text-[10px] font-bold text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/20 border border-blue-200 px-2.5 py-1 rounded transition"
+                                                      title="Bu madde özelinde aksiyon aç"
+                                                    >
+                                                      Aksiyon Aç
+                                                    </button>
+                                                  </>
+                                                )}
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    }
+                                  })()}
                                 </div>
-                              ))
-                            )}
+                              ));
+                            })()}
                           </div>
                         )}
                       </div>
@@ -2834,65 +3637,874 @@ export default function ConsultantPanel() {
               </div>
             )}
 
-            {/* 3. SEKME: MEVZUAT TALEPLERİ */}
-            {legSubTab === 'requests' && (
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4 animate-fadeIn">
-                <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
-                  <Bell size={18} className="text-teal-600" />
-                  Mevzuat & Güncelleme Talepleri
-                </h3>
+          </div>
+        </div>
+      )}
 
-                <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
-                  {staffRequests.length === 0 ? (
-                    <p className="text-center py-8 text-xs text-gray-400 italic">
-                      Henüz iletilmiş bir mevzuat talebi bulunmuyor.
-                    </p>
-                  ) : (
-                    staffRequests.map((req) => (
-                      <div key={req.id} className="py-4 flex justify-between items-start gap-4 animate-fadeIn">
-                        <div className="flex-1 space-y-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-sm text-gray-850 dark:text-gray-200">{req.title}</span>
-                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border ${
-                              req.status === 'pending'
-                                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
-                                : req.status === 'approved'
-                                ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
-                                : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
-                            }`}>
-                              {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
-                            </span>
-                            <span className="text-[10px] text-gray-450 dark:text-gray-500 bg-gray-50 dark:bg-slate-900/50 px-2 py-0.5 rounded border border-gray-150 dark:border-slate-750">
-                              {req.request_type === 'owner_to_admin' ? 'Admin Talebi' : 'Firma İçi Talep'}
-                            </span>
-                          </div>
-                          <p className="text-xs text-gray-600 dark:text-gray-400">{req.description}</p>
-                          <div className="text-[10px] text-gray-400 dark:text-gray-500 flex items-center gap-3 pt-1">
-                            <span>Talep Eden: <b>{req.requester?.full_name || 'Bilinmeyen'} ({req.requester?.email})</b></span>
-                            {req.client?.name && <span>İşletme: <b>{req.client.name}</b></span>}
-                            {req.target_regulation?.title && <span>İlgili Mevzuat: <b>{req.target_regulation.title}</b></span>}
-                            <span>Tarih: <b>{new Date(req.created_at).toLocaleDateString()}</b></span>
-                          </div>
-                          {req.admin_notes && (
-                            <div className="text-xs bg-slate-50 dark:bg-slate-900/40 p-2.5 rounded-lg border border-slate-150 dark:border-slate-750 text-slate-750 dark:text-slate-300 mt-2">
-                              <b>Not:</b> {req.admin_notes}
-                            </div>
-                          )}
+      {/* GÖNDERİLEN MEVZUAT TALEPLERİ */}
+      {activeTab === 'requests' && (
+        <div className="space-y-6 animate-fadeIn">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <div>
+              <h2 className="text-xl font-bold flex items-center gap-2 text-gray-800 dark:text-white">
+                <Bell className="text-teal-600" size={24} /> Gönderilen Mevzuat Talepleri
+              </h2>
+              <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
+                Admin'den veya firma içinden talep edilen mevzuat ve güncelleme taleplerini buradan inceleyebilirsiniz.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setSelectedReqClientId('');
+                setSelectedReqRegulationId('');
+                setRequestTitle('');
+                setRequestDescription('');
+                setShowAddRequestModal(true);
+              }}
+              className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition whitespace-nowrap"
+            >
+              <PlusCircle size={16} /> {userRole === 'premium_corporate' ? 'Admin\'den Mevzuat Talape Et' : 'Yeni Mevzuat Talep Et'}
+            </button>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+            <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[600px] overflow-y-auto pr-1">
+              {staffRequests.length === 0 ? (
+                <p className="text-center py-8 text-xs text-gray-400 italic">
+                  Henüz iletilmiş bir mevzuat talebi bulunmuyor.
+                </p>
+              ) : (
+                staffRequests.map((req) => (
+                  <div key={req.id} className="py-4 flex justify-between items-start gap-4 animate-fadeIn">
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-sm text-gray-850 dark:text-gray-200">{req.title}</span>
+                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border ${
+                          req.status === 'pending'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+                            : req.status === 'approved'
+                            ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
+                            : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
+                        }`}>
+                          {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                        </span>
+                        <span className="text-[10px] text-gray-450 dark:text-gray-500 bg-gray-50 dark:bg-slate-900/50 px-2 py-0.5 rounded border border-gray-150 dark:border-slate-750">
+                          {req.request_type === 'owner_to_admin' ? 'Admin Talebi' : 'Firma İçi Talep'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 dark:text-gray-400">{req.description}</p>
+                      <div className="text-[10px] text-gray-400 dark:text-gray-500 flex items-center gap-3 pt-1">
+                        <span>Talep Eden: <b>{req.requester?.full_name || 'Bilinmeyen'} ({req.requester?.email})</b></span>
+                        {req.client?.name && <span>İşletme: <b>{req.client.name}</b></span>}
+                        {req.target_regulation?.title && <span>İlgili Mevzuat: <b>{req.target_regulation.title}</b></span>}
+                        <span>Tarih: <b>{new Date(req.created_at).toLocaleDateString()}</b></span>
+                      </div>
+                      {req.admin_notes && (
+                        <div className="text-xs bg-slate-50 dark:bg-slate-900/40 p-2.5 rounded-lg border border-slate-150 dark:border-slate-750 text-slate-750 dark:text-slate-300 mt-2">
+                          <b>Not:</b> {req.admin_notes}
                         </div>
-                        {req.status === 'pending' && userRole === 'premium_corporate' && req.request_type === 'staff_to_owner' && (
-                          <button
-                            onClick={() => handleEscalateRequestToAdmin(req)}
-                            className="bg-teal-650 hover:bg-teal-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1.5 whitespace-nowrap"
-                          >
-                            <PlusCircle size={12} /> Admin'e Yönlendir
-                          </button>
+                      )}
+                    </div>
+                    {req.status === 'pending' && userRole === 'premium_corporate' && req.request_type === 'staff_to_owner' && (
+                      <button
+                        onClick={() => handleEscalateRequestToAdmin(req)}
+                        className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <PlusCircle size={12} /> Admin'e Yönlendir
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. SEKME: AKSİYON TAKİP SİSTEMİ */}
+      {activeTab === 'actions' && (
+        <div className="space-y-6 animate-fadeIn">
+          {/* Header & New Action Button */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <div>
+              <h2 className="text-xl font-black text-gray-800 dark:text-white flex items-center gap-2">
+                <CheckCircle className="text-teal-600" size={24} /> Aksiyon Takip Sistemi
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">
+                Mevzuat maddelerine ait mevcut durum taleplerini ve genel firma aksiyonlarını buradan takip edebilirsiniz.
+              </p>
+            </div>
+            {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+              <button
+                onClick={() => {
+                  setNewActionTitle('');
+                  setNewActionDesc('');
+                  setNewActionClientId('');
+                  setReqNotesAssigneeId('');
+                  setReqNotesDueDate('');
+                  setShowCreateActionModal(true);
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-md transition flex items-center gap-1.5 whitespace-nowrap self-stretch sm:self-auto justify-center"
+              >
+                <Plus size={16} /> Yeni Aksiyon Oluştur
+              </button>
+            )}
+          </div>
+
+          {/* Filters Bar */}
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wide">Müşteri Firma</label>
+              <select
+                className="w-full p-2 text-xs rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none border-slate-200"
+                value={actionsFilterClient}
+                onChange={(e) => setActionsFilterClient(e.target.value)}
+              >
+                <option value="">Tüm Firmalar</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wide">Sorumlu Personel</label>
+              <select
+                className="w-full p-2 text-xs rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none border-slate-200"
+                value={actionsFilterAssignee}
+                onChange={(e) => setActionsFilterAssignee(e.target.value)}
+              >
+                <option value="">Tüm Personel</option>
+                {teamMembers.map((m) => (
+                  <option key={m.id} value={m.id}>{m.full_name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wide">Durum</label>
+              <select
+                className="w-full p-2 text-xs rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none border-slate-200"
+                value={actionsFilterStatus}
+                onChange={(e) => setActionsFilterStatus(e.target.value)}
+              >
+                <option value="">Tüm Durumlar</option>
+                <option value="pending">Aksiyon Bekliyor (Açık)</option>
+                <option value="completed">Onay Bekliyor</option>
+                <option value="correction_requested">Düzeltme İstendi</option>
+                <option value="approved">Onaylandı</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Actions List Grid */}
+          {loadingActions ? (
+            <div className="flex items-center justify-center p-12">
+              <Loader className="animate-spin text-teal-600" size={32} />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {(() => {
+                const filtered = complianceActions.filter((act) => {
+                  if (actionsFilterClient && act.client_id !== actionsFilterClient) return false;
+                  if (actionsFilterAssignee && act.assigned_to !== actionsFilterAssignee) return false;
+                  if (actionsFilterStatus && act.status !== actionsFilterStatus) return false;
+                  return true;
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="md:col-span-2 bg-white dark:bg-slate-800 p-12 rounded-2xl border border-gray-200 dark:border-slate-700 text-center text-gray-500">
+                      <CheckCircle className="mx-auto mb-3 opacity-20" size={48} />
+                      <p className="font-bold">Açık veya eşleşen bir aksiyon bulunamadı.</p>
+                    </div>
+                  );
+                }
+
+                return filtered.map((act) => {
+                  const isAssignee = act.assigned_to === userId;
+                  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+                  const isCreator = act.created_by === userId;
+                  
+                  return (
+                    <div
+                      key={act.id}
+                      className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm flex flex-col justify-between hover:shadow-md transition relative overflow-hidden"
+                    >
+                      {/* Top info and status badge */}
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-start gap-2">
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] text-teal-600 dark:text-teal-400 font-black uppercase tracking-wider">
+                              {act.client?.name || 'Bilinmeyen Firma'}
+                            </span>
+                            <h3 className="font-bold text-gray-900 dark:text-white text-sm">
+                              {act.title}
+                            </h3>
+                          </div>
+                          
+                          <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border uppercase ${
+                            act.status === 'pending'
+                              ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20'
+                              : act.status === 'completed'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20'
+                              : act.status === 'correction_requested'
+                              ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20'
+                              : 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20'
+                          }`}>
+                            {act.status === 'pending' ? 'Bekliyor' :
+                             act.status === 'completed' ? 'Onay Bekliyor' :
+                             act.status === 'correction_requested' ? 'Düzeltme İstendi' : 'Onaylandı'}
+                          </span>
+                        </div>
+
+                        {/* Article link indicator if applicable */}
+                        {act.article_id && (
+                          <div className="text-[10px] bg-slate-100 dark:bg-slate-700/50 text-slate-600 dark:text-slate-350 px-2 py-1 rounded w-fit font-bold">
+                            📋 Mevzuat Maddesi Bağlantılı
+                          </div>
+                        )}
+
+                        {/* Correction Comment */}
+                        {act.status === 'correction_requested' && act.manager_comment && (
+                          <div className="bg-rose-50/50 dark:bg-rose-950/10 p-2.5 rounded-lg border border-rose-100 dark:border-rose-900/30 text-xs text-rose-800 dark:text-rose-350">
+                            <div className="font-bold text-[9px] uppercase tracking-wide mb-0.5">Düzeltme Gerekçesi:</div>
+                            <p className="italic">{act.manager_comment}</p>
+                          </div>
+                        )}
+
+                        {/* Staff Notes and Document Submission */}
+                        {(act.status === 'completed' || act.status === 'approved' || act.notes) && (
+                          <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800 text-xs space-y-1">
+                            <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Personel Açıklaması</div>
+                            <p className="text-slate-750 dark:text-slate-350 whitespace-pre-wrap">{act.notes}</p>
+                            {act.evidence_url && (
+                              <div className="pt-2 mt-2 border-t border-slate-200/50 dark:border-slate-800 flex items-center justify-between">
+                                <span className="text-[10px] text-slate-400 font-bold">Yüklenen Belge:</span>
+                                <a
+                                  href={act.evidence_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[10px] text-teal-600 dark:text-teal-400 hover:underline font-bold"
+                                >
+                                  Belgeyi Gör ↗
+                                </a>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                    ))
+
+                      {/* Bottom action bar & metadata */}
+                      <div className="mt-4 pt-3 border-t border-gray-100 dark:border-slate-700 flex flex-wrap justify-between items-center gap-2">
+                        <div className="text-[10px] text-gray-400 dark:text-gray-500 space-y-0.5">
+                          <div>Sorumlu: <b>{act.assignee?.full_name || 'Bilinmeyen'}</b></div>
+                          <div>Atayan: <b>{act.creator?.full_name || 'Yönetici'}</b></div>
+                          <div>Son Gün: <b className={act.status !== 'approved' && new Date(act.due_date) < new Date() ? 'text-red-500 font-bold' : ''}>{new Date(act.due_date).toLocaleDateString('tr-TR')}</b></div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setSelectedActionDetails(act);
+                              setShowDetailsModal(true);
+                            }}
+                            className="text-[10px] font-bold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 rounded-lg transition hover:bg-slate-50 dark:hover:bg-slate-800"
+                          >
+                            Detay
+                          </button>
+
+                          {(act.status === 'pending' || act.status === 'correction_requested') && isAssignee && (
+                            <button
+                              onClick={() => {
+                                setSelectedClientAction(act);
+                                setActionNotes(act.notes || '');
+                                setActionEvidenceFile(null);
+                                setShowCompleteActionModal(true);
+                              }}
+                              className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition shadow-sm"
+                            >
+                              {act.status === 'correction_requested' ? 'Düzelt ve Tamamla' : 'Aksiyonu Tamamla'}
+                            </button>
+                          )}
+
+                          {act.status === 'completed' && (isManager || isCreator) && (
+                            <>
+                              <button
+                                onClick={() => handleApproveAction(act)}
+                                className="bg-green-600 hover:bg-green-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition shadow-sm"
+                              >
+                                Onayla
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedClientAction(act);
+                                  setCorrectionDueDate(act.due_date || '');
+                                  setCorrectionComment('');
+                                  setShowCorrectionModal(true);
+                                }}
+                                className="border border-rose-200 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 text-[10px] font-bold px-3 py-1.5 rounded-lg transition"
+                              >
+                                Düzeltme İste
+                              </button>
+                            </>
+                          )}
+
+                          {(isManager || isCreator) && (
+                            <button
+                              onClick={() => handleDeleteAction(act.id, act.article_id)}
+                              className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-gray-50 dark:hover:bg-slate-800 transition"
+                              title="Sil"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* --- YENİ: MEVZUAT MADDESİNDEN MEVCUT DURUM TALEP ETME MODALI --- */}
+      {showRequestNotesModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <Clock size={18} className="text-amber-600" />
+                Mevcut Durum Talep Et
+              </h3>
+              <button 
+                onClick={() => setShowRequestNotesModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
+                <div className="text-slate-400 uppercase tracking-wide">Seçili Madde:</div>
+                <div className="font-bold text-slate-850 dark:text-slate-200 text-sm mt-0.5">{newActionTitle}</div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Sorumlu Personel *</label>
+                <select
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={reqNotesAssigneeId}
+                  onChange={(e) => setReqNotesAssigneeId(e.target.value)}
+                  disabled={userRole === 'corporate_staff'}
+                >
+                  {userRole === 'corporate_staff' ? (
+                    <option value={userId}>Kendim ({teamMembers.find(m => m.id === userId)?.full_name || 'Ben'})</option>
+                  ) : (
+                    <>
+                      <option value="">-- Personel Seçin --</option>
+                      {teamMembers.map((m) => (
+                        <option key={m.id} value={m.id}>{m.full_name}</option>
+                      ))}
+                    </>
                   )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Son Tarih *</label>
+                <input
+                  type="date"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={reqNotesDueDate}
+                  onChange={(e) => setReqNotesDueDate(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Özel Talimatlar (Opsiyonel)</label>
+                <textarea
+                  rows={3}
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  placeholder="Personelin dikkat etmesi gereken özel detaylar varsa belirtin..."
+                  value={reqNotesDesc}
+                  onChange={(e) => setReqNotesDesc(e.target.value)}
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRequestNotesModal(false)}
+                  className="px-4 py-2 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCreateAction(true, reqNotesArticleId, reqNotesClientId)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition"
+                >
+                  Talep Et
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+              {/* --- YENİ: ZORUNLU MEVCUT DURUM / AÇIKLAMA GİRİŞ MODALI --- */}
+      {showComplianceNoteModal && complianceNoteData && (() => {
+        const type = complianceNoteData.type;
+        
+        let themeColor = 'teal';
+        let statusText = '';
+        let inputLabel = '';
+        let placeholderText = '';
+        let gradientHeader = 'from-teal-500 to-cyan-600';
+        let alertBg = 'bg-teal-50/50 dark:bg-teal-950/20 border-teal-100 dark:border-teal-900/30';
+        let alertText = 'text-teal-700 dark:text-teal-400';
+        let accentRing = 'focus:ring-teal-500 focus:border-teal-500';
+        let submitBtnBg = 'bg-teal-600 hover:bg-teal-700 shadow-teal-600/20';
+
+        if (type === 'compliant') {
+          themeColor = 'emerald';
+          statusText = 'Uygun (Aktif)';
+          inputLabel = 'Mevcut Durum Açıklaması *';
+          placeholderText = 'Bu madde için firmanın mevcut durumunu, alınan önlemleri detaylıca yazın...';
+          gradientHeader = 'from-emerald-500 to-teal-600';
+          alertBg = 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-100 dark:border-emerald-900/30';
+          alertText = 'text-emerald-700 dark:text-emerald-400';
+          accentRing = 'focus:ring-emerald-500 focus:border-emerald-500';
+          submitBtnBg = 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20';
+        } else if (type === 'non_compliant') {
+          themeColor = 'rose';
+          statusText = 'Uygun Değil (Aktif)';
+          inputLabel = 'Neden Uygun Değil? *';
+          placeholderText = 'Maddenin neden uygun olmadığını, eksiklikleri detaylıca açıklayın...';
+          gradientHeader = 'from-rose-500 to-red-600';
+          alertBg = 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/30';
+          alertText = 'text-rose-700 dark:text-rose-400';
+          accentRing = 'focus:ring-rose-500 focus:border-rose-500';
+          submitBtnBg = 'bg-rose-600 hover:bg-rose-700 shadow-rose-600/20';
+        } else {
+          statusText = 'Hariç Tutuldu (Muaf)';
+          inputLabel = 'Neden Hariç Tutuldu? *';
+          placeholderText = 'Bu maddenin bu firma için neden hariç tutulduğunu (muafiyet gerekçesini) yazın...';
+          gradientHeader = 'from-teal-600 to-indigo-600';
+          alertBg = 'bg-slate-50/50 dark:bg-slate-905/20 border-slate-200 dark:border-slate-700';
+          alertText = 'text-slate-700 dark:text-slate-300';
+          accentRing = 'focus:ring-teal-500 focus:border-teal-500';
+          submitBtnBg = 'bg-teal-600 hover:bg-teal-700 shadow-teal-600/20';
+        }
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+            <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
+              {/* Header Gradient */}
+              <div className={`bg-gradient-to-r ${gradientHeader} p-6 text-white flex justify-between items-center`}>
+                <div className="flex items-center gap-2.5">
+                  <Scale size={22} className="text-white animate-pulse" />
+                  <div>
+                    <h3 className="font-extrabold text-base tracking-wide">Durum Açıklaması Zorunludur</h3>
+                    <p className="text-[10px] text-white/80 font-medium mt-0.5">Uyum durumu değişikliği gerekçe girişi gerektirir.</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => {
+                    setShowComplianceNoteModal(false);
+                    setComplianceNoteData(null);
+                    setComplianceNoteValue('');
+                  }}
+                  className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition"
+                >
+                  <XCircle size={18} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-5">
+                {/* İlgili Madde Detay Kutusu */}
+                <div className={`p-4 rounded-2xl border ${alertBg} space-y-2`}>
+                  <div>
+                    <span className="text-[9px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Yükümlülük Maddesi</span>
+                    <span className="font-extrabold text-slate-800 dark:text-slate-200 text-sm mt-0.5">
+                      {complianceNoteData.articleNo} {complianceNoteData.title ? `- ${complianceNoteData.title}` : ''}
+                    </span>
+                  </div>
+                  <div className="pt-2 border-t border-black/5 dark:border-white/5 flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase">Seçilen Yeni Durum:</span>
+                    <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border uppercase ${alertText} ${alertBg.replace('border-', 'border-').replace('/50', '/90')}`}>
+                      {statusText}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Form Inputu */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wide">
+                    {inputLabel}
+                  </label>
+                  <textarea
+                    required
+                    rows={4}
+                    placeholder={placeholderText}
+                    className={`w-full p-3.5 rounded-2xl border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 outline-none transition ${accentRing} font-medium text-xs text-slate-800 dark:text-slate-250 leading-relaxed shadow-sm`}
+                    value={complianceNoteValue}
+                    onChange={(e) => setComplianceNoteValue(e.target.value)}
+                  />
+                  <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium block">
+                    * Uyum geçmişinin şeffaf takibi için gerekçe girmek kanunen zorunludur.
+                  </span>
+                </div>
+                {/* Geçerlilik Süresi (Validity Date) Girişi */}
+                {type !== 'exempt' && (
+                  <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wide">
+                        Geçerlilik Süresi
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-slate-500 hover:text-slate-750 dark:hover:text-slate-350 select-none">
+                        <input
+                          type="checkbox"
+                          checked={isComplianceExpiryless}
+                          onChange={(e) => {
+                            setIsComplianceExpiryless(e.target.checked);
+                            if (e.target.checked) setComplianceExpiryDate('');
+                          }}
+                          className="rounded text-teal-600 focus:ring-teal-500 border-slate-300 dark:border-slate-700"
+                        />
+                        Süresiz (Geçerlilik Tarihi Yok)
+                      </label>
+                    </div>
+
+                    {!isComplianceExpiryless && (
+                      <div className="space-y-1.5 animate-fadeIn">
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500 font-semibold block uppercase">
+                          Son Geçerlilik Tarihi Seçin
+                        </span>
+                        <input
+                          type="date"
+                          required={!isComplianceExpiryless}
+                          value={complianceExpiryDate}
+                          onChange={(e) => setComplianceExpiryDate(e.target.value)}
+                          className={`w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 outline-none transition ${accentRing} font-bold text-xs text-slate-800 dark:text-slate-200`}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Butonlar */}
+                <div className="flex gap-3 justify-end pt-2 border-t border-gray-100 dark:border-slate-700">
+                  <button
+                    onClick={() => {
+                      setShowComplianceNoteModal(false);
+                      setComplianceNoteData(null);
+                      setComplianceNoteValue('');
+                    }}
+                    disabled={savingComplianceNote}
+                    className="px-5 py-2.5 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300 border-slate-200 dark:border-slate-700"
+                  >
+                    İptal
+                  </button>
+                  <button
+                    onClick={handleSaveComplianceNote}
+                    disabled={savingComplianceNote || !complianceNoteValue.trim()}
+                    className={`px-5 py-2.5 ${submitBtnBg} text-white rounded-xl text-xs font-bold transition shadow-lg disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    {savingComplianceNote ? 'Kaydediliyor...' : 'Kaydet ve Güncelle'}
+                  </button>
                 </div>
               </div>
-            )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* --- YENİ: GENEL AKSİYON OLUŞTURMA MODALI --- */}
+      {showCreateActionModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <PlusCircle size={18} className="text-blue-600" />
+                Yeni Aksiyon Tanımla
+              </h3>
+              <button 
+                onClick={() => setShowCreateActionModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Aksiyon Başlığı *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Atık Sahası Havalandırma Kontrolü"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newActionTitle}
+                  onChange={(e) => setNewActionTitle(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Hedef Müşteri Firma *</label>
+                <select
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newActionClientId}
+                  onChange={(e) => {
+                    setNewActionClientId(e.target.value);
+                  }}
+                >
+                  <option value="">-- Müşteri Seçin --</option>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Sorumlu Personel *</label>
+                <select
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newActionAssigneeId}
+                  onChange={(e) => setNewActionAssigneeId(e.target.value)}
+                  disabled={userRole === 'corporate_staff'}
+                >
+                  {userRole === 'corporate_staff' ? (
+                    <option value={userId}>Kendim ({teamMembers.find(m => m.id === userId)?.full_name || 'Ben'})</option>
+                  ) : (
+                    <>
+                      <option value="">-- Personel Seçin --</option>
+                      {teamMembers.map((m) => (
+                        <option key={m.id} value={m.id}>{m.full_name}</option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Son Tarih *</label>
+                <input
+                  type="date"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newActionDueDate}
+                  onChange={(e) => setNewActionDueDate(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Detaylar</label>
+                <textarea
+                  rows={3}
+                  placeholder="Yapılması gereken işin detaylı açıklamasını girin..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newActionDesc}
+                  onChange={(e) => setNewActionDesc(e.target.value)}
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  onClick={() => setShowCreateActionModal(false)}
+                  className="px-4 py-2 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  onClick={() => handleCreateAction(false, null, null)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition"
+                >
+                  Oluştur
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- YENİ: AKSİYON TAMAMLAMA MODALI --- */}
+      {showCompleteActionModal && selectedClientAction && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <CheckCircle size={18} className="text-teal-600" />
+                Aksiyonu Tamamla
+              </h3>
+              <button 
+                onClick={() => setShowCompleteActionModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
+                <div className="text-slate-400 uppercase tracking-wide">Aksiyon:</div>
+                <div className="font-bold text-slate-850 dark:text-slate-200 text-sm mt-0.5">{selectedClientAction.title}</div>
+                {selectedClientAction.description && (
+                  <div className="mt-1.5 text-gray-500">{selectedClientAction.description}</div>
+                )}
+              </div>
+
+              {/* Düzeltme Talebi Yorumu */}
+              {selectedClientAction.status === 'correction_requested' && selectedClientAction.manager_comment && (
+                <div className="bg-rose-50/50 dark:bg-rose-950/10 p-3 rounded-xl border border-rose-100 dark:border-rose-900/30 text-xs">
+                  <div className="font-bold text-[9px] text-rose-800 dark:text-rose-400 uppercase tracking-wide">Düzeltme Talebi Gerekçesi:</div>
+                  <p className="text-rose-800 dark:text-rose-350 italic mt-0.5">{selectedClientAction.manager_comment}</p>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Mevcut Durum / Açıklama *</label>
+                <textarea
+                  required
+                  rows={4}
+                  placeholder="Yapılan işlemler, firmanın güncel durumu ve açıklamalarınızı detaylıca yazın..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={actionNotes}
+                  onChange={(e) => setActionNotes(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Kanıt / Ek Belge</label>
+                <div className="flex border-b border-gray-200 dark:border-slate-700 mb-3 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setEvidenceMode('upload')}
+                    className={`py-1.5 px-3 font-semibold transition border-b-2 ${evidenceMode === 'upload' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-450'}`}
+                  >
+                    Yeni Belge Yükle
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEvidenceMode('select');
+                      if (userId) fetchUserDocuments(userId);
+                    }}
+                    className={`py-1.5 px-3 font-semibold transition border-b-2 ${evidenceMode === 'select' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-450'}`}
+                  >
+                    Evraklarımdan Seç
+                  </button>
+                </div>
+
+                {evidenceMode === 'upload' ? (
+                  <input
+                    type="file"
+                    onChange={(e) => setActionEvidenceFile(e.target.files?.[0] || null)}
+                    className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100 cursor-pointer"
+                  />
+                ) : (
+                  <select
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-bold text-xs text-slate-700 dark:text-slate-350 border-slate-200"
+                    value={selectedEvidenceDocUrl}
+                    onChange={(e) => setSelectedEvidenceDocUrl(e.target.value)}
+                  >
+                    <option value="">-- Evrak Seçin --</option>
+                    {userDocuments.map(d => (
+                      <option key={d.id} value={d.file_url}>{d.title}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  onClick={() => setShowCompleteActionModal(false)}
+                  disabled={uploadingEvidence}
+                  className="px-4 py-2 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  onClick={() => handleCompleteAction(selectedClientAction.id, actionNotes, evidenceMode === 'upload' ? actionEvidenceFile : null, selectedClientAction.article_id, evidenceMode === 'select' ? selectedEvidenceDocUrl : null)}
+                  disabled={uploadingEvidence}
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-50"
+                >
+                  {uploadingEvidence ? 'Yükleniyor...' : 'Aksiyonu Gönder'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- YENİ: AKSİYON DÜZELTME TALEP ETME MODALI --- */}
+      {showCorrectionModal && selectedClientAction && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <AlertCircle size={18} className="text-rose-600" />
+                Düzeltme Talep Et
+              </h3>
+              <button 
+                onClick={() => setShowCorrectionModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
+                <div className="text-slate-400 uppercase tracking-wide">Aksiyon:</div>
+                <div className="font-bold text-slate-850 dark:text-slate-200 text-sm mt-0.5">{selectedClientAction.title}</div>
+                <div className="text-slate-400 uppercase tracking-wide mt-2">Personel Notu:</div>
+                <div className="text-slate-755 dark:text-slate-350">{selectedClientAction.notes}</div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Düzeltme Gerekçesi / Yorum *</label>
+                <textarea
+                  required
+                  rows={4}
+                  placeholder="Personelin hangi alanları düzeltmesi gerektiğini, eksik veya hatalı noktaları yazın..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-rose-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={correctionComment}
+                  onChange={(e) => setCorrectionComment(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Yeni Son Tarih *</label>
+                <input
+                  type="date"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-rose-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={correctionDueDate}
+                  onChange={(e) => setCorrectionDueDate(e.target.value)}
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  onClick={() => setShowCorrectionModal(false)}
+                  className="px-4 py-2 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  onClick={() => handleRequestCorrection(selectedClientAction, correctionComment, correctionDueDate)}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition"
+                >
+                  Düzeltme İsteğini Gönder
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -3484,6 +5096,132 @@ export default function ConsultantPanel() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- YENİ: AKSİYON DETAY MODALI --- */}
+      {showDetailsModal && selectedActionDetails && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-lg p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <CheckCircle size={18} className="text-teal-600" />
+                Aksiyon Ayrıntıları
+              </h3>
+              <button 
+                onClick={() => {
+                  setShowDetailsModal(false);
+                  setSelectedActionDetails(null);
+                }}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+              <div>
+                <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Firma Adı</span>
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                  {selectedActionDetails.client?.name || 'Genel / Belirtilmemiş'}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Aksiyon Başlığı</span>
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{selectedActionDetails.title}</span>
+              </div>
+
+              {selectedActionDetails.description && (
+                <div>
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Açıklama / Detaylar</span>
+                  <div className="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800/80 whitespace-pre-wrap leading-relaxed mt-1">
+                    {selectedActionDetails.description}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Sorumlu Personel</span>
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    {selectedActionDetails.assignee?.full_name || 'Atanmamış'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Oluşturan / Atayan</span>
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    {selectedActionDetails.creator?.full_name || 'Yönetici'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Son Tarih</span>
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    {selectedActionDetails.due_date ? new Date(selectedActionDetails.due_date).toLocaleDateString('tr-TR') : '-'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Güncel Durum</span>
+                  <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border uppercase mt-1 inline-block ${
+                    selectedActionDetails.status === 'pending'
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : selectedActionDetails.status === 'completed'
+                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                      : selectedActionDetails.status === 'correction_requested'
+                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                      : 'bg-green-50 text-green-700 border-green-200'
+                  }`}>
+                    {selectedActionDetails.status === 'pending' ? 'Bekliyor' :
+                     selectedActionDetails.status === 'completed' ? 'Onay Bekliyor' :
+                     selectedActionDetails.status === 'correction_requested' ? 'Düzeltme İstendi' : 'Onaylandı (Tamamlandı)'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Personel Notları ve Yüklenen Kanıt */}
+              {(selectedActionDetails.notes || selectedActionDetails.evidence_url) && (
+                <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800/80 space-y-2">
+                  <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Personel Kanıt Bildirimi</div>
+                  {selectedActionDetails.notes && (
+                    <p className="text-xs text-slate-700 dark:text-slate-355 whitespace-pre-wrap">{selectedActionDetails.notes}</p>
+                  )}
+                  {selectedActionDetails.evidence_url && (
+                    <a
+                      href={selectedActionDetails.evidence_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-teal-600 dark:text-teal-400 font-bold hover:underline block"
+                    >
+                      Yüklenen Kanıt Dosyasını Aç (PDF/Resim) ↗
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {/* Düzeltme Yorumu */}
+              {selectedActionDetails.status === 'correction_requested' && selectedActionDetails.manager_comment && (
+                <div className="bg-rose-50/50 dark:bg-rose-950/10 p-3 rounded-xl border border-rose-100 dark:border-rose-900/30">
+                  <span className="font-bold text-[9px] text-rose-800 uppercase tracking-wide block">Düzeltme Talebi Gerekçesi</span>
+                  <p className="text-xs text-rose-800 dark:text-rose-350 italic mt-0.5">{selectedActionDetails.manager_comment}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-4 border-t border-gray-100 dark:border-slate-700 mt-4">
+              <button
+                onClick={() => {
+                  setShowDetailsModal(false);
+                  setSelectedActionDetails(null);
+                }}
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-xs font-bold transition text-slate-700 dark:text-slate-200 rounded-xl"
+              >
+                Kapat
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -33,6 +33,7 @@ function formatBytes(bytes: number, decimals = 2) {
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [userName, setUserName] = useState('');
+  const [canAccessConsultant, setCanAccessConsultant] = useState(false);
   const [stats, setStats] = useState({
     totalDocs: 0,
     expiringSoon: 0,
@@ -45,6 +46,7 @@ export default function Dashboard() {
     isCorporate: false,
   });
   const [recentDocs, setRecentDocs] = useState<any[]>([]);
+  const [pendingActions, setPendingActions] = useState<any[]>([]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -62,7 +64,7 @@ export default function Dashboard() {
         const { data: profile } = await supabase
           .from('profiles')
           .select(
-            'id, full_name, role, permissions, storage_limit, organization_id, organization:organizations(storage_limit)'
+            'id, full_name, role, permissions, storage_limit, organization_id, organization:organizations(storage_limit, is_environmental_consultant, name)'
           )
           .eq('id', session.user.id)
           .single();
@@ -172,6 +174,81 @@ export default function Dashboard() {
             });
 
             setRecentDocs(docs.slice(0, 10));
+
+            // --- C. AKSİYONLAR SORGUSU ---
+            try {
+              const isEnvConsultant = !!(profile.organization as any)?.is_environmental_consultant;
+              const isManager = profile.role === 'admin' || isEnvConsultant || profile.role === 'premium_corporate' || profile.role === 'corporate_chief';
+              setCanAccessConsultant(isManager);
+
+              let actQuery = supabase
+                .from('compliance_actions')
+                .select('*, client:consultant_clients(name)')
+                .neq('status', 'approved');
+
+              const isConsultantUser = isEnvConsultant || ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(profile.role);
+              
+              if (isConsultantUser) {
+                const canViewAll = profile.role === 'premium_corporate' || profile.role === 'admin' || !!profile.permissions?.can_view_all_clients;
+                let clientIds: string[] = [];
+                
+                if (canViewAll) {
+                  const { data: cData } = await supabase
+                    .from('consultant_clients')
+                    .select('id')
+                    .eq('consultant_company_id', profile.organization_id);
+                  clientIds = cData?.map(c => c.id) || [];
+                } else {
+                  const { data: assignments } = await supabase
+                    .from('consultant_assignments')
+                    .select('client_id')
+                    .eq('user_id', profile.id);
+                  clientIds = assignments?.map((a) => a.client_id) || [];
+                }
+
+                if (clientIds.length > 0) {
+                  if (profile.role === 'corporate_staff') {
+                    actQuery = actQuery.or(`assigned_to.eq.${profile.id},created_by.eq.${profile.id},client_id.in.(${clientIds.join(',')})`);
+                  } else {
+                    actQuery = actQuery.in('client_id', clientIds);
+                  }
+                } else {
+                  actQuery = actQuery.or(`assigned_to.eq.${profile.id},created_by.eq.${profile.id}`);
+                }
+              } else {
+                const orgName = (profile.organization as any)?.name;
+                if (orgName) {
+                  const { data: ccList } = await supabase
+                    .from('consultant_clients')
+                    .select('id, name');
+                  
+                  let clientRec = null;
+                  if (ccList && ccList.length > 0) {
+                    const cleanOrgName = orgName.trim().toLowerCase();
+                    clientRec = ccList.find((c: any) => {
+                      const cleanClientName = c.name.trim().toLowerCase();
+                      return cleanClientName.includes(cleanOrgName) || cleanOrgName.includes(cleanClientName);
+                    });
+                  }
+                  
+                  if (clientRec) {
+                    actQuery = actQuery.eq('client_id', clientRec.id);
+                  } else {
+                    // Fallback to assigned_to/created_by
+                    actQuery = actQuery.or(`assigned_to.eq.${profile.id},created_by.eq.${profile.id}`);
+                  }
+                } else {
+                  actQuery = actQuery.or(`assigned_to.eq.${profile.id},created_by.eq.${profile.id}`);
+                }
+              }
+
+              const { data: acts, error: errActs } = await actQuery.order('due_date', { ascending: true });
+              if (!errActs && acts) {
+                setPendingActions(acts);
+              }
+            } catch (errAct) {
+              console.error('Aksiyonlar yüklenirken hata:', errAct);
+            }
           }
         }
       }
@@ -195,6 +272,17 @@ export default function Dashboard() {
         Veriler Yükleniyor...
       </div>
     );
+
+  const nowForStats = new Date();
+  nowForStats.setHours(0,0,0,0);
+  const pendingCount = pendingActions.filter(act => act.status === 'pending').length;
+  const correctionCount = pendingActions.filter(act => act.status === 'correction_requested').length;
+  const overdueCount = pendingActions.filter(act => {
+    if (act.status === 'approved') return false;
+    const targetDate = new Date(act.due_date);
+    targetDate.setHours(0,0,0,0);
+    return targetDate.getTime() < nowForStats.getTime();
+  }).length;
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 pb-24">
@@ -332,6 +420,154 @@ export default function Dashboard() {
               </span>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* AÇIK AKSİYONLAR SİSTEMİ WIDGETI */}
+      <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden mb-10 animate-fadeIn">
+        <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-gray-50/50 dark:bg-slate-800/50">
+          <h2 className="text-lg font-bold text-gray-800 dark:text-white flex items-center gap-2">
+            <CheckCircle size={20} className="text-purple-600" />
+            Aksiyon Takip Sistemi
+            {pendingActions.length > 0 && (
+              <span className="bg-purple-100 dark:bg-purple-950/40 text-purple-700 dark:text-purple-400 text-xs font-black px-2 py-0.5 rounded-full ml-1.5 border border-purple-200">
+                {pendingActions.length} Aktif Aksiyon
+              </span>
+            )}
+          </h2>
+          <Link
+            to={canAccessConsultant ? "/consultant?tab=actions" : "/company?tab=actions"}
+            className="text-sm font-bold text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1 transition"
+          >
+            Aksiyon Takibine Git <ArrowRight size={16} />
+          </Link>
+        </div>
+
+        {/* İstatistikler */}
+        <div className="p-6 bg-slate-50/50 dark:bg-slate-900/20 border-b border-gray-200 dark:border-slate-700/80 grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Bekleyen Aksiyonlar */}
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-purple-100 dark:border-purple-900/30 flex items-center gap-4 transition hover:shadow-sm">
+            <div className="p-3 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 rounded-xl">
+              <Clock size={20} />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider block">Bekleyen</span>
+              <span className="text-xl font-black text-gray-880 dark:text-white">{pendingCount}</span>
+            </div>
+          </div>
+
+          {/* Düzeltme İstenenler */}
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-rose-100 dark:border-rose-900/30 flex items-center gap-4 transition hover:shadow-sm">
+            <div className="p-3 bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-xl">
+              <AlertCircle size={20} />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider block">Düzeltme İstenen</span>
+              <span className="text-xl font-black text-gray-880 dark:text-white">{correctionCount}</span>
+            </div>
+          </div>
+
+          {/* Süresi Geçenler */}
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-red-100 dark:border-red-900/30 flex items-center gap-4 transition hover:shadow-sm">
+            <div className="p-3 bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-xl">
+              <AlertTriangle size={20} />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider block font-semibold text-red-600 dark:text-red-400">Süresi Geçen</span>
+              <span className="text-xl font-black text-red-600 dark:text-red-400">{overdueCount}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Aksiyon Listesi */}
+        <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {pendingActions.length === 0 ? (
+            <div className="p-12 text-center text-gray-400 dark:text-gray-500 col-span-full">
+              <div className="flex flex-col items-center justify-center">
+                <div className="bg-gray-50 dark:bg-slate-900 p-4 rounded-full mb-3">
+                  <CheckCircle size={32} className="opacity-30 text-green-500" />
+                </div>
+                <p className="font-medium">Harika! Açık aksiyonunuz bulunmuyor.</p>
+              </div>
+            </div>
+          ) : (
+            pendingActions.map((act) => {
+              const targetDate = new Date(act.due_date);
+              const now = new Date();
+              targetDate.setHours(0,0,0,0);
+              now.setHours(0,0,0,0);
+              const diffTime = targetDate.getTime() - now.getTime();
+              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+              
+              let daysBadgeColor = "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400";
+              if (diffDays < 0) {
+                daysBadgeColor = "bg-red-50 text-red-600 border-red-200 dark:bg-red-950/20 dark:text-red-400 animate-pulse";
+              } else if (diffDays <= 3) {
+                daysBadgeColor = "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/20 dark:text-orange-400";
+              } else if (diffDays <= 7) {
+                daysBadgeColor = "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400";
+              }
+
+              return (
+                <div
+                  key={act.id}
+                  className="bg-slate-50/50 dark:bg-slate-900/10 p-5 rounded-2xl border border-gray-200 dark:border-slate-800 flex flex-col justify-between hover:shadow-sm hover:border-gray-300 dark:hover:border-slate-700 transition animate-fadeIn"
+                >
+                  <div className="space-y-2.5">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-teal-600 dark:text-teal-400 font-extrabold uppercase tracking-wider block">
+                          {act.client?.name || 'Bilinmeyen Müşteri'}
+                        </span>
+                        <h4 className="font-bold text-gray-800 dark:text-white text-sm">
+                          {act.title}
+                        </h4>
+                      </div>
+                      
+                      <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border uppercase ${
+                        act.status === 'correction_requested'
+                          ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400'
+                          : act.status === 'completed'
+                          ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400'
+                          : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400'
+                      }`}>
+                        {act.status === 'correction_requested' ? 'Düzeltme İstendi' : act.status === 'completed' ? 'Onay Bekliyor' : 'Yeni Aksiyon'}
+                      </span>
+                    </div>
+
+                    {act.description && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 leading-relaxed">
+                        {act.description}
+                      </p>
+                    )}
+
+                    {act.status === 'correction_requested' && act.manager_comment && (
+                      <div className="bg-rose-50/50 dark:bg-rose-950/10 p-2 rounded-lg border border-rose-100 dark:border-rose-900/30 text-[11px] text-rose-800 dark:text-rose-350 italic">
+                        <b>Düzeltme Gerekçesi:</b> {act.manager_comment}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-slate-200/50 dark:border-slate-800/80 flex justify-between items-center">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${daysBadgeColor}`}>
+                      {diffDays < 0
+                        ? `Süresi Geçti (${Math.abs(diffDays)} Gün)`
+                        : diffDays === 0
+                        ? 'Bugün Son Gün!'
+                        : `${diffDays} Gün Kaldı`}
+                    </span>
+                    
+                    <Link
+                      to={canAccessConsultant ? "/consultant?tab=actions" : "/company?tab=actions"}
+                      className="text-xs text-blue-600 dark:text-blue-400 font-bold hover:underline flex items-center gap-0.5"
+                    >
+                      Aksiyonu Gör <ArrowRight size={12} />
+                    </Link>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
