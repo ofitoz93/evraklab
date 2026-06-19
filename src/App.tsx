@@ -103,12 +103,27 @@ function NavBarContent({
   const [unreadTicketCount, setUnreadTicketCount] = useState(0);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
 
+  const [recentNotifications, setRecentNotifications] = useState<any[]>([]);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     setIsMobileMenuOpen(false);
+    setIsNotifOpen(false); // Close dropdown on navigation
   }, [location]);
+
+  const fetchRecentNotifications = async () => {
+    if (!session?.user?.id) return;
+    const { data } = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false })
+      .limit(5);
+    setRecentNotifications(data || []);
+  };
 
   const fetchUnreadChatCount = async () => {
     if (!userOrgId) return;
@@ -120,24 +135,28 @@ function NavBarContent({
   };
 
   useEffect(() => {
-    if (session && userOrgId) {
+    if (session) {
       fetchUnreadNotifications();
       fetchUnreadTickets();
-      fetchUnreadChatCount();
+      fetchRecentNotifications();
 
-      const chatChannel = supabase
-        .channel(`nav_chat_listener_${session.user.id}`)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'company_messages' },
-          () => fetchUnreadChatCount()
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'message_reads' },
-          () => fetchUnreadChatCount()
-        )
-        .subscribe();
+      let chatChannel: any = null;
+      if (userOrgId) {
+        fetchUnreadChatCount();
+        chatChannel = supabase
+          .channel(`nav_chat_listener_${session.user.id}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'company_messages' },
+            () => fetchUnreadChatCount()
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'message_reads' },
+            () => fetchUnreadChatCount()
+          )
+          .subscribe();
+      }
 
       const ticketSub = supabase
         .channel('public:tickets_navbar')
@@ -162,12 +181,15 @@ function NavBarContent({
             table: 'notifications',
             filter: `user_id=eq.${session.user.id}`,
           },
-          () => fetchUnreadNotifications()
+          () => {
+            fetchUnreadNotifications();
+            fetchRecentNotifications();
+          }
         )
         .subscribe();
 
       return () => {
-        supabase.removeChannel(chatChannel);
+        if (chatChannel) supabase.removeChannel(chatChannel);
         supabase.removeChannel(ticketSub);
         supabase.removeChannel(notifSub);
       };
@@ -270,19 +292,7 @@ function NavBarContent({
                 )}
               </Link>
             )}
-
-            <Link
-              to="/notifications"
-              className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1 relative"
-            >
-              <Bell size={16} /> Bildirimler
-              {unreadCount > 0 && (
-                <span className="absolute -top-2 -right-2 bg-red-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full animate-pulse">
-                  {unreadCount}
-                </span>
-              )}
-            </Link>
-            {canViewTeam && (
+             {canViewTeam && (
               <Link
                 to="/company"
                 className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
@@ -376,6 +386,96 @@ function NavBarContent({
             >
               <HelpCircle size={20} />
             </Link>
+            <div className="relative">
+              <button
+                onClick={() => {
+                  setIsNotifOpen(!isNotifOpen);
+                  if (!isNotifOpen) {
+                    fetchRecentNotifications();
+                  }
+                }}
+                className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 relative focus:outline-none flex items-center"
+                title="Bildirimler"
+              >
+                <Bell size={20} />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] font-bold px-1 py-0.5 rounded-full animate-pulse">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+              
+              {isNotifOpen && (
+                <>
+                  {/* Backdrop */}
+                  <div className="fixed inset-0 z-40" onClick={() => setIsNotifOpen(false)}></div>
+                  
+                  {/* Dropdown Container */}
+                  <div className="absolute right-0 mt-2 w-80 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-gray-100 dark:border-slate-700 py-2 z-50 animate-scaleIn">
+                    <div className="px-4 py-2 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+                      <span className="font-bold text-sm text-gray-800 dark:text-white">Son Bildirimler</span>
+                      {unreadCount > 0 && (
+                        <button 
+                          onClick={async () => {
+                            await supabase.from('notifications').update({ is_read: true }).eq('user_id', session.user.id);
+                            fetchUnreadNotifications();
+                            fetchRecentNotifications();
+                          }}
+                          className="text-[11px] text-blue-600 hover:underline font-semibold"
+                        >
+                          Tümünü Okundu Yap
+                        </button>
+                      )}
+                    </div>
+                    
+                    <div className="max-h-72 overflow-y-auto">
+                      {recentNotifications.length === 0 ? (
+                        <div className="px-4 py-6 text-center text-xs text-gray-400">
+                          Henüz bir bildiriminiz yok.
+                        </div>
+                      ) : (
+                        recentNotifications.map((n) => (
+                          <div 
+                            key={n.id} 
+                            onClick={async () => {
+                              if (!n.is_read) {
+                                await supabase.from('notifications').update({ is_read: true }).eq('id', n.id);
+                                fetchUnreadNotifications();
+                                fetchRecentNotifications();
+                              }
+                              setIsNotifOpen(false);
+                            }}
+                            className={`px-4 py-3 border-b border-gray-55 dark:border-slate-700/50 last:border-0 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors ${
+                              !n.is_read ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''
+                            }`}
+                          >
+                            <div className="flex justify-between items-start gap-1">
+                              <span className="font-bold text-xs text-gray-800 dark:text-slate-200 line-clamp-1">{n.title}</span>
+                              <span className="text-[9px] text-gray-400 whitespace-nowrap">
+                                {new Date(n.created_at).toLocaleDateString()}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2 leading-relaxed">
+                              {n.message}
+                            </p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    
+                    <div className="border-t border-gray-100 dark:border-slate-700 pt-2 px-3 pb-1">
+                      <Link
+                        to="/notifications"
+                        onClick={() => setIsNotifOpen(false)}
+                        className="block text-center text-xs text-blue-600 dark:text-blue-400 font-bold hover:underline py-1.5 bg-gray-50 dark:bg-slate-700/30 rounded-lg"
+                      >
+                        Tümünü Göster
+                      </Link>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
             <Link
               to="/settings"
               className="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"

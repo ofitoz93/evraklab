@@ -29,6 +29,7 @@ import {
   PlusCircle,
   Bell,
 } from 'lucide-react';
+import { MapPickerModal } from './MapPickerModal';
 import { Link } from 'react-router-dom';
 import { extractTextFromPdf } from './localScanner';
 
@@ -342,7 +343,11 @@ export default function ConsultantPanel() {
     tax_no: '',
     phone: '',
     logo_url: '',
+    latitude: null as number | null,
+    longitude: null as number | null,
   });
+  const [showAddClientMap, setShowAddClientMap] = useState(false);
+  const [showEditClientMap, setShowEditClientMap] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [orgData, setOrgData] = useState<any>(null);
   const [savingOrg, setSavingOrg] = useState(false);
@@ -393,7 +398,13 @@ export default function ConsultantPanel() {
       .from('profiles')
       .select('id, full_name, email, role, extra_permissions')
       .eq('organization_id', orgId);
-    setTeamMembers(members || []);
+    
+    const sortedMembers = (members || []).sort((a, b) => {
+      if (a.role === 'premium_corporate' && b.role !== 'premium_corporate') return -1;
+      if (a.role !== 'premium_corporate' && b.role === 'premium_corporate') return 1;
+      return 0;
+    });
+    setTeamMembers(sortedMembers);
   };
 
   const fetchInvitations = async () => {
@@ -1950,11 +1961,13 @@ export default function ConsultantPanel() {
           phone: newClient.phone,
           logo_url: newClient.logo_url,
           created_by: userId,
+          latitude: newClient.latitude || null,
+          longitude: newClient.longitude || null,
         },
       ]);
       if (error) throw error;
       setShowAddClient(false);
-      setNewClient({ name: '', address: '', tax_no: '', phone: '', logo_url: '' });
+      setNewClient({ name: '', address: '', tax_no: '', phone: '', logo_url: '', latitude: null, longitude: null });
       fetchClients(orgId, userRole, userId);
     } catch (err: any) {
       alert('Firma eklenirken hata: ' + err.message);
@@ -1987,6 +2000,8 @@ export default function ConsultantPanel() {
           tax_no: editingClient.tax_no,
           phone: editingClient.phone,
           logo_url: editingClient.logo_url,
+          latitude: editingClient.latitude || null,
+          longitude: editingClient.longitude || null,
         })
         .eq('id', editingClient.id);
 
@@ -2425,13 +2440,21 @@ export default function ConsultantPanel() {
                   <div key={member.id} className="p-4 rounded-xl border border-gray-100 dark:border-slate-700 bg-white dark:bg-slate-800/50 flex flex-col gap-3 hover:shadow-sm transition">
                     <div className="flex justify-between items-start">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs uppercase dark:bg-blue-950/30">
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs uppercase ${
+                          member.role === 'premium_corporate'
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-blue-100 text-blue-600 dark:bg-blue-950/30'
+                        }`}>
                           {member.full_name?.charAt(0) || <User size={20} />}
                         </div>
                         <div>
                           <div className="font-bold text-gray-800 dark:text-white flex flex-wrap items-center gap-2">
                             {member.full_name}
-                            <span className="text-[10px] px-2 py-0.5 rounded border bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900 uppercase font-semibold">
+                            <span className={`text-[10px] px-2 py-0.5 rounded border uppercase font-semibold ${
+                              member.role === 'premium_corporate'
+                                ? 'bg-rose-50 text-rose-700 border-rose-250 font-bold'
+                                : 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900'
+                            }`}>
                               {roleLabels[member.role] || member.role}
                             </span>
                           </div>
@@ -4781,6 +4804,34 @@ export default function ConsultantPanel() {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium mb-1">Konum Koordinatları</label>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Enlem (Latitude)"
+                    value={newClient.latitude !== null ? newClient.latitude : ''}
+                    onChange={(e) => setNewClient({ ...newClient, latitude: e.target.value ? parseFloat(e.target.value) : null })}
+                    className="w-1/2 border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-xs font-mono font-bold"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Boylam (Longitude)"
+                    value={newClient.longitude !== null ? newClient.longitude : ''}
+                    onChange={(e) => setNewClient({ ...newClient, longitude: e.target.value ? parseFloat(e.target.value) : null })}
+                    className="w-1/2 border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-xs font-mono font-bold"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddClientMap(true)}
+                  className="w-full bg-[#2ca58d] hover:bg-[#238c75] text-white py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <MapPin size={14} /> Haritadan Konum Seç
+                </button>
+              </div>
+              <div>
                 <label className="block text-sm font-medium mb-1">Firma Logosu (Opsiyonel)</label>
                 <div className="flex items-center gap-4">
                   {newClient.logo_url ? (
@@ -4875,6 +4926,34 @@ export default function ConsultantPanel() {
                   onChange={(e) => setEditingClient({ ...editingClient, phone: e.target.value })}
                   className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Konum Koordinatları</label>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Enlem (Latitude)"
+                    value={editingClient.latitude !== null && editingClient.latitude !== undefined ? editingClient.latitude : ''}
+                    onChange={(e) => setEditingClient({ ...editingClient, latitude: e.target.value ? parseFloat(e.target.value) : null })}
+                    className="w-1/2 border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-xs font-mono font-bold"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Boylam (Longitude)"
+                    value={editingClient.longitude !== null && editingClient.longitude !== undefined ? editingClient.longitude : ''}
+                    onChange={(e) => setEditingClient({ ...editingClient, longitude: e.target.value ? parseFloat(e.target.value) : null })}
+                    className="w-1/2 border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-xs font-mono font-bold"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowEditClientMap(true)}
+                  className="w-full bg-[#2ca58d] hover:bg-[#238c75] text-white py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <MapPin size={14} /> Haritadan Konum Seç
+                </button>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Firma Logosu (Opsiyonel)</label>
@@ -5225,6 +5304,38 @@ export default function ConsultantPanel() {
           </div>
         </div>
       )}
+
+      <MapPickerModal
+        isOpen={showAddClientMap}
+        onClose={() => setShowAddClientMap(false)}
+        initialLat={newClient.latitude}
+        initialLng={newClient.longitude}
+        onSelect={(latVal, lngVal, addressVal) => {
+          setNewClient(prev => ({
+            ...prev,
+            latitude: latVal,
+            longitude: lngVal,
+            address: prev.address || addressVal || ''
+          }));
+          setShowAddClientMap(false);
+        }}
+      />
+
+      <MapPickerModal
+        isOpen={showEditClientMap}
+        onClose={() => setShowEditClientMap(false)}
+        initialLat={editingClient?.latitude}
+        initialLng={editingClient?.longitude}
+        onSelect={(latVal, lngVal, addressVal) => {
+          setEditingClient(prev => ({
+            ...prev,
+            latitude: latVal,
+            longitude: lngVal,
+            address: prev.address || addressVal || ''
+          }));
+          setShowEditClientMap(false);
+        }}
+      />
     </div>
   );
 }

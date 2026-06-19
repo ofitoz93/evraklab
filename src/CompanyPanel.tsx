@@ -29,7 +29,12 @@ import {
   Calendar,
   FileText,
   Scale,
+  X,
+  MapPin,
+  Edit2,
 } from 'lucide-react';
+import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
+import { MapPickerModal } from './MapPickerModal';
 
 export default function CompanyPanel() {
   const [loading, setLoading] = useState(true);
@@ -44,7 +49,67 @@ export default function CompanyPanel() {
   // Compliance (Mevzuatlarımız) states
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = searchParams.get('tab') || 'team';
-  const [activeTab, setActiveTab] = useState<'team' | 'compliance' | 'requests' | 'actions'>(initialTab as any);
+  const [activeTab, setActiveTab] = useState<'team' | 'compliance' | 'requests' | 'actions' | 'waste'>(initialTab as any);
+
+  // --- ATIK YÖNETİMİ STATE'LERİ ---
+  const [wasteRecords, setWasteRecords] = useState<any[]>([]);
+  const [loadingWaste, setLoadingWaste] = useState(false);
+  const [isWasteTableMissing, setIsWasteTableMissing] = useState(false);
+  const [showAddWasteModal, setShowAddWasteModal] = useState(false);
+  const [newWasteClientId, setNewWasteClientId] = useState('');
+  const [newWasteCode, setNewWasteCode] = useState('');
+  const [newWasteExitDate, setNewWasteExitDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newWasteQuantity, setNewWasteQuantity] = useState('');
+
+  // New relational selections
+  const [wasteCompanies, setWasteCompanies] = useState<any[]>([]);
+  const [newWasteTransporterId, setNewWasteTransporterId] = useState('');
+  const [newWasteDestinationId, setNewWasteDestinationId] = useState('');
+  const [newWasteDisposalCode, setNewWasteDisposalCode] = useState('');
+
+  // Legacy text variables kept for backwards compatibility / local usage
+  const [newWasteTransporter, setNewWasteTransporter] = useState('');
+  const [newWasteTransporterAddress, setNewWasteTransporterAddress] = useState('');
+  const [newWasteDestination, setNewWasteDestination] = useState('');
+  const [newWasteDestinationAddress, setNewWasteDestinationAddress] = useState('');
+
+  // Modals for adding transporter / destination
+  const [showAddCompanyModal, setShowAddCompanyModal] = useState(false);
+  const [newCompanyType, setNewCompanyType] = useState<'transporter' | 'destination'>('transporter');
+  const [newCompanyName, setNewCompanyName] = useState('');
+  const [newCompanyAddress, setNewCompanyAddress] = useState('');
+  const [newCompanyLat, setNewCompanyLat] = useState<number | null>(null);
+  const [newCompanyLng, setNewCompanyLng] = useState<number | null>(null);
+  const [submittingCompany, setSubmittingCompany] = useState(false);
+  const [showCompanyMap, setShowCompanyMap] = useState(false);
+
+  const [newWasteDisposalType, setNewWasteDisposalType] = useState('recovery');
+  const [newWasteDescription, setNewWasteDescription] = useState('');
+  const [submittingWaste, setSubmittingWaste] = useState(false);
+  const [wasteFilterClient, setWasteFilterClient] = useState('');
+  const [wasteSearchQuery, setWasteSearchQuery] = useState('');
+
+  // Edit waste record states
+  const [showEditWasteModal, setShowEditWasteModal] = useState(false);
+  const [editingWasteId, setEditingWasteId] = useState('');
+  const [editWasteClientId, setEditWasteClientId] = useState('');
+  const [editWasteCode, setEditWasteCode] = useState('');
+  const [editWasteExitDate, setEditWasteExitDate] = useState('');
+  const [editWasteQuantity, setEditWasteQuantity] = useState('');
+  const [editWasteTransporterId, setEditWasteTransporterId] = useState('');
+  const [editWasteDestinationId, setEditWasteDestinationId] = useState('');
+  const [editWasteDisposalType, setEditWasteDisposalType] = useState('recovery');
+  const [editWasteDisposalCode, setEditWasteDisposalCode] = useState('');
+  const [editWasteDescription, setEditWasteDescription] = useState('');
+  const [updatingWaste, setUpdatingWaste] = useState(false);
+
+  // Waste report states
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [selectedReportClientId, setSelectedReportClientId] = useState('');
+  const [reportPeriodType, setReportPeriodType] = useState<'all' | 'monthly' | 'yearly'>('all');
+  const [reportMonth, setReportMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [reportYear, setReportYear] = useState(String(new Date().getFullYear()));
+  const [generatingReport, setGeneratingReport] = useState(false);
 
   // --- AKSİYON TAKİP SİSTEMİ STATE'LERİ ---
   const [complianceActions, setComplianceActions] = useState<any[]>([]);
@@ -96,6 +161,8 @@ export default function CompanyPanel() {
   const [userDocuments, setUserDocuments] = useState<any[]>([]);
   const [selectedEvidenceDocUrl, setSelectedEvidenceDocUrl] = useState<string>('');
   const [evidenceMode, setEvidenceMode] = useState<'upload' | 'select'>('upload');
+  const [selectedEvidenceLocation, setSelectedEvidenceLocation] = useState<string>('');
+  const [requestsFilterClient, setRequestsFilterClient] = useState<string>('');
   const [reqNotesArticleId, setReqNotesArticleId] = useState<string>('');
 
   const [clientRecId, setClientRecId] = useState<string | null>(null);
@@ -178,13 +245,13 @@ export default function CompanyPanel() {
             .select('*')
             .eq('organization_id', profile.organization_id);
 
-          if (profile.role === 'premium_corporate')
-            query = query.neq('id', session.user.id);
-
-          const { data: members } = await query.order('role', {
-            ascending: true,
+          const { data: members } = await query;
+          const sortedMembers = (members || []).sort((a, b) => {
+            if (a.role === 'premium_corporate' && b.role !== 'premium_corporate') return -1;
+            if (a.role !== 'premium_corporate' && b.role === 'premium_corporate') return 1;
+            return 0;
           });
-          setTeamMembers(members || []);
+          setTeamMembers(sortedMembers);
 
           // 2. BEKLEYEN DAVETLER
           const { data: invites } = await supabase
@@ -194,6 +261,48 @@ export default function CompanyPanel() {
             .eq('is_used', false)
             .order('created_at', { ascending: false });
           setInvitations(invites || []);
+
+          // 3. ATANAN FİRMALARI YÜKLE
+          const isConsultantUser = !!orgData?.is_environmental_consultant || 
+            ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(profile.role);
+          if (isConsultantUser) {
+            let clientsList: any[] = [];
+            const canViewAll = profile.role === 'premium_corporate' || !!profile.permissions?.can_view_all_clients;
+            if (canViewAll) {
+              const { data } = await supabase
+                .from('consultant_clients')
+                .select('id, name')
+                .eq('consultant_company_id', orgData.id);
+              clientsList = data || [];
+            } else {
+              const { data } = await supabase
+                .from('consultant_assignments')
+                .select('client_id, client:consultant_clients(id, name)')
+                .eq('user_id', profile.id);
+              clientsList = data?.map((a: any) => a.client).filter(Boolean) || [];
+            }
+            setAssignedClients(clientsList);
+          } else {
+            // Normal client company: find matching client record in consultant_clients
+            const { data: ccList } = await supabase
+              .from('consultant_clients')
+              .select('id, name');
+            
+            let clientRec = null;
+            if (ccList && ccList.length > 0) {
+              const cleanOrgName = orgData.name.trim().toLowerCase();
+              clientRec = ccList.find((c: any) => {
+                const cleanClientName = c.name.trim().toLowerCase();
+                return cleanClientName.includes(cleanOrgName) || cleanOrgName.includes(cleanClientName);
+              });
+              if (!clientRec) {
+                clientRec = ccList[0];
+              }
+            }
+            if (clientRec) {
+              setAssignedClients([clientRec]);
+            }
+          }
         }
       }
     }
@@ -566,22 +675,28 @@ export default function CompanyPanel() {
 
   const getStatusStyles = (art: any) => {
     if (!art.is_mandatory) {
-      return 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/50 opacity-70';
+      return 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-900 opacity-80';
     }
     if (art.compliance_status === 'compliant') {
-      return 'border-emerald-250 dark:border-emerald-800 bg-emerald-50/10 dark:bg-emerald-950/5';
+      return 'border-emerald-250 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/20';
     }
     if (art.compliance_status === 'non_compliant') {
-      return 'border-rose-250 dark:border-rose-800 bg-rose-50/10 dark:bg-rose-950/5';
+      return 'border-rose-250 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/20';
     }
-    return 'border-amber-250 dark:border-amber-800 bg-amber-50/10 dark:bg-amber-950/5';
+    return 'border-amber-250 dark:border-amber-800 bg-white dark:bg-slate-800';
+  };
+
+  const isNearExpiry = (expiryDateStr: string | null) => {
+    if (!expiryDateStr) return false;
+    const diffDays = (new Date(expiryDateStr).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24);
+    return diffDays <= 30;
   };
 
   const fetchUserDocuments = async (uid: string) => {
     try {
       const { data, error } = await supabase
         .from('documents')
-        .select('id, title, file_url')
+        .select('id, title, file_url, location_def_id, location_def:user_definitions!location_def_id(id, label)')
         .eq('uploader_id', uid)
         .eq('is_archived', false)
         .order('created_at', { ascending: false });
@@ -640,7 +755,851 @@ export default function CompanyPanel() {
     if (activeTab === 'actions') {
       fetchComplianceActions();
     }
+    if (activeTab === 'waste') {
+      fetchWasteRecords();
+      fetchWasteCompanies();
+    }
   }, [activeTab, myOrg, myProfile, assignedClients]);
+
+  // --- ATIK YÖNETİMİ METOTLARI ---
+  const fetchWasteCompanies = async () => {
+    if (!myOrg) return;
+    try {
+      const { data, error } = await supabase
+        .from('waste_companies')
+        .select('*')
+        .eq('organization_id', myOrg.id)
+        .order('name', { ascending: true });
+      
+      if (error) {
+        if (error.code === 'PGRST116' || error.message.includes('relation "public.waste_companies" does not exist')) {
+          console.warn('public.waste_companies table missing');
+          setWasteCompanies([]);
+        } else {
+          throw error;
+        }
+      } else {
+        setWasteCompanies(data || []);
+      }
+    } catch (err: any) {
+      console.error('Atık firmaları yüklenirken hata:', err.message);
+    }
+  };
+
+  const fetchWasteRecords = async () => {
+    if (!myOrg) return;
+    setLoadingWaste(true);
+    setIsWasteTableMissing(false);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      let query = supabase
+        .from('waste_records')
+        .select(`
+          *,
+          client:consultant_clients(id, name),
+          creator:profiles!created_by(full_name),
+          transporter_company:waste_companies!transporter_id(id, name, address, latitude, longitude),
+          destination_company:waste_companies!destination_id(id, name, address, latitude, longitude)
+        `);
+
+      const isManager = myProfile?.role === 'premium_corporate' || myProfile?.role === 'admin' || myProfile?.role === 'system_admin';
+
+      if (!isManager) {
+        // Only show records for assigned clients
+        const clientIds = assignedClients.map(c => c.id);
+        query = query.or(`created_by.eq.${session.user.id},client_id.in.(${clientIds.length > 0 ? clientIds.join(',') : '00000000-0000-0000-0000-000000000000'})`);
+      }
+
+      const { data, error } = await query.order('exit_date', { ascending: false });
+      
+      if (error) {
+        if (error.code === 'PGRST116' || error.message.includes('relation "public.waste_records" does not exist')) {
+          console.warn('public.waste_records table missing');
+          setIsWasteTableMissing(true);
+          setWasteRecords([]);
+        } else {
+          throw error;
+        }
+      } else {
+        setWasteRecords(data || []);
+      }
+    } catch (err: any) {
+      console.error('Atık kayıtları yüklenirken hata:', err.message);
+    } finally {
+      setLoadingWaste(false);
+    }
+  };
+
+  const handleCreateWaste = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWasteClientId || !newWasteCode || !newWasteExitDate || !newWasteQuantity || !newWasteTransporterId || !newWasteDestinationId || !newWasteDisposalType || !newWasteDisposalCode) {
+      return alert('Lütfen tüm zorunlu alanları doldurun (Açıklama hariç tüm alanlar zorunludur).');
+    }
+
+    setSubmittingWaste(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const qty = parseFloat(newWasteQuantity);
+      if (isNaN(qty) || qty <= 0) {
+        return alert('Atık miktarı 0\'dan büyük bir sayı olmalıdır.');
+      }
+
+      const selectedTransporter = wasteCompanies.find(c => c.id === newWasteTransporterId);
+      const selectedDestination = wasteCompanies.find(c => c.id === newWasteDestinationId);
+
+      const { error } = await supabase
+        .from('waste_records')
+        .insert([{
+          client_id: newWasteClientId,
+          waste_code: newWasteCode,
+          exit_date: newWasteExitDate,
+          quantity_kg: qty,
+          transporter_id: newWasteTransporterId || null,
+          destination_id: newWasteDestinationId || null,
+          transporter: selectedTransporter?.name || null,
+          transporter_address: selectedTransporter?.address || null,
+          destination: selectedDestination?.name || null,
+          destination_address: selectedDestination?.address || null,
+          disposal_type: newWasteDisposalType,
+          disposal_code: newWasteDisposalCode || null,
+          description: newWasteDescription.trim() || null,
+          created_by: session.user.id
+        }]);
+
+      if (error) throw error;
+
+      alert('Atık kaydı başarıyla eklendi!');
+      setShowAddWasteModal(false);
+      // Reset form
+      setNewWasteClientId('');
+      setNewWasteCode('');
+      setNewWasteExitDate(new Date().toISOString().split('T')[0]);
+      setNewWasteQuantity('');
+      setNewWasteTransporterId('');
+      setNewWasteDestinationId('');
+      setNewWasteDisposalCode('');
+      setNewWasteTransporter('');
+      setNewWasteTransporterAddress('');
+      setNewWasteDestination('');
+      setNewWasteDestinationAddress('');
+      setNewWasteDisposalType('recovery');
+      setNewWasteDescription('');
+      
+      await fetchWasteRecords();
+    } catch (err: any) {
+      alert('Atık kaydı eklenirken hata: ' + err.message);
+    } finally {
+      setSubmittingWaste(false);
+    }
+  };
+
+  const handleCreateCompany = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCompanyName.trim()) {
+      return alert('Lütfen firma adını girin.');
+    }
+
+    setSubmittingCompany(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const { error } = await supabase
+        .from('waste_companies')
+        .insert([{
+          organization_id: myOrg.id,
+          name: newCompanyName.trim(),
+          type: newCompanyType,
+          address: newCompanyAddress.trim() || null,
+          latitude: newCompanyLat,
+          longitude: newCompanyLng,
+          created_by: session.user.id
+        }]);
+
+      if (error) throw error;
+
+      alert(`${newCompanyType === 'transporter' ? 'Taşıyıcı' : 'Gönderilen'} firma başarıyla kaydedildi!`);
+      setShowAddCompanyModal(false);
+      // Reset form
+      setNewCompanyName('');
+      setNewCompanyAddress('');
+      setNewCompanyLat(null);
+      setNewCompanyLng(null);
+
+      // Refresh list
+      await fetchWasteCompanies();
+    } catch (err: any) {
+      alert('Firma eklenirken hata: ' + err.message);
+    } finally {
+      setSubmittingCompany(false);
+    }
+  };
+
+  const handleDeleteWaste = async (id: string) => {
+    if (!window.confirm('Bu atık kaydını silmek istediğinize emin misiniz?')) return;
+    try {
+      const { error } = await supabase
+        .from('waste_records')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      alert('Atık kaydı silindi.');
+      await fetchWasteRecords();
+    } catch (err: any) {
+      alert('Kayıt silinirken hata: ' + err.message);
+    }
+  };
+
+  const handleOpenEditWasteModal = (rec: any) => {
+    setEditingWasteId(rec.id);
+    setEditWasteClientId(rec.client_id || '');
+    setEditWasteCode(rec.waste_code || '');
+    setEditWasteExitDate(rec.exit_date || '');
+    setEditWasteQuantity(String(rec.quantity_kg) || '');
+    setEditWasteTransporterId(rec.transporter_id || '');
+    setEditWasteDestinationId(rec.destination_id || '');
+    setEditWasteDisposalType(rec.disposal_type || 'recovery');
+    setEditWasteDisposalCode(rec.disposal_code || '');
+    setEditWasteDescription(rec.description || '');
+    setShowEditWasteModal(true);
+  };
+
+  const handleUpdateWaste = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editWasteClientId || !editWasteCode || !editWasteExitDate || !editWasteQuantity || !editWasteTransporterId || !editWasteDestinationId || !editWasteDisposalType || !editWasteDisposalCode) {
+      return alert('Lütfen zorunlu alanları doldurun (Açıklama hariç tüm alanlar zorunludur).');
+    }
+
+    setUpdatingWaste(true);
+    try {
+      const qty = parseFloat(editWasteQuantity);
+      if (isNaN(qty) || qty <= 0) {
+        return alert('Atık miktarı 0\'dan büyük bir sayı olmalıdır.');
+      }
+
+      const selectedTransporter = wasteCompanies.find(c => c.id === editWasteTransporterId);
+      const selectedDestination = wasteCompanies.find(c => c.id === editWasteDestinationId);
+
+      const { error } = await supabase
+        .from('waste_records')
+        .update({
+          client_id: editWasteClientId,
+          waste_code: editWasteCode,
+          exit_date: editWasteExitDate,
+          quantity_kg: qty,
+          transporter_id: editWasteTransporterId || null,
+          destination_id: editWasteDestinationId || null,
+          transporter: selectedTransporter?.name || null,
+          transporter_address: selectedTransporter?.address || null,
+          destination: selectedDestination?.name || null,
+          destination_address: selectedDestination?.address || null,
+          disposal_type: editWasteDisposalType,
+          disposal_code: editWasteDisposalCode || null,
+          description: editWasteDescription.trim() || null,
+        })
+        .eq('id', editingWasteId);
+
+      if (error) throw error;
+
+      alert('Atık kaydı başarıyla güncellendi!');
+      setShowEditWasteModal(false);
+      await fetchWasteRecords();
+    } catch (err: any) {
+      alert('Atık kaydı güncellenirken hata: ' + err.message);
+    } finally {
+      setUpdatingWaste(false);
+    }
+  };
+
+  const handleGenerateReport = async () => {
+    if (!selectedReportClientId) {
+      return alert('Lütfen raporu oluşturulacak firmayı seçin.');
+    }
+
+    setGeneratingReport(true);
+    try {
+      // 1. Fetch Client Details
+      const { data: clientDetails, error: clientErr } = await supabase
+        .from('consultant_clients')
+        .select('*')
+        .eq('id', selectedReportClientId)
+        .single();
+
+      if (clientErr || !clientDetails) {
+        throw new Error(clientErr?.message || 'Firma bilgileri bulunamadı.');
+      }
+
+      // 2. Fetch Waste Records
+      let query = supabase
+        .from('waste_records')
+        .select(`
+          *,
+          transporter_company:waste_companies!transporter_id(id, name, address, latitude, longitude),
+          destination_company:waste_companies!destination_id(id, name, address, latitude, longitude)
+        `)
+        .eq('client_id', selectedReportClientId);
+
+      let periodLabel = 'Tüm Zamanlar (Genel)';
+      if (reportPeriodType === 'monthly') {
+        const [year, month] = reportMonth.split('-');
+        const lastDay = new Date(Number(year), Number(month), 0).getDate();
+        const start = `${reportMonth}-01`;
+        const end = `${reportMonth}-${String(lastDay).padStart(2, '0')}`;
+        query = query.gte('exit_date', start).lte('exit_date', end);
+        periodLabel = `${month}/${year} (Aylık)`;
+      } else if (reportPeriodType === 'yearly') {
+        const start = `${reportYear}-01-01`;
+        const end = `${reportYear}-12-31`;
+        query = query.gte('exit_date', start).lte('exit_date', end);
+        periodLabel = `${reportYear} Yılı (Yıllık)`;
+      }
+
+      const { data: records, error: recordsErr } = await query.order('exit_date', { ascending: true });
+
+      if (recordsErr) {
+        throw recordsErr;
+      }
+
+      if (!records || records.length === 0) {
+        return alert('Seçilen dönemde atık çıkış kaydı bulunamadı.');
+      }
+
+      // 3. Process data
+      let totalQty = 0;
+      let hazardousQty = 0;
+      let nonHazardousQty = 0;
+
+      const codeGroups: Record<string, { code: string; name: string; total: number; isHazardous: boolean }> = {};
+      const destGroups: Record<string, { name: string; address: string; total: number }> = {};
+
+      records.forEach(rec => {
+        const qty = Number(rec.quantity_kg) || 0;
+        totalQty += qty;
+
+        const isHazardous = rec.waste_code.trim().endsWith('*');
+        if (isHazardous) {
+          hazardousQty += qty;
+        } else {
+          nonHazardousQty += qty;
+        }
+
+        // Group by code
+        if (!codeGroups[rec.waste_code]) {
+          const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+          codeGroups[rec.waste_code] = {
+            code: rec.waste_code,
+            name: wasteDef ? wasteDef.name : 'Özel Atık Kodu / Tanımsız',
+            total: 0,
+            isHazardous
+          };
+        }
+        codeGroups[rec.waste_code].total += qty;
+
+        // Group by destination
+        const destName = rec.destination_company?.name || rec.destination || 'Belirtilmemiş Alıcı';
+        const destAddr = rec.destination_company?.address || rec.destination_address || 'Adres Girilmemiş';
+        if (!destGroups[destName]) {
+          destGroups[destName] = {
+            name: destName,
+            address: destAddr,
+            total: 0
+          };
+        }
+        destGroups[destName].total += qty;
+      });
+
+      // HTML generation
+      const groupedByCodeHtml = Object.values(codeGroups)
+        .map(g => `
+          <tr>
+            <td class="font-mono font-bold">${g.code}</td>
+            <td>${g.name}</td>
+            <td class="text-center font-bold">
+              <span class="badge ${g.isHazardous ? 'badge-rose' : 'badge-green'}">
+                ${g.isHazardous ? 'Tehlikeli' : 'Tehlikesiz'}
+              </span>
+            </td>
+            <td class="text-right font-black">${g.total.toLocaleString('tr-TR')} kg</td>
+          </tr>
+        `).join('');
+
+      const groupedByDestHtml = Object.values(destGroups)
+        .map(g => `
+          <tr>
+            <td class="font-bold">${g.name}</td>
+            <td>${g.address}</td>
+            <td class="text-right font-black">${g.total.toLocaleString('tr-TR')} kg</td>
+          </tr>
+        `).join('');
+
+      const detailedRowsHtml = records
+        .map(rec => {
+          const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+          return `
+            <tr>
+              <td>${new Date(rec.exit_date).toLocaleDateString('tr-TR')}</td>
+              <td>
+                <span class="font-mono font-bold">${rec.waste_code}</span>
+                <div class="details-subtext">${wasteDef ? wasteDef.name : 'Özel Atık'}</div>
+              </td>
+              <td class="text-right font-bold">${Number(rec.quantity_kg).toLocaleString('tr-TR')} kg</td>
+              <td>${rec.transporter_company?.name || rec.transporter || '-'}</td>
+              <td>${rec.destination_company?.name || rec.destination || '-'}</td>
+              <td class="text-center">
+                <span class="badge badge-rd ${rec.disposal_type === 'recovery' ? 'badge-teal' : 'badge-rose'}">
+                  ${rec.disposal_type === 'recovery' ? 'Geri Kazanım' : 'Bertaraf'} ${rec.disposal_code ? `(${rec.disposal_code})` : ''}
+                </span>
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+      // Open new window
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        return alert('Pop-up engelleyici rapor pencerelerini engelliyor. Lütfen tarayıcınızdan pop-uplara izin verin.');
+      }
+
+      const clientLogoUrl = clientDetails.logo_url;
+      const orgLogoUrl = myOrg.logo_url;
+
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Atık Yönetimi Raporu - ${clientDetails.name}</title>
+          <meta charset="utf-8">
+          <style>
+            body {
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              color: #1e293b;
+              margin: 0;
+              padding: 30px;
+              line-height: 1.5;
+              background-color: #ffffff;
+            }
+            .no-print {
+              display: flex;
+              justify-content: flex-end;
+              gap: 10px;
+              margin-bottom: 25px;
+            }
+            .no-print button {
+              padding: 10px 18px;
+              font-size: 12px;
+              font-weight: bold;
+              border-radius: 8px;
+              cursor: pointer;
+              border: none;
+              transition: opacity 0.2s;
+            }
+            .btn-primary {
+              background-color: #2ca58d;
+              color: white;
+            }
+            .btn-secondary {
+              background-color: #f1f5f9;
+              color: #475569;
+              border: 1px solid #cbd5e1 !important;
+            }
+            .header-container {
+              display: flex;
+              justify-content: space-between;
+              border-bottom: 3px solid #2ca58d;
+              padding-bottom: 20px;
+              margin-bottom: 30px;
+            }
+            .header-left {
+              display: flex;
+              align-items: center;
+              gap: 15px;
+              width: 48%;
+              text-align: left;
+            }
+            .header-right {
+              display: flex;
+              align-items: center;
+              gap: 15px;
+              width: 48%;
+              justify-content: flex-end;
+              text-align: right;
+            }
+            .logo-img {
+              width: 65px;
+              height: 65px;
+              object-fit: contain;
+              border: 1px solid #e2e8f0;
+              border-radius: 12px;
+              padding: 4px;
+              background-color: white;
+            }
+            .logo-placeholder {
+              width: 65px;
+              height: 65px;
+              min-width: 65px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              background-color: #f8fafc;
+              border: 1px dashed #cbd5e1;
+              border-radius: 12px;
+              color: #94a3b8;
+              font-size: 10px;
+              font-weight: bold;
+            }
+            .company-title {
+              font-size: 15px;
+              font-weight: 800;
+              color: #0f172a;
+              margin: 0 0 4px 0;
+            }
+            .consultant-title {
+              font-size: 15px;
+              font-weight: 800;
+              color: #2ca58d;
+              margin: 0 0 4px 0;
+            }
+            .company-details {
+              font-size: 11px;
+              color: #64748b;
+              margin: 2px 0;
+            }
+            .report-title-container {
+              text-align: center;
+              margin-bottom: 30px;
+            }
+            .report-title {
+              font-size: 20px;
+              font-weight: 900;
+              color: #0f172a;
+              margin: 0;
+              letter-spacing: 0.5px;
+            }
+            .report-period {
+              font-size: 11px;
+              color: #64748b;
+              font-weight: bold;
+              margin-top: 5px;
+              text-transform: uppercase;
+              letter-spacing: 1px;
+            }
+            .stats-grid {
+              display: grid;
+              grid-template-columns: repeat(3, 1fr);
+              gap: 15px;
+              margin-bottom: 35px;
+            }
+            .stat-card {
+              border: 1px solid #e2e8f0;
+              border-radius: 16px;
+              padding: 16px;
+              text-align: center;
+            }
+            .card-teal {
+              background-color: #f0fdfa;
+              border-color: #ccfbf1;
+            }
+            .card-rose {
+              background-color: #fff1f2;
+              border-color: #ffe4e6;
+            }
+            .card-blue {
+              background-color: #eff6ff;
+              border-color: #dbeafe;
+            }
+            .stat-label {
+              font-size: 10px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              margin-bottom: 4px;
+            }
+            .stat-label-teal { color: #0d9488; }
+            .stat-label-rose { color: #e11d48; }
+            .stat-label-blue { color: #2563eb; }
+            .stat-value {
+              font-size: 22px;
+              font-weight: 900;
+              color: #0f172a;
+            }
+            .stat-value span {
+              font-size: 12px;
+              font-weight: bold;
+              color: #64748b;
+            }
+            .section-container {
+              margin-bottom: 30px;
+            }
+            .section-heading {
+              font-size: 12px;
+              font-weight: 800;
+              text-transform: uppercase;
+              color: #1e293b;
+              border-bottom: 2px solid #e2e8f0;
+              padding-bottom: 6px;
+              margin-bottom: 12px;
+              letter-spacing: 0.5px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 11px;
+              margin-bottom: 10px;
+            }
+            th {
+              background-color: #f8fafc;
+              color: #475569;
+              font-weight: 700;
+              text-align: left;
+              padding: 8px 12px;
+              border-bottom: 2px solid #e2e8f0;
+              text-transform: uppercase;
+              font-size: 9px;
+              letter-spacing: 0.5px;
+            }
+            td {
+              padding: 10px 12px;
+              border-bottom: 1px solid #e2e8f0;
+              color: #334155;
+              vertical-align: middle;
+            }
+            tr:nth-child(even) td {
+              background-color: #f8fafc;
+            }
+            .text-right {
+              text-align: right;
+            }
+            .text-center {
+              text-align: center;
+            }
+            .font-mono {
+              font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", Courier, monospace;
+            }
+            .font-bold {
+              font-weight: bold;
+            }
+            .font-black {
+              font-weight: 900;
+            }
+            .badge {
+              display: inline-block;
+              padding: 3px 8px;
+              font-weight: bold;
+              font-size: 9px;
+              border-radius: 6px;
+              text-transform: uppercase;
+            }
+            .badge-teal {
+              background-color: #f0fdfa;
+              color: #0d9488;
+              border: 1px solid #ccfbf1;
+            }
+            .badge-rose {
+              background-color: #fff1f2;
+              color: #e11d48;
+              border: 1px solid #ffe4e6;
+            }
+            .badge-green {
+              background-color: #f0fdf4;
+              color: #16a34a;
+              border: 1px solid #dcfce7;
+            }
+            .badge-rd {
+              background-color: #f8fafc;
+              color: #475569;
+              border: 1px solid #cbd5e1;
+            }
+            .details-subtext {
+              font-size: 9px;
+              color: #64748b;
+              margin-top: 2px;
+            }
+            .signatures-container {
+              display: flex;
+              justify-content: space-between;
+              margin-top: 60px;
+              padding-top: 25px;
+              border-top: 1px dashed #cbd5e1;
+              page-break-inside: avoid;
+            }
+            .signature-box {
+              width: 45%;
+              text-align: center;
+            }
+            .signature-title {
+              font-size: 11px;
+              font-weight: bold;
+              color: #334155;
+              margin-bottom: 10px;
+            }
+            .signature-line {
+              height: 45px;
+              border-bottom: 1px solid #cbd5e1;
+              margin-bottom: 8px;
+            }
+            .signature-date {
+              font-size: 10px;
+              color: #94a3b8;
+            }
+            @media print {
+              body {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                padding: 0;
+              }
+              .no-print {
+                display: none !important;
+              }
+              .page-break {
+                page-break-before: always;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="no-print">
+            <button onclick="window.print()" class="btn-primary">
+              PDF Olarak Kaydet / Yazdır
+            </button>
+            <button onclick="window.close()" class="btn-secondary">
+              Kapat
+            </button>
+          </div>
+
+          <div class="header-container">
+            <div class="header-left">
+              \${clientLogoUrl ? \`<img src="\${clientLogoUrl}" class="logo-img" />\` : \`
+                <div class="logo-placeholder">LOGO</div>
+              \`}
+              <div>
+                <h2 class="company-title">\${clientDetails.name}</h2>
+                <p class="company-details">Vergi No: \${clientDetails.tax_no || '-'}</p>
+                <p class="company-details">Tel: \${clientDetails.phone || '-'}</p>
+                <p class="company-details">Adres: \${clientDetails.address || '-'}</p>
+              </div>
+            </div>
+            
+            <div class="header-right">
+              <div>
+                <h2 class="consultant-title">\${myOrg.name}</h2>
+                <p class="company-details">Çevre Danışmanlık ve Denetim</p>
+                <p class="company-details">Tel: \${myOrg.phone || '-'}</p>
+                <p class="company-details">E-posta: \${myOrg.email || '-'}</p>
+                <p class="company-details">Adres: \${myOrg.address || '-'}</p>
+              </div>
+              \${orgLogoUrl ? \`<img src="\${orgLogoUrl}" class="logo-img" />\` : \`
+                <div class="logo-placeholder">LOGO</div>
+              \`}
+            </div>
+          </div>
+
+          <div class="report-title-container">
+            <h1 class="report-title">ATIK YÖNETİMİ DÖKÜM RAPORU</h1>
+            <p class="report-period">RAPOR DÖNEMİ: \${periodLabel}</p>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card card-teal">
+              <div class="stat-label stat-label-teal">Toplam Atık Miktarı</div>
+              <div class="stat-value">\${totalQty.toLocaleString('tr-TR')} <span>kg</span></div>
+            </div>
+            <div class="stat-card card-rose">
+              <div class="stat-label stat-label-rose">Toplam Tehlikeli Atık</div>
+              <div class="stat-value">\${hazardousQty.toLocaleString('tr-TR')} <span>kg</span></div>
+            </div>
+            <div class="stat-card card-blue">
+              <div class="stat-label stat-label-blue">Toplam Tehlikesiz Atık</div>
+              <div class="stat-value">\${nonHazardousQty.toLocaleString('tr-TR')} <span>kg</span></div>
+            </div>
+          </div>
+
+          <div class="section-container">
+            <h3 class="section-heading">1. Atık Kodlarına Göre Kümülatif Dağılım</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 100px;">Atık Kodu</th>
+                  <th>Atık Tanımı</th>
+                  <th style="width: 120px;" class="text-center">Sınıfı</th>
+                  <th style="width: 150px;" class="text-right">Toplam Miktar</th>
+                </tr>
+              </thead>
+              <tbody>
+                \${groupedByCodeHtml}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-container" style="page-break-inside: avoid;">
+            <h3 class="section-heading">2. Gönderilen Geri Kazanım / Bertaraf Tesisleri Dağılımı</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Gönderilen Tesis (Alıcı Firma)</th>
+                  <th>Tesis Adresi / Lokasyonu</th>
+                  <th style="width: 180px;" class="text-right">Toplam Gönderilen Miktar</th>
+                </tr>
+              </thead>
+              <tbody>
+                \${groupedByDestHtml}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-container page-break">
+            <h3 class="section-heading">3. Ayrıntılı Atık Çıkış Kayıtları Dökümü</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 80px;">Tarih</th>
+                  <th>Atık Kodu & Tanımı</th>
+                  <th style="width: 110px;" class="text-right">Miktar (kg)</th>
+                  <th>Taşıyıcı Firma</th>
+                  <th>Gönderilen Tesis</th>
+                  <th style="width: 140px;" class="text-center">İşlem Yöntemi</th>
+                </tr>
+              </thead>
+              <tbody>
+                \${detailedRowsHtml}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="signatures-container">
+            <div class="signature-box">
+              <p class="signature-title">\${clientDetails.name} Temsilcisi / İmza</p>
+              <div class="signature-line"></div>
+              <p class="signature-date">Tarih: ____ / ____ / 20___</p>
+            </div>
+            <div class="signature-box">
+              <p class="signature-title">\${myOrg.name} Çevre Görevlisi / İmza</p>
+              <div class="signature-line"></div>
+              <p class="signature-date">Tarih: ____ / ____ / 20___</p>
+            </div>
+          </div>
+
+          <script>
+            window.onload = function() {
+              setTimeout(function() { window.print(); }, 500);
+            }
+          </script>
+        </body>
+        </html>
+      `);
+      printWindow.document.close();
+      setShowReportModal(false);
+    } catch (err: any) {
+      alert('Rapor oluşturulurken hata: ' + err.message);
+    } finally {
+      setGeneratingReport(false);
+    }
+  };
 
   // --- AKSİYON TAKİP SİSTEMİ FONKSİYONLARI ---
   const fetchComplianceActions = async () => {
@@ -1206,6 +2165,19 @@ export default function CompanyPanel() {
         >
           <CheckCircle size={16} /> Aksiyon Takip
         </button>
+        <button
+          onClick={() => {
+            setActiveTab('waste');
+            setSearchParams({ tab: 'waste' });
+          }}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'waste'
+              ? 'border-purple-600 text-purple-600 dark:text-purple-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Trash2 size={16} /> Atık Yönetimi
+        </button>
       </div>
 
       {activeTab === 'team' && (
@@ -1229,6 +2201,8 @@ export default function CompanyPanel() {
                         className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${
                           member.role === 'corporate_chief'
                             ? 'bg-blue-600'
+                            : member.role === 'premium_corporate'
+                            ? 'bg-rose-600'
                             : 'bg-gray-400'
                         }`}
                       >
@@ -1242,6 +2216,8 @@ export default function CompanyPanel() {
                             className={`text-[10px] px-2 py-0.5 rounded border uppercase ${
                               member.role === 'corporate_chief'
                                 ? 'bg-blue-50 text-blue-600 border-blue-200'
+                                : member.role === 'premium_corporate'
+                                ? 'bg-rose-50 text-rose-700 border-rose-250 font-bold'
                                 : 'bg-gray-100 text-gray-600 border-gray-200'
                             }`}
                           >
@@ -1255,7 +2231,7 @@ export default function CompanyPanel() {
                     </div>
 
                     {/* Yönetici Butonları */}
-                    {isCorporateAdmin && (
+                    {isCorporateAdmin && member.role !== 'premium_corporate' && (
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleToggleRole(member)}
@@ -1591,6 +2567,7 @@ export default function CompanyPanel() {
                         <option value="compliant">Uyum: Uygun</option>
                         <option value="non_compliant">Uyum: Uygun Değil</option>
                         <option value="exempt">Uyum: Hariç Tutulanlar</option>
+                        <option value="near_expiry">Süresi Yaklaşanlar {"<"} 30 gün</option>
                       </select>
 
                       {selectedReg.parent?.rg_no && (
@@ -1619,6 +2596,9 @@ export default function CompanyPanel() {
                         if (articleFilter === 'exempt') {
                           return !art.is_mandatory;
                         }
+                        if (articleFilter === 'near_expiry') {
+                          return art.is_mandatory && isNearExpiry(art.expiry_date);
+                        }
                         return true;
                       });
 
@@ -1633,7 +2613,7 @@ export default function CompanyPanel() {
                       return filtered.map((art) => (
                         <div
                           key={art.id}
-                          className={`p-4 rounded-xl border transition shadow-sm bg-white ${getStatusStyles(art)}`}
+                          className={`p-4 rounded-xl border transition shadow-sm ${getStatusStyles(art)}`}
                         >
                           <div className="flex justify-between items-start gap-4 flex-wrap sm:flex-nowrap">
                             <div className="flex-1">
@@ -1679,8 +2659,18 @@ export default function CompanyPanel() {
 
                               {/* Validity Date Info */}
                               {art.is_mandatory && (
-                                <div className="text-[10px] text-gray-400 mt-1 font-semibold">
-                                  Geçerlilik Süresi: <span className="font-extrabold text-purple-600 dark:text-purple-400">{art.expiry_date ? new Date(art.expiry_date).toLocaleDateString('tr-TR') : 'Süresiz'}</span>
+                                <div className="text-[10px] text-gray-400 mt-1 font-semibold flex items-center gap-1.5 flex-wrap">
+                                  <span>Geçerlilik Süresi:</span>
+                                  {isNearExpiry(art.expiry_date) ? (
+                                    <span className="font-extrabold text-rose-600 dark:text-rose-400 animate-pulse flex items-center gap-1 bg-rose-50 dark:bg-rose-950/20 px-1.5 py-0.5 rounded border border-rose-200">
+                                      <span>⏳</span>
+                                      {new Date(art.expiry_date).toLocaleDateString('tr-TR')} (Süresi Yaklaşıyor!)
+                                    </span>
+                                  ) : (
+                                    <span className="font-extrabold text-purple-600 dark:text-purple-400 font-mono">
+                                      {art.expiry_date ? new Date(art.expiry_date).toLocaleDateString('tr-TR') : 'Süresiz'}
+                                    </span>
+                                  )}
                                 </div>
                               )}
 
@@ -1946,12 +2936,14 @@ export default function CompanyPanel() {
                     <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                       req.status === 'pending'
                         ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+                        : req.status === 'escalated'
+                        ? 'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900'
                         : req.status === 'approved'
                         ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
                         : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
                     }`}
                     >
-                      {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                      {req.status === 'pending' ? 'Bekliyor' : req.status === 'escalated' ? 'Yönlendirildi' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
                     </span>
                   </div>
                   {req.description && (
@@ -2224,7 +3216,525 @@ export default function CompanyPanel() {
         </div>
       )}
 
-                  {/* --- YENİ: ZORUNLU AÇIKLAMA GİRİŞ MODALI --- */}
+      {activeTab === 'waste' && (
+        <div className="space-y-6 animate-fadeIn">
+          {/* SQL Table Missing Alert Banner */}
+          {isWasteTableMissing && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-6 text-center space-y-3">
+              <AlertCircle className="text-red-600 mx-auto animate-bounce" size={40} />
+              <h4 className="font-bold text-red-800 text-lg">Veritabanı Tablosu Eksik!</h4>
+              <p className="text-sm text-red-700 max-w-xl mx-auto leading-relaxed">
+                Atık Yönetimi özelliğini kullanabilmek için öncelikle veritabanı tablolarının oluşturulması gerekmektedir. 
+                Lütfen projenizin kök dizinindeki <b>create_waste_records.sql</b> dosyasının içeriğini Supabase SQL Editörünüzde çalıştırın.
+              </p>
+            </div>
+          )}
+
+          {/* Header & Add Button */}
+          {!isWasteTableMissing && (
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-2xl border shadow-sm animate-fadeIn">
+              <div>
+                <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                  <Trash2 className="text-[#2ca58d]" size={22} />
+                  Atık Yönetimi Modülü
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Atanan firmalarınız için ortaya çıkan atıkları kaydedin, taşıyıcı ve geri kazanım bilgilerini takip edin.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => {
+                    if (assignedClients.length === 0) {
+                      return alert('Üzerinize atanan herhangi bir firma bulunmadığından atık kaydı oluşturamazsınız.');
+                    }
+                    setNewWasteClientId(assignedClients[0]?.id || '');
+                    setNewWasteCode('');
+                    setNewWasteExitDate(new Date().toISOString().split('T')[0]);
+                    setNewWasteQuantity('');
+                    setNewWasteTransporterId('');
+                    setNewWasteDestinationId('');
+                    setNewWasteDisposalCode('');
+                    setNewWasteTransporter('');
+                    setNewWasteTransporterAddress('');
+                    setNewWasteDestination('');
+                    setNewWasteDestinationAddress('');
+                    setNewWasteDisposalType('recovery');
+                    setNewWasteDescription('');
+                    setShowAddWasteModal(true);
+                  }}
+                  className="bg-[#2ca58d] hover:bg-[#238c75] text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-md"
+                >
+                  <PlusCircle size={16} /> Yeni Atık Kaydı Ekle
+                </button>
+                <button
+                  onClick={() => {
+                    setNewCompanyType('generic');
+                    setNewCompanyName('');
+                    setNewCompanyAddress('');
+                    setNewCompanyLat(null);
+                    setNewCompanyLng(null);
+                    setShowAddCompanyModal(true);
+                  }}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-sm"
+                >
+                  <PlusCircle size={16} className="text-[#2ca58d]" /> Firma Ekle (Taşıyıcı/Gönderilen)
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedReportClientId(assignedClients[0]?.id || '');
+                    setReportPeriodType('all');
+                    setReportMonth(new Date().toISOString().substring(0, 7));
+                    setReportYear(String(new Date().getFullYear()));
+                    setShowReportModal(true);
+                  }}
+                  className="bg-purple-600 hover:bg-purple-750 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-md shadow-purple-50"
+                >
+                  <FileText size={16} /> Atık Çıkış Raporu (PDF)
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Filters */}
+          {!isWasteTableMissing && (
+            <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-wrap gap-4 items-center animate-fadeIn">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Filtrele & Ara</span>
+              
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-500 font-semibold">Atık Kodu / Tanımı:</label>
+                <input
+                  type="text"
+                  placeholder="Atık kodu veya tanımı ara..."
+                  value={wasteSearchQuery}
+                  onChange={(e) => setWasteSearchQuery(e.target.value)}
+                  className="p-1.5 border rounded-lg text-xs bg-white border-gray-200 outline-none text-slate-700 font-semibold"
+                />
+              </div>
+
+              {isConsultant && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 font-semibold">Firma:</label>
+                  <select
+                    value={wasteFilterClient}
+                    onChange={(e) => setWasteFilterClient(e.target.value)}
+                    className="p-1.5 border rounded-lg text-xs bg-white border-gray-200 outline-none text-slate-700 font-bold"
+                  >
+                    <option value="">Tüm Firmalar</option>
+                    {assignedClients.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* List Table */}
+          {!isWasteTableMissing && (
+            loadingWaste ? (
+              <div className="flex justify-center items-center py-20 text-xs text-gray-500 gap-2">
+                <Loader className="animate-spin" size={16} /> Atık Kayıtları Yükleniyor...
+              </div>
+            ) : (
+              (() => {
+                const filtered = wasteRecords.filter(rec => {
+                  if (wasteFilterClient && rec.client_id !== wasteFilterClient) return false;
+                  if (wasteSearchQuery) {
+                    const query = wasteSearchQuery.toLowerCase();
+                    const codeMatch = rec.waste_code.toLowerCase().includes(query);
+                    const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+                    const nameMatch = wasteDef ? wasteDef.name.toLowerCase().includes(query) : false;
+                    const descMatch = rec.description ? rec.description.toLowerCase().includes(query) : false;
+                    return codeMatch || nameMatch || descMatch;
+                  }
+                  return true;
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-center py-20 bg-white border border-dashed rounded-xl text-xs text-gray-400 italic space-y-2">
+                      <Trash2 size={32} className="mx-auto mb-2 opacity-25 text-[#2ca58d]" />
+                      Atık kaydı bulunamadı.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="bg-white rounded-2xl border shadow-sm overflow-hidden animate-fadeIn">
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-150">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Firma</th>
+                            <th className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Atık Kodu & Tanımı</th>
+                            <th className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Çıkış Tarihi</th>
+                            <th className="px-6 py-3.5 text-right text-xs font-bold text-gray-500 uppercase tracking-wider">Miktar (kg)</th>
+                            <th className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Taşıyıcı</th>
+                            <th className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Gönderilen Yer</th>
+                            <th className="px-6 py-3.5 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Tür</th>
+                            <th className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Açıklama</th>
+                            <th className="px-6 py-3.5 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">İşlem</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-100">
+                          {filtered.map(rec => {
+                            const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+                            const isCreator = rec.created_by === myProfile?.id;
+                            const isManager = myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief';
+                            
+                            return (
+                              <tr key={rec.id} className="hover:bg-gray-50/50 transition">
+                                <td className="px-6 py-4 whitespace-nowrap text-xs font-bold text-gray-800">
+                                  {rec.client?.name || 'Bilinmeyen'}
+                                </td>
+                                <td className="px-6 py-4 text-xs text-gray-600 max-w-xs">
+                                  <div className="font-bold text-slate-800">{rec.waste_code}</div>
+                                  <div className="text-[10px] text-gray-400 line-clamp-2" title={wasteDef?.name}>
+                                    {wasteDef?.name || 'Tanım bulunamadı (Özel Kod)'}
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-500">
+                                  {new Date(rec.exit_date).toLocaleDateString('tr-TR')}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-xs font-black text-right text-slate-800">
+                                  {Number(rec.quantity_kg).toLocaleString('tr-TR')}
+                                </td>
+                                <td className="px-6 py-4 text-xs text-gray-500">
+                                  <div className="font-bold text-slate-800">
+                                    {rec.transporter_company?.name || rec.transporter || '-'}
+                                  </div>
+                                  {(rec.transporter_company?.address || rec.transporter_address) && (
+                                    <div className="text-[10px] text-gray-400 font-medium max-w-[150px] truncate" title={rec.transporter_company?.address || rec.transporter_address}>
+                                      {rec.transporter_company?.address || rec.transporter_address}
+                                    </div>
+                                  )}
+                                  {rec.transporter_company?.latitude && rec.transporter_company?.longitude && (
+                                    <div className="text-[9px] text-teal-600 font-semibold mt-0.5" title={`${rec.transporter_company.latitude}, ${rec.transporter_company.longitude}`}>
+                                      📍 {Number(rec.transporter_company.latitude).toFixed(4)}, {Number(rec.transporter_company.longitude).toFixed(4)}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-6 py-4 text-xs text-gray-500">
+                                  <div className="font-bold text-slate-800">
+                                    {rec.destination_company?.name || rec.destination || '-'}
+                                  </div>
+                                  {(rec.destination_company?.address || rec.destination_address) && (
+                                    <div className="text-[10px] text-gray-400 font-medium max-w-[150px] truncate" title={rec.destination_company?.address || rec.destination_address}>
+                                      {rec.destination_company?.address || rec.destination_address}
+                                    </div>
+                                  )}
+                                  {rec.destination_company?.latitude && rec.destination_company?.longitude && (
+                                    <div className="text-[9px] text-teal-600 font-semibold mt-0.5" title={`${rec.destination_company.latitude}, ${rec.destination_company.longitude}`}>
+                                      📍 {Number(rec.destination_company.latitude).toFixed(4)}, {Number(rec.destination_company.longitude).toFixed(4)}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-center">
+                                  <div className="flex flex-col items-center gap-1">
+                                    <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border uppercase ${
+                                      rec.disposal_type === 'recovery'
+                                        ? 'bg-green-50 text-green-700 border-green-200'
+                                        : 'bg-rose-50 text-rose-700 border-rose-250'
+                                    }`}>
+                                      {rec.disposal_type === 'recovery' ? 'Geri Kazanım' : 'Bertaraf'}
+                                    </span>
+                                    {rec.disposal_code && (
+                                      <span className="text-[9px] font-mono font-bold text-gray-500 bg-gray-50 border border-gray-250 px-1.5 py-0.5 rounded">
+                                        {rec.disposal_code}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 text-xs text-gray-500 max-w-xs truncate" title={rec.description}>
+                                  {rec.description || '-'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-center text-xs">
+                                  {(isCreator || isManager) ? (
+                                    <div className="flex justify-center items-center gap-1.5">
+                                      <button
+                                        onClick={() => handleOpenEditWasteModal(rec)}
+                                        className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 p-1.5 rounded-lg transition"
+                                        title="Kaydı Düzenle"
+                                      >
+                                        <Edit2 size={14} />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteWaste(rec.id)}
+                                        className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-lg transition"
+                                        title="Kayıt Sil"
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()
+            )
+          )}
+        </div>
+      )}
+
+      {showAddWasteModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[999] p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 border animate-scaleIn">
+            <div className="flex justify-between items-center pb-4 border-b">
+              <h3 className="font-bold text-gray-800 text-md flex items-center gap-1.5">
+                <PlusCircle className="text-[#2ca58d]" size={20} />
+                Yeni Atık Kaydı
+              </h3>
+              <button onClick={() => setShowAddWasteModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleCreateWaste} className="space-y-4 pt-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Atık Çıkan Firma <span className="text-red-500">*</span>
+                </label>
+                <select
+                  required
+                  value={newWasteClientId}
+                  onChange={(e) => setNewWasteClientId(e.target.value)}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d]"
+                >
+                  {assignedClients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="relative">
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Atık Kodu & Tanımı <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Kod yazın (örn: 15 01 02) veya arayın..."
+                  value={newWasteCode}
+                  onChange={(e) => setNewWasteCode(e.target.value)}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-mono font-bold text-slate-800"
+                />
+                {newWasteCode.trim().length > 0 && !WASTE_CODES.some(w => w.code === newWasteCode) && (
+                  <div className="absolute left-0 right-0 mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 py-1 text-xs">
+                    {WASTE_CODES.filter(w => 
+                      w.code.includes(newWasteCode) || 
+                      w.name.toLowerCase().includes(newWasteCode.toLowerCase())
+                    ).slice(0, 15).map(w => (
+                      <button
+                        type="button"
+                        key={w.code}
+                        onClick={() => setNewWasteCode(w.code)}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-50 border-b last:border-0"
+                      >
+                        <span className="font-bold font-mono text-[#2ca58d] mr-2">{w.code}</span>
+                        <span className="text-gray-600 text-[11px]">{w.name}</span>
+                      </button>
+                    ))}
+                    {WASTE_CODES.filter(w => 
+                      w.code.includes(newWasteCode) || 
+                      w.name.toLowerCase().includes(newWasteCode.toLowerCase())
+                    ).length === 0 && (
+                      <div className="px-3 py-2 text-gray-400 italic text-[11px]">
+                        Özel kod olarak kaydedilecek: "{newWasteCode}"
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Çıkış Tarihi <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="date"
+                    value={newWasteExitDate}
+                    onChange={(e) => setNewWasteExitDate(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Miktar (kg) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    placeholder="Miktar"
+                    value={newWasteQuantity}
+                    onChange={(e) => setNewWasteQuantity(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-bold"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Taşıyıcı Firma <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={newWasteTransporterId}
+                    onChange={(e) => setNewWasteTransporterId(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-bold"
+                  >
+                    <option value="">Seçiniz...</option>
+                    {wasteCompanies.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.address ? `(${c.address})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Gönderilen Firma <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={newWasteDestinationId}
+                    onChange={(e) => setNewWasteDestinationId(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-bold"
+                  >
+                    <option value="">Seçiniz...</option>
+                    {wasteCompanies.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.address ? `(${c.address})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Yöntem Türü <span className="text-red-500">*</span>
+                </label>
+                <div className="flex gap-4 mb-2">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="disposal_type"
+                      value="recovery"
+                      checked={newWasteDisposalType === 'recovery'}
+                      onChange={() => {
+                        setNewWasteDisposalType('recovery');
+                        setNewWasteDisposalCode('');
+                      }}
+                      className="text-[#2ca58d] focus:ring-[#2ca58d]"
+                    />
+                    Geri Kazanım
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="disposal_type"
+                      value="disposal"
+                      checked={newWasteDisposalType === 'disposal'}
+                      onChange={() => {
+                        setNewWasteDisposalType('disposal');
+                        setNewWasteDisposalCode('');
+                      }}
+                      className="text-rose-600 focus:ring-rose-500"
+                    />
+                    Bertaraf
+                  </label>
+                </div>
+
+                {newWasteDisposalType === 'recovery' ? (
+                  <div className="animate-fadeIn">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                      Geri Kazanım Kodu (R Kodu) <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      required
+                      value={newWasteDisposalCode}
+                      onChange={(e) => setNewWasteDisposalCode(e.target.value)}
+                      className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d]"
+                    >
+                      <option value="">Kod Seçiniz (R1 - R13)...</option>
+                      {RECOVERY_CODES.map(item => (
+                        <option key={item.code} value={item.code}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="animate-fadeIn">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                      Bertaraf Kodu (D Kodu) <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      required
+                      value={newWasteDisposalCode}
+                      onChange={(e) => setNewWasteDisposalCode(e.target.value)}
+                      className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d]"
+                    >
+                      <option value="">Kod Seçiniz (D1 - D15)...</option>
+                      {DISPOSAL_CODES.map(item => (
+                        <option key={item.code} value={item.code}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Açıklama
+                </label>
+                <textarea
+                  placeholder="Atıkla alakalı eklemek istediğiniz notlar..."
+                  value={newWasteDescription}
+                  onChange={(e) => setNewWasteDescription(e.target.value)}
+                  rows={2}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] resize-none"
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => setShowAddWasteModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-50"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingWaste}
+                  className="px-4 py-2 bg-[#2ca58d] hover:bg-[#238c75] text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-teal-50"
+                >
+                  {submittingWaste ? 'Kaydediliyor...' : 'Kaydet'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- YENİ: ZORUNLU AÇIKLAMA GİRİŞ MODALI --- */}
       {showComplianceNoteModal && complianceNoteData && (() => {
         const type = complianceNoteData.type;
         
@@ -2584,16 +4094,33 @@ export default function CompanyPanel() {
                     className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100 cursor-pointer"
                   />
                 ) : (
-                  <select
-                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-purple-500 font-bold text-xs text-slate-700 dark:text-slate-350 border-slate-200"
-                    value={selectedEvidenceDocUrl}
-                    onChange={(e) => setSelectedEvidenceDocUrl(e.target.value)}
-                  >
-                    <option value="">-- Evrak Seçin --</option>
-                    {userDocuments.map(d => (
-                      <option key={d.id} value={d.file_url}>{d.title}</option>
-                    ))}
-                  </select>
+                  <div className="space-y-2">
+                    <select
+                      className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-purple-500 font-bold text-xs text-slate-700 dark:text-slate-350 border-slate-200"
+                      value={selectedEvidenceLocation}
+                      onChange={(e) => {
+                        setSelectedEvidenceLocation(e.target.value);
+                        setSelectedEvidenceDocUrl('');
+                      }}
+                    >
+                      <option value="">-- Tüm Lokasyonlar --</option>
+                      {Array.from(new Set(userDocuments.map(d => d.location_def?.label).filter(Boolean))).map(loc => (
+                        <option key={loc} value={loc}>{loc}</option>
+                      ))}
+                    </select>
+                    <select
+                      className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-purple-500 font-bold text-xs text-slate-700 dark:text-slate-350 border-slate-200"
+                      value={selectedEvidenceDocUrl}
+                      onChange={(e) => setSelectedEvidenceDocUrl(e.target.value)}
+                    >
+                      <option value="">-- Evrak Seçin --</option>
+                      {userDocuments
+                        .filter(d => !selectedEvidenceLocation || d.location_def?.label === selectedEvidenceLocation)
+                        .map(d => (
+                          <option key={d.id} value={d.file_url}>{d.title}</option>
+                        ))}
+                    </select>
+                  </div>
                 )}
               </div>
 
@@ -2810,6 +4337,487 @@ export default function CompanyPanel() {
           </div>
         </div>
       )}
+
+      {showAddCompanyModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[999] p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border animate-scaleIn">
+            <div className="flex justify-between items-center pb-4 border-b">
+              <h3 className="font-bold text-gray-800 text-md flex items-center gap-1.5">
+                <PlusCircle className="text-[#2ca58d]" size={20} />
+                Yeni Firma Ekle (Taşıyıcı / Gönderilen)
+              </h3>
+              <button onClick={() => setShowAddCompanyModal(false)} className="text-gray-450 hover:text-gray-600">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleCreateCompany} className="space-y-4 pt-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Firma Adı / Ünvanı <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Firma Adı"
+                  value={newCompanyName}
+                  onChange={(e) => setNewCompanyName(e.target.value)}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Adres
+                </label>
+                <textarea
+                  placeholder="Firma Adresi"
+                  value={newCompanyAddress}
+                  onChange={(e) => setNewCompanyAddress(e.target.value)}
+                  rows={2}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] resize-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Konum Koordinatları</label>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Enlem"
+                    value={newCompanyLat !== null && newCompanyLat !== undefined ? newCompanyLat : ''}
+                    onChange={(e) => setNewCompanyLat(e.target.value ? parseFloat(e.target.value) : null)}
+                    className="w-1/2 border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-mono font-bold"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Boylam"
+                    value={newCompanyLng !== null && newCompanyLng !== undefined ? newCompanyLng : ''}
+                    onChange={(e) => setNewCompanyLng(e.target.value ? parseFloat(e.target.value) : null)}
+                    className="w-1/2 border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-mono font-bold"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCompanyMap(true)}
+                  className="w-full bg-[#2ca58d] hover:bg-[#238c75] text-white py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <MapPin size={14} /> Haritadan Konum Seç
+                </button>
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => setShowAddCompanyModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-50"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingCompany}
+                  className="px-4 py-2 bg-[#2ca58d] hover:bg-[#238c75] text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-teal-50"
+                >
+                  {submittingCompany ? 'Kaydediliyor...' : 'Kaydet'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showEditWasteModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[999] p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 border animate-scaleIn">
+            <div className="flex justify-between items-center pb-4 border-b">
+              <h3 className="font-bold text-gray-800 text-md flex items-center gap-1.5">
+                <Edit2 className="text-blue-500" size={20} />
+                Atık Kaydını Düzenle
+              </h3>
+              <button onClick={() => setShowEditWasteModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleUpdateWaste} className="space-y-4 pt-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Atık Çıkan Firma <span className="text-red-500">*</span>
+                </label>
+                <select
+                  required
+                  value={editWasteClientId}
+                  onChange={(e) => setEditWasteClientId(e.target.value)}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {assignedClients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="relative">
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Atık Kodu & Tanımı <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Kod yazın (örn: 15 01 02) veya arayın..."
+                  value={editWasteCode}
+                  onChange={(e) => setEditWasteCode(e.target.value)}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500 font-mono font-bold text-slate-800"
+                />
+                {editWasteCode.trim().length > 0 && !WASTE_CODES.some(w => w.code === editWasteCode) && (
+                  <div className="absolute left-0 right-0 mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 py-1 text-xs">
+                    {WASTE_CODES.filter(w => 
+                      w.code.includes(editWasteCode) || 
+                      w.name.toLowerCase().includes(editWasteCode.toLowerCase())
+                    ).slice(0, 15).map(w => (
+                      <button
+                        type="button"
+                        key={w.code}
+                        onClick={() => setEditWasteCode(w.code)}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-55 border-b last:border-0"
+                      >
+                        <span className="font-bold font-mono text-blue-500 mr-2">{w.code}</span>
+                        <span className="text-gray-600 text-[11px]">{w.name}</span>
+                      </button>
+                    ))}
+                    {WASTE_CODES.filter(w => 
+                      w.code.includes(editWasteCode) || 
+                      w.name.toLowerCase().includes(editWasteCode.toLowerCase())
+                    ).length === 0 && (
+                      <div className="px-3 py-2 text-gray-400 italic text-[11px]">
+                        Özel kod olarak kaydedilecek: "{editWasteCode}"
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Çıkış Tarihi <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="date"
+                    value={editWasteExitDate}
+                    onChange={(e) => setEditWasteExitDate(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Miktar (kg) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    placeholder="Miktar"
+                    value={editWasteQuantity}
+                    onChange={(e) => setEditWasteQuantity(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500 font-bold"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Taşıyıcı Firma <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={editWasteTransporterId}
+                    onChange={(e) => setEditWasteTransporterId(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500 font-bold"
+                  >
+                    <option value="">Seçiniz...</option>
+                    {wasteCompanies.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.address ? `(${c.address})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    Gönderilen Firma <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={editWasteDestinationId}
+                    onChange={(e) => setEditWasteDestinationId(e.target.value)}
+                    className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500 font-bold"
+                  >
+                    <option value="">Seçiniz...</option>
+                    {wasteCompanies.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.address ? `(${c.address})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Yöntem Türü <span className="text-red-500">*</span>
+                </label>
+                <div className="flex gap-4 mb-2">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="edit_disposal_type"
+                      value="recovery"
+                      checked={editWasteDisposalType === 'recovery'}
+                      onChange={() => {
+                        setEditWasteDisposalType('recovery');
+                        setEditWasteDisposalCode('');
+                      }}
+                      className="text-blue-500 focus:ring-blue-500"
+                    />
+                    Geri Kazanım
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="edit_disposal_type"
+                      value="disposal"
+                      checked={editWasteDisposalType === 'disposal'}
+                      onChange={() => {
+                        setEditWasteDisposalType('disposal');
+                        setEditWasteDisposalCode('');
+                      }}
+                      className="text-rose-600 focus:ring-rose-500"
+                    />
+                    Bertaraf
+                  </label>
+                </div>
+
+                {editWasteDisposalType === 'recovery' ? (
+                  <div className="animate-fadeIn">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                      Geri Kazanım Kodu (R Kodu) <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      required
+                      value={editWasteDisposalCode}
+                      onChange={(e) => setEditWasteDisposalCode(e.target.value)}
+                      className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">Kod Seçiniz (R1 - R13)...</option>
+                      {RECOVERY_CODES.map(item => (
+                        <option key={item.code} value={item.code}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="animate-fadeIn">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                      Bertaraf Kodu (D Kodu) <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      required
+                      value={editWasteDisposalCode}
+                      onChange={(e) => setEditWasteDisposalCode(e.target.value)}
+                      className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">Kod Seçiniz (D1 - D15)...</option>
+                      {DISPOSAL_CODES.map(item => (
+                        <option key={item.code} value={item.code}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Açıklama
+                </label>
+                <textarea
+                  placeholder="Atıkla alakalı eklemek istediğiniz notlar..."
+                  value={editWasteDescription}
+                  onChange={(e) => setEditWasteDescription(e.target.value)}
+                  rows={2}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => setShowEditWasteModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-50"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={updatingWaste}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-blue-50"
+                >
+                  {updatingWaste ? 'Güncelleniyor...' : 'Güncelle'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showReportModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[999] p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border animate-scaleIn">
+            <div className="flex justify-between items-center pb-4 border-b">
+              <h3 className="font-bold text-gray-800 text-md flex items-center gap-1.5">
+                <FileText className="text-purple-600" size={20} />
+                Atık Çıkış Raporu Oluştur (PDF)
+              </h3>
+              <button onClick={() => setShowReportModal(false)} className="text-gray-400 hover:text-gray-655">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="space-y-4 pt-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Firma Seçin <span className="text-red-500">*</span>
+                </label>
+                <select
+                  required
+                  value={selectedReportClientId}
+                  onChange={(e) => setSelectedReportClientId(e.target.value)}
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-purple-500 font-bold"
+                >
+                  <option value="" disabled>Seçiniz...</option>
+                  {assignedClients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Rapor Dönemi <span className="text-red-500">*</span>
+                </label>
+                <div className="flex gap-4 mb-3">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="reportPeriodType"
+                      value="all"
+                      checked={reportPeriodType === 'all'}
+                      onChange={() => setReportPeriodType('all')}
+                      className="text-purple-600 focus:ring-purple-500"
+                    />
+                    Tüm Zamanlar
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="reportPeriodType"
+                      value="monthly"
+                      checked={reportPeriodType === 'monthly'}
+                      onChange={() => setReportPeriodType('monthly')}
+                      className="text-purple-600 focus:ring-purple-500"
+                    />
+                    Aylık
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold cursor-pointer">
+                    <input
+                      type="radio"
+                      name="reportPeriodType"
+                      value="yearly"
+                      checked={reportPeriodType === 'yearly'}
+                      onChange={() => setReportPeriodType('yearly')}
+                      className="text-purple-600 focus:ring-purple-500"
+                    />
+                    Yıllık
+                  </label>
+                </div>
+
+                {reportPeriodType === 'monthly' && (
+                  <div className="animate-fadeIn">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                      Ay Seçin <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="month"
+                      required
+                      value={reportMonth}
+                      onChange={(e) => setReportMonth(e.target.value)}
+                      className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-purple-500 font-bold"
+                    />
+                  </div>
+                )}
+
+                {reportPeriodType === 'yearly' && (
+                  <div className="animate-fadeIn">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">
+                      Yıl Seçin <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      min="2000"
+                      max="2100"
+                      value={reportYear}
+                      onChange={(e) => setReportYear(e.target.value)}
+                      className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-purple-500 font-bold"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => setShowReportModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-50"
+                >
+                  İptal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateReport}
+                  disabled={generatingReport}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-750 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-purple-50"
+                >
+                  {generatingReport ? 'Oluşturuluyor...' : 'Raporu Oluştur (PDF)'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <MapPickerModal
+        isOpen={showCompanyMap}
+        onClose={() => setShowCompanyMap(false)}
+        initialLat={newCompanyLat}
+        initialLng={newCompanyLng}
+        onSelect={(latVal, lngVal, addressVal) => {
+          setNewCompanyLat(latVal);
+          setNewCompanyLng(lngVal);
+          setNewCompanyAddress(prev => prev || addressVal || '');
+          setShowCompanyMap(false);
+        }}
+      />
     </div>
   );
 }

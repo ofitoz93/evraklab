@@ -192,6 +192,8 @@ export default function AdminPanel() {
     'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests'
   >('tickets');
 
+  const [legSubTab, setLegSubTab] = useState<'pool' | 'requests'>('pool');
+
   // --- MEVZUAT HAVUZU (LEGISLATIONS) STATE'LERİ ---
   const [legislations, setLegislations] = useState<any[]>([]);
   const [legislationRequests, setLegislationRequests] = useState<any[]>([]);
@@ -496,6 +498,12 @@ export default function AdminPanel() {
 
   const handleRequestStatusUpdate = async (requestId: string, status: 'approved' | 'rejected') => {
     try {
+      const { data: currentReq, error: getErr } = await supabase
+        .from('regulation_requests')
+        .select('parent_request_id')
+        .eq('id', requestId)
+        .single();
+      
       const { error } = await supabase
         .from('regulation_requests')
         .update({
@@ -504,6 +512,17 @@ export default function AdminPanel() {
         })
         .eq('id', requestId);
       if (error) throw error;
+
+      if (currentReq?.parent_request_id) {
+        await supabase
+          .from('regulation_requests')
+          .update({
+            status,
+            admin_notes: requestAdminNotes.trim()
+          })
+          .eq('id', currentReq.parent_request_id);
+      }
+
       alert('Talep güncellendi.');
       setReplyingRequest(null);
       setRequestAdminNotes('');
@@ -1316,27 +1335,19 @@ export default function AdminPanel() {
             <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider block mb-3 px-2">Mevzuat</span>
             <nav className="space-y-1">
               <button
-                onClick={() => setActiveTab('legislations')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                onClick={() => {
+                  setActiveTab('legislations');
+                  setLegSubTab('pool');
+                }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-bold transition ${
                   activeTab === 'legislations'
                     ? 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400'
                     : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
                 }`}
               >
-                <Scale size={18} />
-                <span>Mevzuat Havuzu</span>
-              </button>
-              <button
-                onClick={() => setActiveTab('legislation_requests')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-bold transition ${
-                  activeTab === 'legislation_requests'
-                    ? 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400'
-                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
-                }`}
-              >
                 <div className="flex items-center gap-3">
-                  <MessageSquare size={18} />
-                  <span>Mevzuat Talepleri</span>
+                  <Scale size={18} />
+                  <span>Mevzuat Havuzu</span>
                 </div>
                 {legislationRequests.filter(r => r.status === 'pending').length > 0 && (
                   <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
@@ -1344,6 +1355,7 @@ export default function AdminPanel() {
                   </span>
                 )}
               </button>
+              
             </nav>
           </div>
 
@@ -1753,7 +1765,40 @@ export default function AdminPanel() {
         {/* LEGISLATIONS TAB */}
         {activeTab === 'legislations' && (
           <div className="animate-fadeIn space-y-6">
-            <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-100">
+            {/* Sub-tabs header */}
+            <div className="flex border-b border-gray-200 dark:border-slate-700 mb-6 text-xs gap-2">
+              <button
+                type="button"
+                onClick={() => setLegSubTab('pool')}
+                className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                  legSubTab === 'pool'
+                    ? 'bg-teal-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+                }`}
+              >
+                <Scale size={14} /> Mevzuat Havuzu
+              </button>
+              <button
+                type="button"
+                onClick={() => setLegSubTab('requests')}
+                className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition relative ${
+                  legSubTab === 'requests'
+                    ? 'bg-teal-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+                }`}
+              >
+                <MessageSquare size={14} /> Mevzuat Talepleri
+                {legislationRequests.filter(r => r.status === 'pending').length > 0 && (
+                  <span className="bg-orange-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-bold ml-1">
+                    {legislationRequests.filter(r => r.status === 'pending').length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {legSubTab === 'pool' && (
+              <div className="space-y-6">
+                <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-100">
               <span className="text-sm text-gray-500 font-medium flex items-center gap-2">
                 <Scale size={16} className="text-teal-500" />
                 Global mevzuat havuzunu yönetin ve danışmanlık firmalarına yetki tanımlayın.
@@ -1885,11 +1930,11 @@ export default function AdminPanel() {
                 )}
               </div>
             </div>
-          </div>
-        )}
-
-        {/* LEGISLATION REQUESTS TAB */}
-        {activeTab === 'legislation_requests' && (
+              </div>
+            )}
+            
+            {/* LEGISLATION REQUESTS TAB */}
+        {legSubTab === 'requests' && (
           <div className="animate-fadeIn space-y-6">
             <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 flex justify-between items-center">
               <span className="text-sm text-gray-500 font-medium flex items-center gap-2">
@@ -1924,10 +1969,11 @@ export default function AdminPanel() {
                       <div className="flex justify-between items-center">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
                           req.status === 'pending' ? 'bg-orange-50 text-orange-700 border border-orange-100' :
+                          req.status === 'escalated' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
                           req.status === 'approved' ? 'bg-green-50 text-green-700 border border-green-100' :
                           'bg-red-50 text-red-700 border border-red-100'
                         }`}>
-                          {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                          {req.status === 'pending' ? 'Bekliyor' : req.status === 'escalated' ? 'Yönlendirildi' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
                         </span>
                         <span className="text-slate-400">{new Date(req.created_at).toLocaleDateString()}</span>
                       </div>
@@ -1965,6 +2011,8 @@ export default function AdminPanel() {
               </div>
             </div>
           </div>
+        )}
+        </div>
         )}
 
         {/* --- YENİ TAB: E-POSTA AYARLARI --- */}
