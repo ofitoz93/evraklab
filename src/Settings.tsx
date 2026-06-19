@@ -45,6 +45,17 @@ export default function Settings({ session }: { session: any }) {
   const [passwordSaving, setPasswordSaving] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const orgLogoInputRef = useRef<HTMLInputElement>(null);
+
+  // Şirket Profili (sadece premium_corporate)
+  const [orgId, setOrgId] = useState<string | null>(null);
+  const [orgName, setOrgName] = useState('');
+  const [orgPhone, setOrgPhone] = useState('');
+  const [orgEmail, setOrgEmail] = useState('');
+  const [orgAddress, setOrgAddress] = useState('');
+  const [orgLogoUrl, setOrgLogoUrl] = useState<string | null>(null);
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [uploadingOrgLogo, setUploadingOrgLogo] = useState(false);
 
   useEffect(() => {
     if (session) {
@@ -108,6 +119,16 @@ export default function Settings({ session }: { session: any }) {
           setEmail(profileData.email || session.user.email);
           setPhone(profileData.phone || '');
           setAvatarUrl(profileData.avatar_url || null);
+
+          // Load org fields for company owner
+          if (orgData && profileData.role === 'premium_corporate') {
+            setOrgId(orgData.id);
+            setOrgName(orgData.name || '');
+            setOrgPhone(orgData.phone || '');
+            setOrgEmail(orgData.email || '');
+            setOrgAddress(orgData.address || '');
+            setOrgLogoUrl(orgData.logo_url || null);
+          }
 
           // Check if there is a pending join request
           if (!profileData.organization_id) {
@@ -215,6 +236,61 @@ export default function Settings({ session }: { session: any }) {
       alert('Hata: ' + err.message);
     } finally {
       setUploadingAvatar(false);
+    }
+  };
+
+  const handleOrgLogoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!event.target.files || event.target.files.length === 0 || !orgId) return;
+    const file = event.target.files[0];
+    const fileExt = file.name.split('.').pop();
+    const fileName = `org_logos/${orgId}-${Date.now()}.${fileExt}`;
+
+    setUploadingOrgLogo(true);
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, file, { upsert: true });
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(fileName);
+
+      const { error: updateError } = await supabase
+        .from('organizations')
+        .update({ logo_url: publicUrl })
+        .eq('id', orgId);
+      if (updateError) throw updateError;
+
+      setOrgLogoUrl(publicUrl);
+      alert('Şirket logosu güncellendi!');
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setUploadingOrgLogo(false);
+    }
+  };
+
+  const handleUpdateOrg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orgId) return;
+    if (!orgPhone.trim()) return alert('Şirket telefon numarası boş bırakılamaz.');
+    if (!orgEmail.trim()) return alert('Şirket e-posta adresi boş bırakılamaz.');
+
+    setSavingOrg(true);
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({
+          phone: orgPhone.trim(),
+          email: orgEmail.trim(),
+          address: orgAddress.trim(),
+        })
+        .eq('id', orgId);
+      if (error) throw error;
+      alert('Şirket bilgileri güncellendi!');
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setSavingOrg(false);
     }
   };
 
@@ -734,6 +810,104 @@ export default function Settings({ session }: { session: any }) {
               </div>
             </form>
           </div>
+
+          {/* ŞİRKET PROFİLİ - Sadece Şirket Sahibine Görünür */}
+          {profile?.role === 'premium_corporate' && orgId && (
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200">
+              <h3 className="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+                <Building size={20} className="text-emerald-500" /> Şirket Profili
+              </h3>
+              <p className="text-xs text-gray-400 mb-6">
+                Bu bilgiler atık yönetimi raporlarında danışmanlık firması olarak görünür.
+              </p>
+
+              {/* Logo */}
+              <div className="flex items-center gap-6 mb-6 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                <div className="relative w-20 h-20 flex-shrink-0 group">
+                  <div className="w-full h-full rounded-xl overflow-hidden border-2 border-white shadow bg-white flex items-center justify-center">
+                    {orgLogoUrl ? (
+                      <img src={orgLogoUrl} alt="Şirket Logosu" className="w-full h-full object-contain p-1" />
+                    ) : (
+                      <Building size={32} className="text-gray-300" />
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => orgLogoInputRef.current?.click()}
+                    className="absolute inset-0 bg-black/40 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                  >
+                    {uploadingOrgLogo ? (
+                      <Loader className="animate-spin text-white" size={20} />
+                    ) : (
+                      <Camera className="text-white" size={20} />
+                    )}
+                  </button>
+                  <input
+                    type="file"
+                    ref={orgLogoInputRef}
+                    className="hidden"
+                    accept="image/*"
+                    onChange={handleOrgLogoUpload}
+                  />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-gray-700">{orgName}</p>
+                  <p className="text-xs text-gray-400 mt-1">Logo yüklemek için resmin üzerine tıklayın.</p>
+                  <p className="text-xs text-gray-400">PNG, JPG, SVG desteklenir. (Maks. 2 MB)</p>
+                </div>
+              </div>
+
+              {/* İletişim Bilgileri */}
+              <form onSubmit={handleUpdateOrg} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold mb-1">
+                      <Phone size={13} className="inline mr-1" /> Şirket Telefonu
+                    </label>
+                    <input
+                      type="tel"
+                      className="w-full border p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      value={orgPhone}
+                      placeholder="0212 000 00 00"
+                      onChange={(e) => setOrgPhone(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold mb-1">
+                      <Mail size={13} className="inline mr-1" /> Şirket E-postası
+                    </label>
+                    <input
+                      type="email"
+                      className="w-full border p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      value={orgEmail}
+                      placeholder="info@firmaniz.com"
+                      onChange={(e) => setOrgEmail(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold mb-1">Şirket Adresi</label>
+                  <textarea
+                    rows={2}
+                    className="w-full border p-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+                    value={orgAddress}
+                    placeholder="Şirket açık adresi..."
+                    onChange={(e) => setOrgAddress(e.target.value)}
+                  />
+                </div>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={savingOrg}
+                    className="bg-emerald-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-emerald-700 transition flex items-center gap-2"
+                  >
+                    {savingOrg ? <Loader size={18} className="animate-spin" /> : <Save size={18} />}
+                    Şirket Bilgilerini Kaydet
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
 
           {/* ŞİFRE GÜNCELLEME */}
           <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200">

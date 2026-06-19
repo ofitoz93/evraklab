@@ -1118,42 +1118,43 @@ export default function CompanyPanel() {
       const groupedByCodeHtml = Object.values(codeGroups)
         .map(g => `
           <tr>
-            <td class="font-mono font-bold">${g.code}</td>
+            <td class="mono">${g.code}</td>
             <td>${g.name}</td>
-            <td class="text-center font-bold">
-              <span class="badge ${g.isHazardous ? 'badge-rose' : 'badge-green'}">
-                ${g.isHazardous ? 'Tehlikeli' : 'Tehlikesiz'}
+            <td class="center">
+              <span class="badge ${g.isHazardous ? 'badge-hazard' : 'badge-safe'}">
+                ${g.isHazardous ? 'Tehlikeli ⚠' : 'Tehlikesiz ✔'}
               </span>
             </td>
-            <td class="text-right font-black">${g.total.toLocaleString('tr-TR')} kg</td>
+            <td class="right">${g.total.toLocaleString('tr-TR')} kg</td>
           </tr>
         `).join('');
 
       const groupedByDestHtml = Object.values(destGroups)
         .map(g => `
           <tr>
-            <td class="font-bold">${g.name}</td>
-            <td>${g.address}</td>
-            <td class="text-right font-black">${g.total.toLocaleString('tr-TR')} kg</td>
+            <td class="bold">${g.name}</td>
+            <td class="small">${g.address}</td>
+            <td class="right">${g.total.toLocaleString('tr-TR')} kg</td>
           </tr>
         `).join('');
 
       const detailedRowsHtml = records
         .map(rec => {
           const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+          const isHazardous = rec.waste_code.trim().endsWith('*');
           return `
             <tr>
               <td>${new Date(rec.exit_date).toLocaleDateString('tr-TR')}</td>
               <td>
-                <span class="font-mono font-bold">${rec.waste_code}</span>
-                <div class="details-subtext">${wasteDef ? wasteDef.name : 'Özel Atık'}</div>
+                <span class="mono">${rec.waste_code}</span>
+                <div class="waste-name">${wasteDef ? wasteDef.name : 'Özel Atık'}</div>
               </td>
-              <td class="text-right font-bold">${Number(rec.quantity_kg).toLocaleString('tr-TR')} kg</td>
-              <td>${rec.transporter_company?.name || rec.transporter || '-'}</td>
-              <td>${rec.destination_company?.name || rec.destination || '-'}</td>
-              <td class="text-center">
-                <span class="badge badge-rd ${rec.disposal_type === 'recovery' ? 'badge-teal' : 'badge-rose'}">
-                  ${rec.disposal_type === 'recovery' ? 'Geri Kazanım' : 'Bertaraf'} ${rec.disposal_code ? `(${rec.disposal_code})` : ''}
+              <td class="right">${Number(rec.quantity_kg).toLocaleString('tr-TR')} kg</td>
+              <td class="small">${rec.transporter_company?.name || rec.transporter || '-'}</td>
+              <td class="small">${rec.destination_company?.name || rec.destination || '-'}</td>
+              <td class="center">
+                <span class="badge ${rec.disposal_type === 'recovery' ? 'badge-recovery' : 'badge-disposal'}">
+                  ${rec.disposal_type === 'recovery' ? 'Geri Kaz.' : 'Bertaraf'} ${rec.disposal_code ? `(${rec.disposal_code})` : ''}
                 </span>
               </td>
             </tr>
@@ -1167,430 +1168,416 @@ export default function CompanyPanel() {
       }
 
       const clientLogoUrl = clientDetails.logo_url;
-      const orgLogoUrl = myOrg.logo_url;
+      // Danışman firmanın logosu consultant_logo_url alanında tutulur (ConsultantPanel tarafından)
+      // logo_url Settings.tsx üzerinden de girilebilir — ikisini de dene
+      const orgLogoUrl = myOrg.consultant_logo_url || myOrg.logo_url || null;
+      const orgPhone   = myOrg.phone   || '';
+      const orgEmail   = myOrg.email   || '';
+      const orgAddress = myOrg.address || '';
 
       printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Atık Yönetimi Raporu - ${clientDetails.name}</title>
-          <meta charset="utf-8">
-          <style>
-            body {
-              font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-              color: #1e293b;
-              margin: 0;
-              padding: 30px;
-              line-height: 1.5;
-              background-color: #ffffff;
-            }
-            .no-print {
-              display: flex;
-              justify-content: flex-end;
-              gap: 10px;
-              margin-bottom: 25px;
-            }
-            .no-print button {
-              padding: 10px 18px;
-              font-size: 12px;
-              font-weight: bold;
-              border-radius: 8px;
-              cursor: pointer;
-              border: none;
-              transition: opacity 0.2s;
-            }
-            .btn-primary {
-              background-color: #2ca58d;
-              color: white;
-            }
-            .btn-secondary {
-              background-color: #f1f5f9;
-              color: #475569;
-              border: 1px solid #cbd5e1 !important;
-            }
-            .header-container {
-              display: flex;
-              justify-content: space-between;
-              border-bottom: 3px solid #2ca58d;
-              padding-bottom: 20px;
-              margin-bottom: 30px;
-            }
-            .header-left {
-              display: flex;
-              align-items: center;
-              gap: 15px;
-              width: 48%;
-              text-align: left;
-            }
-            .header-right {
-              display: flex;
-              align-items: center;
-              gap: 15px;
-              width: 48%;
-              justify-content: flex-end;
-              text-align: right;
-            }
-            .logo-img {
-              width: 65px;
-              height: 65px;
-              object-fit: contain;
-              border: 1px solid #e2e8f0;
-              border-radius: 12px;
-              padding: 4px;
-              background-color: white;
-            }
-            .logo-placeholder {
-              width: 65px;
-              height: 65px;
-              min-width: 65px;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              background-color: #f8fafc;
-              border: 1px dashed #cbd5e1;
-              border-radius: 12px;
-              color: #94a3b8;
-              font-size: 10px;
-              font-weight: bold;
-            }
-            .company-title {
-              font-size: 15px;
-              font-weight: 800;
-              color: #0f172a;
-              margin: 0 0 4px 0;
-            }
-            .consultant-title {
-              font-size: 15px;
-              font-weight: 800;
-              color: #2ca58d;
-              margin: 0 0 4px 0;
-            }
-            .company-details {
-              font-size: 11px;
-              color: #64748b;
-              margin: 2px 0;
-            }
-            .report-title-container {
-              text-align: center;
-              margin-bottom: 30px;
-            }
-            .report-title {
-              font-size: 20px;
-              font-weight: 900;
-              color: #0f172a;
-              margin: 0;
-              letter-spacing: 0.5px;
-            }
-            .report-period {
-              font-size: 11px;
-              color: #64748b;
-              font-weight: bold;
-              margin-top: 5px;
-              text-transform: uppercase;
-              letter-spacing: 1px;
-            }
-            .stats-grid {
-              display: grid;
-              grid-template-columns: repeat(3, 1fr);
-              gap: 15px;
-              margin-bottom: 35px;
-            }
-            .stat-card {
-              border: 1px solid #e2e8f0;
-              border-radius: 16px;
-              padding: 16px;
-              text-align: center;
-            }
-            .card-teal {
-              background-color: #f0fdfa;
-              border-color: #ccfbf1;
-            }
-            .card-rose {
-              background-color: #fff1f2;
-              border-color: #ffe4e6;
-            }
-            .card-blue {
-              background-color: #eff6ff;
-              border-color: #dbeafe;
-            }
-            .stat-label {
-              font-size: 10px;
-              font-weight: 800;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-              margin-bottom: 4px;
-            }
-            .stat-label-teal { color: #0d9488; }
-            .stat-label-rose { color: #e11d48; }
-            .stat-label-blue { color: #2563eb; }
-            .stat-value {
-              font-size: 22px;
-              font-weight: 900;
-              color: #0f172a;
-            }
-            .stat-value span {
-              font-size: 12px;
-              font-weight: bold;
-              color: #64748b;
-            }
-            .section-container {
-              margin-bottom: 30px;
-            }
-            .section-heading {
-              font-size: 12px;
-              font-weight: 800;
-              text-transform: uppercase;
-              color: #1e293b;
-              border-bottom: 2px solid #e2e8f0;
-              padding-bottom: 6px;
-              margin-bottom: 12px;
-              letter-spacing: 0.5px;
-            }
-            table {
-              width: 100%;
-              border-collapse: collapse;
-              font-size: 11px;
-              margin-bottom: 10px;
-            }
-            th {
-              background-color: #f8fafc;
-              color: #475569;
-              font-weight: 700;
-              text-align: left;
-              padding: 8px 12px;
-              border-bottom: 2px solid #e2e8f0;
-              text-transform: uppercase;
-              font-size: 9px;
-              letter-spacing: 0.5px;
-            }
-            td {
-              padding: 10px 12px;
-              border-bottom: 1px solid #e2e8f0;
-              color: #334155;
-              vertical-align: middle;
-            }
-            tr:nth-child(even) td {
-              background-color: #f8fafc;
-            }
-            .text-right {
-              text-align: right;
-            }
-            .text-center {
-              text-align: center;
-            }
-            .font-mono {
-              font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", Courier, monospace;
-            }
-            .font-bold {
-              font-weight: bold;
-            }
-            .font-black {
-              font-weight: 900;
-            }
-            .badge {
-              display: inline-block;
-              padding: 3px 8px;
-              font-weight: bold;
-              font-size: 9px;
-              border-radius: 6px;
-              text-transform: uppercase;
-            }
-            .badge-teal {
-              background-color: #f0fdfa;
-              color: #0d9488;
-              border: 1px solid #ccfbf1;
-            }
-            .badge-rose {
-              background-color: #fff1f2;
-              color: #e11d48;
-              border: 1px solid #ffe4e6;
-            }
-            .badge-green {
-              background-color: #f0fdf4;
-              color: #16a34a;
-              border: 1px solid #dcfce7;
-            }
-            .badge-rd {
-              background-color: #f8fafc;
-              color: #475569;
-              border: 1px solid #cbd5e1;
-            }
-            .details-subtext {
-              font-size: 9px;
-              color: #64748b;
-              margin-top: 2px;
-            }
-            .signatures-container {
-              display: flex;
-              justify-content: space-between;
-              margin-top: 60px;
-              padding-top: 25px;
-              border-top: 1px dashed #cbd5e1;
-              page-break-inside: avoid;
-            }
-            .signature-box {
-              width: 45%;
-              text-align: center;
-            }
-            .signature-title {
-              font-size: 11px;
-              font-weight: bold;
-              color: #334155;
-              margin-bottom: 10px;
-            }
-            .signature-line {
-              height: 45px;
-              border-bottom: 1px solid #cbd5e1;
-              margin-bottom: 8px;
-            }
-            .signature-date {
-              font-size: 10px;
-              color: #94a3b8;
-            }
-            @media print {
-              body {
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-                padding: 0;
-              }
-              .no-print {
-                display: none !important;
-              }
-              .page-break {
-                page-break-before: always;
-              }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="no-print">
-            <button onclick="window.print()" class="btn-primary">
-              PDF Olarak Kaydet / Yazdır
-            </button>
-            <button onclick="window.close()" class="btn-secondary">
-              Kapat
-            </button>
-          </div>
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Atık Yönetimi Raporu - ${clientDetails.name}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 12px;
+      color: #1e293b;
+      background: #ffffff;
+      padding: 0;
+    }
+    /* ─── PRINT BAR ─── */
+    .no-print {
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 12px 24px;
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .btn-print {
+      background: #2ca58d;
+      color: #fff;
+      border: none;
+      padding: 9px 20px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.3px;
+    }
+    .btn-close {
+      background: #ffffff;
+      color: #475569;
+      border: 1px solid #cbd5e1;
+      padding: 9px 20px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    /* ─── PAGE WRAPPER ─── */
+    .page {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 36px 48px;
+    }
+    /* ─── HEADER ─── */
+    .report-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding-bottom: 20px;
+      border-bottom: 3px solid #2ca58d;
+      margin-bottom: 28px;
+    }
+    .logo-block {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .logo-placeholder {
+      width: 60px;
+      height: 60px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: #94a3b8;
+    }
+    .logo-placeholder img {
+      width: 60px;
+      height: 60px;
+      object-fit: contain;
+      border-radius: 10px;
+    }
+    .company-info h2 {
+      font-size: 15px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-bottom: 4px;
+    }
+    .company-info p {
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.6;
+    }
+    .consultant-block {
+      text-align: right;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      justify-content: flex-end;
+    }
+    .consultant-block .company-info h2 {
+      color: #2ca58d;
+    }
+    /* ─── TITLE ─── */
+    .report-title {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .report-title h1 {
+      font-size: 20px;
+      font-weight: 900;
+      color: #0f172a;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+    .report-title .period-badge {
+      display: inline-block;
+      margin-top: 8px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 4px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    /* ─── SUMMARY CARDS ─── */
+    .summary-cards {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .card {
+      flex: 1;
+      border-radius: 12px;
+      padding: 16px 20px;
+      text-align: center;
+      border: 1px solid;
+    }
+    .card-total   { background: #f0fdf9; border-color: #a7f3d0; }
+    .card-hazard  { background: #fff1f2; border-color: #fecdd3; }
+    .card-safe    { background: #eff6ff; border-color: #bfdbfe; }
+    .card-label {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 6px;
+    }
+    .card-total   .card-label { color: #2ca58d; }
+    .card-hazard  .card-label { color: #e11d48; }
+    .card-safe    .card-label { color: #2563eb; }
+    .card-value {
+      font-size: 26px;
+      font-weight: 900;
+    }
+    .card-total   .card-value { color: #0f766e; }
+    .card-hazard  .card-value { color: #be123c; }
+    .card-safe    .card-value { color: #1d4ed8; }
+    .card-unit {
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      margin-left: 4px;
+    }
+    /* ─── SECTION ─── */
+    .section {
+      margin-bottom: 32px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #1e293b;
+      padding: 8px 14px;
+      background: #f8fafc;
+      border-left: 4px solid #2ca58d;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 12px;
+    }
+    /* ─── TABLES ─── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    thead tr {
+      background: #f1f5f9;
+    }
+    thead th {
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: #475569;
+      border-bottom: 2px solid #e2e8f0;
+    }
+    thead th.right { text-align: right; }
+    thead th.center { text-align: center; }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    tbody tr:hover { background: #f0fdf4; }
+    tbody td {
+      padding: 9px 14px;
+      border-bottom: 1px solid #e2e8f0;
+      color: #334155;
+      vertical-align: middle;
+    }
+    tbody td.right { text-align: right; font-weight: 700; }
+    tbody td.center { text-align: center; }
+    tbody td.mono { font-family: 'Courier New', monospace; font-weight: 700; color: #0f172a; font-size: 12px; }
+    tbody td.small { font-size: 10px; color: #64748b; }
+    tbody td.bold { font-weight: 700; color: #0f172a; }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 10px;
+      font-weight: 700;
+      border: 1px solid;
+    }
+    .badge-hazard  { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
+    .badge-safe    { background: #f0fdf4; color: #15803d; border-color: #a7f3d0; }
+    .badge-recovery{ background: #f0fdfa; color: #0d9488; border-color: #a7f3d0; }
+    .badge-disposal{ background: #fff1f2; color: #e11d48; border-color: #fecdd3; }
+    .waste-name    { font-size: 10px; color: #94a3b8; margin-top: 2px; line-height: 1.3; }
+    /* ─── SIGNATURE ─── */
+    .signature-row {
+      display: flex;
+      gap: 48px;
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 2px dashed #e2e8f0;
+    }
+    .signature-box {
+      flex: 1;
+      text-align: center;
+    }
+    .signature-box .sig-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #334155;
+      margin-bottom: 40px;
+    }
+    .signature-box .sig-line {
+      border-bottom: 1px solid #94a3b8;
+      margin-bottom: 6px;
+    }
+    .signature-box .sig-date {
+      font-size: 10px;
+      color: #94a3b8;
+    }
+    /* ─── PRINT ─── */
+    @media print {
+      body  { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .no-print { display: none !important; }
+      .page-break { page-break-before: always; }
+      .page { padding: 20px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <button class="btn-print" onclick="window.print()">⬇ PDF Olarak Kaydet / Yazdır</button>
+    <button class="btn-close" onclick="window.close()">✕ Kapat</button>
+  </div>
 
-          <div class="header-container">
-            <div class="header-left">
-              \${clientLogoUrl ? \`<img src="\${clientLogoUrl}" class="logo-img" />\` : \`
-                <div class="logo-placeholder">LOGO</div>
-              \`}
-              <div>
-                <h2 class="company-title">\${clientDetails.name}</h2>
-                <p class="company-details">Vergi No: \${clientDetails.tax_no || '-'}</p>
-                <p class="company-details">Tel: \${clientDetails.phone || '-'}</p>
-                <p class="company-details">Adres: \${clientDetails.address || '-'}</p>
-              </div>
-            </div>
-            
-            <div class="header-right">
-              <div>
-                <h2 class="consultant-title">\${myOrg.name}</h2>
-                <p class="company-details">Çevre Danışmanlık ve Denetim</p>
-                <p class="company-details">Tel: \${myOrg.phone || '-'}</p>
-                <p class="company-details">E-posta: \${myOrg.email || '-'}</p>
-                <p class="company-details">Adres: \${myOrg.address || '-'}</p>
-              </div>
-              \${orgLogoUrl ? \`<img src="\${orgLogoUrl}" class="logo-img" />\` : \`
-                <div class="logo-placeholder">LOGO</div>
-              \`}
-            </div>
-          </div>
+  <div class="page">
 
-          <div class="report-title-container">
-            <h1 class="report-title">ATIK YÖNETİMİ DÖKÜM RAPORU</h1>
-            <p class="report-period">RAPOR DÖNEMİ: \${periodLabel}</p>
-          </div>
+    <!-- HEADER -->
+    <div class="report-header">
+      <div class="logo-block">
+        ${clientLogoUrl
+          ? `<div class="logo-placeholder"><img src="${clientLogoUrl}" alt="logo"/></div>`
+          : `<div class="logo-placeholder">LOGO</div>`}
+        <div class="company-info">
+          <h2>${clientDetails.name}</h2>
+          <p>Vergi No: ${clientDetails.tax_no || '-'}</p>
+          <p>Tel: ${clientDetails.phone || '-'}</p>
+          <p>${clientDetails.address || '-'}</p>
+        </div>
+      </div>
+      <div class="consultant-block">
+        <div class="company-info">
+          <h2>${myOrg.name}</h2>
+          <p style="font-size:10px;color:#2ca58d;font-weight:700;margin-bottom:2px;">Çevre Danışmanlık &amp; Denetim</p>
+          ${orgPhone ? `<p>Tel: ${orgPhone}</p>` : ''}
+          ${orgEmail ? `<p>E-posta: ${orgEmail}</p>` : ''}
+          ${orgAddress ? `<p>${orgAddress}</p>` : ''}
+        </div>
+        ${orgLogoUrl
+          ? `<div class="logo-placeholder"><img src="${orgLogoUrl}" alt="logo"/></div>`
+          : `<div class="logo-placeholder">LOGO</div>`}
+      </div>
+    </div>
 
-          <div class="stats-grid">
-            <div class="stat-card card-teal">
-              <div class="stat-label stat-label-teal">Toplam Atık Miktarı</div>
-              <div class="stat-value">\${totalQty.toLocaleString('tr-TR')} <span>kg</span></div>
-            </div>
-            <div class="stat-card card-rose">
-              <div class="stat-label stat-label-rose">Toplam Tehlikeli Atık</div>
-              <div class="stat-value">\${hazardousQty.toLocaleString('tr-TR')} <span>kg</span></div>
-            </div>
-            <div class="stat-card card-blue">
-              <div class="stat-label stat-label-blue">Toplam Tehlikesiz Atık</div>
-              <div class="stat-value">\${nonHazardousQty.toLocaleString('tr-TR')} <span>kg</span></div>
-            </div>
-          </div>
+    <!-- TITLE -->
+    <div class="report-title">
+      <h1>Atık Yönetimi Döküm Raporu</h1>
+      <span class="period-badge">Rapor Dönemi: ${periodLabel}</span>
+    </div>
 
-          <div class="section-container">
-            <h3 class="section-heading">1. Atık Kodlarına Göre Kümülatif Dağılım</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th style="width: 100px;">Atık Kodu</th>
-                  <th>Atık Tanımı</th>
-                  <th style="width: 120px;" class="text-center">Sınıfı</th>
-                  <th style="width: 150px;" class="text-right">Toplam Miktar</th>
-                </tr>
-              </thead>
-              <tbody>
-                \${groupedByCodeHtml}
-              </tbody>
-            </table>
-          </div>
+    <!-- SUMMARY CARDS -->
+    <div class="summary-cards">
+      <div class="card card-total">
+        <div class="card-label">Toplam Atık Miktarı</div>
+        <div class="card-value">${totalQty.toLocaleString('tr-TR')}<span class="card-unit">kg</span></div>
+      </div>
+      <div class="card card-hazard">
+        <div class="card-label">Tehlikeli Atık</div>
+        <div class="card-value">${hazardousQty.toLocaleString('tr-TR')}<span class="card-unit">kg</span></div>
+      </div>
+      <div class="card card-safe">
+        <div class="card-label">Tehlikesiz Atık</div>
+        <div class="card-value">${nonHazardousQty.toLocaleString('tr-TR')}<span class="card-unit">kg</span></div>
+      </div>
+    </div>
 
-          <div class="section-container" style="page-break-inside: avoid;">
-            <h3 class="section-heading">2. Gönderilen Geri Kazanım / Bertaraf Tesisleri Dağılımı</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Gönderilen Tesis (Alıcı Firma)</th>
-                  <th>Tesis Adresi / Lokasyonu</th>
-                  <th style="width: 180px;" class="text-right">Toplam Gönderilen Miktar</th>
-                </tr>
-              </thead>
-              <tbody>
-                \${groupedByDestHtml}
-              </tbody>
-            </table>
-          </div>
+    <!-- SECTION 1: CODE GROUPS -->
+    <div class="section">
+      <div class="section-title">1 — Atık Kodlarına Göre Kümülatif Dağılım</div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:110px">Atık Kodu</th>
+            <th>Atık Tanımı</th>
+            <th class="center" style="width:110px">Sınıfı</th>
+            <th class="right" style="width:130px">Toplam Miktar</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${groupedByCodeHtml}
+        </tbody>
+      </table>
+    </div>
 
-          <div class="section-container page-break">
-            <h3 class="section-heading">3. Ayrıntılı Atık Çıkış Kayıtları Dökümü</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th style="width: 80px;">Tarih</th>
-                  <th>Atık Kodu & Tanımı</th>
-                  <th style="width: 110px;" class="text-right">Miktar (kg)</th>
-                  <th>Taşıyıcı Firma</th>
-                  <th>Gönderilen Tesis</th>
-                  <th style="width: 140px;" class="text-center">İşlem Yöntemi</th>
-                </tr>
-              </thead>
-              <tbody>
-                \${detailedRowsHtml}
-              </tbody>
-            </table>
-          </div>
+    <!-- SECTION 2: DESTINATION GROUPS -->
+    <div class="section">
+      <div class="section-title">2 — Gönderilen Geri Kazanım / Bertaraf Tesisleri</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Gönderilen Tesis / Alıcı Firma</th>
+            <th>Adres / Lokasyon</th>
+            <th class="right" style="width:150px">Toplam Miktar</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${groupedByDestHtml}
+        </tbody>
+      </table>
+    </div>
 
-          <div class="signatures-container">
-            <div class="signature-box">
-              <p class="signature-title">\${clientDetails.name} Temsilcisi / İmza</p>
-              <div class="signature-line"></div>
-              <p class="signature-date">Tarih: ____ / ____ / 20___</p>
-            </div>
-            <div class="signature-box">
-              <p class="signature-title">\${myOrg.name} Çevre Görevlisi / İmza</p>
-              <div class="signature-line"></div>
-              <p class="signature-date">Tarih: ____ / ____ / 20___</p>
-            </div>
-          </div>
+    <!-- SECTION 3: DETAIL ROWS -->
+    <div class="section page-break">
+      <div class="section-title">3 — Ayrıntılı Atık Çıkış Kayıtları</div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:88px">Tarih</th>
+            <th>Atık Kodu &amp; Tanımı</th>
+            <th class="right" style="width:100px">Miktar</th>
+            <th>Taşıyıcı Firma</th>
+            <th>Gönderilen Tesis</th>
+            <th class="center" style="width:130px">İşlem Yöntemi</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${detailedRowsHtml}
+        </tbody>
+      </table>
+    </div>
 
-          <script>
-            window.onload = function() {
-              setTimeout(function() { window.print(); }, 500);
-            }
-          </script>
-        </body>
-        </html>
+    <!-- SIGNATURES -->
+    <div class="signature-row">
+      <div class="signature-box">
+        <div class="sig-label">${clientDetails.name}<br/>Yetkili Temsilci / İmza</div>
+        <div class="sig-line"></div>
+        <div class="sig-date">Tarih: _____ / _____ / 20_____</div>
+      </div>
+      <div class="signature-box">
+        <div class="sig-label">${myOrg.name}<br/>Çevre Görevlisi / İmza</div>
+        <div class="sig-line"></div>
+        <div class="sig-date">Tarih: _____ / _____ / 20_____</div>
+      </div>
+    </div>
+
+  </div>
+  <script>
+    window.onload = function() { setTimeout(function(){ window.print(); }, 700); };
+  </script>
+</body>
+</html>
       `);
       printWindow.document.close();
       setShowReportModal(false);

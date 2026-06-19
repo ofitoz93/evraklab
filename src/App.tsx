@@ -52,6 +52,7 @@ import ConsultantPanel from './ConsultantPanel';
 import EnvReportForm from './EnvReportForm';
 import EnvReportView from './EnvReportView';
 import ExternalSignPage from './ExternalSignPage';
+import InspectionPage from './InspectionPage';
 
 // --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
@@ -900,6 +901,7 @@ function AppContent() {
                 <Route path="/register" element={<Register />} />
                 <Route path="/consultant/reports/:id" element={<EnvReportView />} />
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
+                <Route path="/inspect/:token" element={<InspectionPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             ) : (
@@ -950,6 +952,7 @@ function AppContent() {
                   }
                 />
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
+                <Route path="/inspect/:token" element={<InspectionPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             )}

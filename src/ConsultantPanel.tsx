@@ -28,7 +28,10 @@ import {
   XCircle,
   PlusCircle,
   Bell,
+  QrCode,
+  HelpCircle,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import { MapPickerModal } from './MapPickerModal';
 import { Link } from 'react-router-dom';
 import { extractTextFromPdf } from './localScanner';
@@ -212,7 +215,382 @@ interface Report {
 }
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections'>('clients');
+
+  // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
+  const [inspectionsSubTab, setInspectionsSubTab] = useState<'points' | 'forms'>('points');
+  const [inspectionForms, setInspectionForms] = useState<any[]>([]);
+  const [inspectionPoints, setInspectionPoints] = useState<any[]>([]);
+  const [loadingInspections, setLoadingInspections] = useState(false);
+  const [selectedInspectionClientId, setSelectedInspectionClientId] = useState('');
+  
+  const [showCreateInspectionFormModal, setShowCreateInspectionFormModal] = useState(false);
+  const [showCreateInspectionPointModal, setShowCreateInspectionPointModal] = useState(false);
+  const [showSubmissionsModal, setShowSubmissionsModal] = useState(false);
+  const [selectedInspectionPoint, setSelectedInspectionPoint] = useState<any>(null);
+  const [pointSubmissions, setPointSubmissions] = useState<any[]>([]);
+  const [loadingSubmissions, setLoadingSubmissions] = useState(false);
+  const [expandedSubmissionId, setExpandedSubmissionId] = useState<string | null>(null);
+  const [submissionAnswers, setSubmissionAnswers] = useState<Record<string, any[]>>({});
+
+  // Form creation fields
+  const [newInsFormTitle, setNewInsFormTitle] = useState('');
+  const [newInsFormDesc, setNewInsFormDesc] = useState('');
+  const [newInsFormClientId, setNewInsFormClientId] = useState('');
+  const [newInsFormQuestions, setNewInsFormQuestions] = useState<any[]>([
+    { question_text: '', question_type: 'yes_no', is_required: true }
+  ]);
+
+  // Point creation fields
+  const [newInsPointName, setNewInsPointName] = useState('');
+  const [newInsPointLocation, setNewInsPointLocation] = useState('');
+  const [newInsPointFormId, setNewInsPointFormId] = useState('');
+
+  // QR Print fields
+  const [showQrPrintModal, setShowQrPrintModal] = useState(false);
+  const [qrPrintPoint, setQrPrintPoint] = useState<any>(null);
+  const [qrPrintCodeUrl, setQrPrintCodeUrl] = useState('');
+
+  const fetchInspections = async () => {
+    if (!orgId) return;
+    setLoadingInspections(true);
+    try {
+      const { data: forms, error: formsError } = await supabase
+        .from('inspection_forms')
+        .select('*, client:consultant_clients(name)')
+        .eq('organization_id', orgId)
+        .order('created_at', { ascending: false });
+
+      if (formsError) throw formsError;
+      setInspectionForms(forms || []);
+
+      const formIds = forms?.map(f => f.id) || [];
+      if (formIds.length > 0) {
+        const { data: points, error: pointsError } = await supabase
+          .from('inspection_points')
+          .select('*, form:inspection_forms(*, client:consultant_clients(name))')
+          .in('form_id', formIds)
+          .order('created_at', { ascending: false });
+
+        if (pointsError) throw pointsError;
+        setInspectionPoints(points || []);
+      } else {
+        setInspectionPoints([]);
+      }
+    } catch (err: any) {
+      console.error('Error fetching inspections:', err.message);
+    } finally {
+      setLoadingInspections(false);
+    }
+  };
+
+  const handleSaveInspectionForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInsFormTitle.trim()) return alert('Lütfen form başlığını girin.');
+    if (!newInsFormClientId) return alert('Lütfen hizmet verilen işletmeyi seçin.');
+    if (newInsFormQuestions.length === 0) return alert('Lütfen en az bir soru ekleyin.');
+    
+    if (newInsFormQuestions.some(q => !q.question_text.trim())) {
+      return alert('Lütfen tüm soru metinlerini doldurun.');
+    }
+
+    try {
+      const { data: form, error: formError } = await supabase
+        .from('inspection_forms')
+        .insert({
+          organization_id: orgId,
+          client_id: newInsFormClientId,
+          title: newInsFormTitle.trim(),
+          description: newInsFormDesc.trim() || null,
+          created_by: userId
+        })
+        .select()
+        .single();
+
+      if (formError) throw formError;
+
+      const questionsToInsert = newInsFormQuestions.map((q, index) => ({
+        form_id: form.id,
+        order_index: index + 1,
+        question_text: q.question_text.trim(),
+        question_type: q.question_type,
+        is_required: q.is_required
+      }));
+
+      const { error: qError } = await supabase
+        .from('inspection_questions')
+        .insert(questionsToInsert);
+
+      if (qError) throw qError;
+
+      alert('Form şablonu başarıyla oluşturuldu!');
+      setShowCreateInspectionFormModal(false);
+      setNewInsFormTitle('');
+      setNewInsFormDesc('');
+      setNewInsFormClientId('');
+      setNewInsFormQuestions([{ question_text: '', question_type: 'yes_no', is_required: true }]);
+      fetchInspections();
+    } catch (err: any) {
+      alert('Form kaydedilirken hata: ' + err.message);
+    }
+  };
+
+  const handleSaveInspectionPoint = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInsPointName.trim()) return alert('Lütfen nokta adını girin.');
+    if (!newInsPointFormId) return alert('Lütfen bu noktada kullanılacak denetim formunu seçin.');
+
+    try {
+      const randToken = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+
+      const { error } = await supabase
+        .from('inspection_points')
+        .insert({
+          form_id: newInsPointFormId,
+          name: newInsPointName.trim(),
+          location_description: newInsPointLocation.trim() || null,
+          qr_token: randToken
+        });
+
+      if (error) throw error;
+
+      alert('Denetim noktası ve QR kodu başarıyla oluşturuldu!');
+      setShowCreateInspectionPointModal(false);
+      setNewInsPointName('');
+      setNewInsPointLocation('');
+      setNewInsPointFormId('');
+      fetchInspections();
+    } catch (err: any) {
+      alert('Nokta oluşturulurken hata: ' + err.message);
+    }
+  };
+
+  const handleViewSubmissions = async (point: any) => {
+    setSelectedInspectionPoint(point);
+    setPointSubmissions([]);
+    setExpandedSubmissionId(null);
+    setSubmissionAnswers({});
+    setShowSubmissionsModal(true);
+    setLoadingSubmissions(true);
+
+    try {
+      const { data: subs, error: subsError } = await supabase
+        .from('inspection_submissions')
+        .select('*')
+        .eq('point_id', point.id)
+        .order('submitted_at', { ascending: false });
+
+      if (subsError) throw subsError;
+      setPointSubmissions(subs || []);
+    } catch (err: any) {
+      alert('Gönderim geçmişi yüklenirken hata: ' + err.message);
+    } finally {
+      setLoadingSubmissions(false);
+    }
+  };
+
+  const handleViewSubmissionAnswers = async (submissionId: string) => {
+    if (expandedSubmissionId === submissionId) {
+      setExpandedSubmissionId(null);
+      return;
+    }
+
+    if (submissionAnswers[submissionId]) {
+      setExpandedSubmissionId(submissionId);
+      return;
+    }
+
+    try {
+      const { data: answers, error: answersError } = await supabase
+        .from('inspection_answers')
+        .select('*, question:inspection_questions(question_text, question_type)')
+        .eq('submission_id', submissionId);
+
+      if (answersError) throw answersError;
+
+      setSubmissionAnswers(prev => ({
+        ...prev,
+        [submissionId]: answers || []
+      }));
+      setExpandedSubmissionId(submissionId);
+    } catch (err: any) {
+      alert('Cevaplar yüklenirken hata: ' + err.message);
+    }
+  };
+
+  const handleToggleFormActive = async (formId: string, currentStatus: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('inspection_forms')
+        .update({ is_active: !currentStatus })
+        .eq('id', formId);
+
+      if (error) throw error;
+      fetchInspections();
+    } catch (err: any) {
+      alert('Durum güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleDeleteForm = async (formId: string) => {
+    if (!window.confirm('Bu formu silmek istediğinize emin misiniz? Form silindiğinde buna bağlı tüm noktalar, QR kodlar ve gönderilen tüm cevaplar silinecektir!')) return;
+    try {
+      const { error } = await supabase
+        .from('inspection_forms')
+        .delete()
+        .eq('id', formId);
+
+      if (error) throw error;
+      fetchInspections();
+    } catch (err: any) {
+      alert('Form silinirken hata: ' + err.message);
+    }
+  };
+
+  const handleDeletePoint = async (pointId: string) => {
+    if (!window.confirm('Bu denetim noktasını silmek istediğinize emin misiniz? Bu noktaya ait QR kod geçersiz olacak ve geçmiş denetim verileri silinecektir.')) return;
+    try {
+      const { error } = await supabase
+        .from('inspection_points')
+        .delete()
+        .eq('id', pointId);
+
+      if (error) throw error;
+      fetchInspections();
+    } catch (err: any) {
+      alert('Nokta silinirken hata: ' + err.message);
+    }
+  };
+
+  const handleGenerateQr = (point: any) => {
+    setQrPrintPoint(point);
+    const domain = window.location.origin;
+    const url = `${domain}/inspect/${point.qr_token}`;
+    
+    QRCode.toDataURL(url, { width: 300, margin: 2 })
+      .then(dataUrl => {
+        setQrPrintCodeUrl(dataUrl);
+        setShowQrPrintModal(true);
+      })
+      .catch(err => {
+        console.error(err);
+        alert('QR kod oluşturulamadı.');
+      });
+  };
+
+  const handlePrintQr = () => {
+    if (!qrPrintPoint || !qrPrintCodeUrl) return;
+    
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Yazdır penceresi açılamadı. Tarayıcınızın pop-up engelleyicisini kontrol edin.');
+      return;
+    }
+    
+    const clientName = qrPrintPoint.form?.client?.name || '';
+    const pointName = qrPrintPoint.name || '';
+    const desc = qrPrintPoint.location_description || '';
+    
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>QR Kod Yazdır - ${pointName}</title>
+          <style>
+            body {
+              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+              text-align: center;
+              margin: 0;
+              padding: 40px;
+              color: #1e293b;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              min-height: 80vh;
+            }
+            .card {
+              border: 3px solid #1e293b;
+              border-radius: 24px;
+              padding: 40px;
+              max-width: 500px;
+              width: 100%;
+              box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+              box-sizing: border-box;
+            }
+            h1 {
+              font-size: 26px;
+              margin: 0 0 10px 0;
+              font-weight: 800;
+              color: #0f172a;
+            }
+            h2 {
+              font-size: 20px;
+              margin: 0 0 20px 0;
+              color: #2ca58d;
+              font-weight: 700;
+            }
+            .qr-container {
+              margin: 30px 0;
+            }
+            .qr-image {
+              width: 250px;
+              height: 250px;
+            }
+            .instruction {
+              font-size: 16px;
+              font-weight: 600;
+              margin-top: 15px;
+              color: #475569;
+            }
+            .sub-instruction {
+              font-size: 13px;
+              color: #64748b;
+              margin-top: 5px;
+            }
+            .location {
+              font-size: 14px;
+              background-color: #f1f5f9;
+              padding: 8px 12px;
+              border-radius: 8px;
+              margin-top: 15px;
+              font-style: italic;
+              display: inline-block;
+            }
+            @media print {
+              body {
+                padding: 0;
+              }
+              .card {
+                border: 3px solid #000;
+                box-shadow: none;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>${clientName}</h1>
+            <h2>${pointName}</h2>
+            
+            <div class="qr-container">
+              <img class="qr-image" src="${qrPrintCodeUrl}" alt="QR Code" />
+            </div>
+            
+            <div class="instruction">Lütfen QR Kodu Mobil Cihazınızla Taratın</div>
+            <div class="sub-instruction">Saha denetim formunu doldurmak ve geçmiş kayıtları incelemek için kodu okutun.</div>
+            
+            ${desc ? `<div class="location"><b>Konum:</b> ${desc}</div>` : ''}
+          </div>
+          <script>
+            window.onload = function() {
+              window.print();
+            }
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
 
   // --- MEVZUAT TAKİP BÖLÜMÜ STATE'LERİ ---
   const [assignedGlobalLegislations, setAssignedGlobalLegislations] = useState<any[]>([]);
@@ -298,6 +676,7 @@ export default function ConsultantPanel() {
     articleNo: string;
     title: string;
     currentNotes?: string;
+    currentExpiryDate?: string;
     currentMandatoryState?: boolean;
   } | null>(null);
   const [complianceNoteValue, setComplianceNoteValue] = useState('');
@@ -377,7 +756,7 @@ export default function ConsultantPanel() {
   }, []);
 
   useEffect(() => {
-    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions' || activeTab === 'legislations') && orgId) {
+    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions' || activeTab === 'legislations' || activeTab === 'inspections') && orgId) {
       fetchTeamMembers();
     }
     if (activeTab === 'team' && orgId) {
@@ -390,6 +769,9 @@ export default function ConsultantPanel() {
       fetchConsultantLegislations();
       fetchConsultantRequests();
       fetchComplianceActions();
+    }
+    if (activeTab === 'inspections' && orgId) {
+      fetchInspections();
     }
   }, [activeTab, orgId]);
 
@@ -867,6 +1249,9 @@ export default function ConsultantPanel() {
         .update({
           name: orgData.name,
           consultant_logo_url: orgData.consultant_logo_url,
+          phone: orgData.phone || null,
+          email: orgData.email || null,
+          address: orgData.address || null,
         })
         .eq('id', orgId);
 
@@ -2206,7 +2591,7 @@ export default function ConsultantPanel() {
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
-          <Scale size={16} /> Mevzuatlar
+          <Scale size={16} /> Danışman İşlemleri
         </button>
         <button
           onClick={() => setActiveTab('actions')}
@@ -2227,6 +2612,16 @@ export default function ConsultantPanel() {
           }`}
         >
           <Bell size={16} /> Gönderilen Mevzuat Talepleri
+        </button>
+        <button
+          onClick={() => setActiveTab('inspections')}
+          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
+            activeTab === 'inspections'
+              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <QrCode size={16} /> Saha QR Denetimleri
         </button>
       </div>
 
@@ -2407,6 +2802,40 @@ export default function ConsultantPanel() {
                     <p className="text-[10px] text-gray-400">Önerilen boyut: 200x100px. Arka planı şeffaf PNG önerilir.</p>
                   </div>
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold mb-2">Şirket Telefonu</label>
+                  <input
+                    type="tel"
+                    value={orgData.phone || ''}
+                    onChange={(e) => setOrgData({ ...orgData, phone: e.target.value })}
+                    className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0212 000 00 00"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold mb-2">Şirket E-postası</label>
+                  <input
+                    type="email"
+                    value={orgData.email || ''}
+                    onChange={(e) => setOrgData({ ...orgData, email: e.target.value })}
+                    className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="info@firmaniz.com"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold mb-2">Şirket Adresi</label>
+                <textarea
+                  rows={2}
+                  value={orgData.address || ''}
+                  onChange={(e) => setOrgData({ ...orgData, address: e.target.value })}
+                  className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  placeholder="Şirket açık adresi..."
+                />
               </div>
 
             </div>
@@ -2967,7 +3396,7 @@ export default function ConsultantPanel() {
           <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
             <div>
               <h2 className="text-xl font-bold flex items-center gap-2">
-                <Scale className="text-teal-600" /> Mevzuat Yönetimi
+                <Scale className="text-teal-600" /> Danışman İşlemleri
               </h2>
               <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
                 Yönetmelik ve kanunları inceleyin, hizmet verdiğiniz işletmelere atama yapın ve maddeleri özelleştirin.
@@ -3073,7 +3502,7 @@ export default function ConsultantPanel() {
                       <BookOpen size={18} className="text-teal-600" />
                       Firma Mevzuat Havuzu (Bizim Havuzumuz)
                     </h3>
-                    {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                    {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
                       <button
                         onClick={() => {
                           setLegTitle('');
@@ -3988,6 +4417,694 @@ export default function ConsultantPanel() {
               })()}
             </div>
           )}
+        </div>
+      )}
+
+      {/* --- SAHA QR DENETİMLERİ TAB PANELİ --- */}
+      {activeTab === 'inspections' && (
+        <div className="animate-fadeIn space-y-6">
+          <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <div>
+              <h2 className="text-xl font-bold flex items-center gap-2 text-slate-900 dark:text-white">
+                <QrCode className="text-teal-600" /> Saha QR Denetimleri
+              </h2>
+              <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
+                Tesis noktalarına QR kodları tanımlayın ve tesis personeli tarafından doldurulan formları periyodik takip edin.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setNewInsFormTitle('');
+                  setNewInsFormDesc('');
+                  setNewInsFormClientId('');
+                  setNewInsFormQuestions([{ question_text: '', question_type: 'yes_no', is_required: true }]);
+                  setShowCreateInspectionFormModal(true);
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition"
+              >
+                <PlusCircle size={16} /> Yeni Form Tasarla
+              </button>
+              <button
+                onClick={() => {
+                  setNewInsPointName('');
+                  setNewInsPointLocation('');
+                  setNewInsPointFormId('');
+                  setShowCreateInspectionPointModal(true);
+                }}
+                className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition"
+              >
+                <PlusCircle size={16} /> Yeni Nokta & QR Tanımla
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap border-b border-gray-200 dark:border-slate-700 gap-2 bg-white dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-slate-700">
+            <button
+              onClick={() => setInspectionsSubTab('points')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                inspectionsSubTab === 'points'
+                  ? 'bg-teal-650 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <MapPin size={14} /> Denetim Noktaları & QR Kodlar ({inspectionPoints.length})
+            </button>
+            <button
+              onClick={() => setInspectionsSubTab('forms')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                inspectionsSubTab === 'forms'
+                  ? 'bg-teal-655 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <FileText size={14} /> Form Şablonları ({inspectionForms.length})
+            </button>
+          </div>
+
+          {loadingInspections ? (
+            <div className="flex items-center justify-center p-12">
+              <Loader className="animate-spin text-teal-600" size={32} />
+            </div>
+          ) : (
+            <div className="animate-fadeIn">
+              {/* POINTS TAB */}
+              {inspectionsSubTab === 'points' && (
+                <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-gray-50 dark:bg-slate-700 border-b border-gray-200 dark:border-slate-600">
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşletme</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nokta Adı</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Lokasyon / Açıklama</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Kullanılan Form</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">QR Kod</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Denetimler</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşlemler</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                        {inspectionPoints.map((point) => (
+                          <tr key={point.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition">
+                            <td className="p-4 text-sm font-medium text-gray-900 dark:text-white">
+                              {point.form?.client?.name || '-'}
+                            </td>
+                            <td className="p-4 text-sm font-semibold text-teal-600 dark:text-teal-400">
+                              {point.name}
+                            </td>
+                            <td className="p-4 text-xs text-gray-500 dark:text-gray-400 max-w-[200px] truncate">
+                              {point.location_description || <span className="italic text-gray-300">Belirtilmemiş</span>}
+                            </td>
+                            <td className="p-4 text-sm text-gray-700 dark:text-gray-300">
+                              {point.form?.title || '-'}
+                            </td>
+                            <td className="p-4">
+                              <button
+                                onClick={() => handleGenerateQr(point)}
+                                className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-655 p-2 rounded-lg text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 text-xs font-bold transition"
+                                title="QR Kodu Yazdır"
+                              >
+                                <QrCode size={14} /> Yazdır / Görüntüle
+                              </button>
+                            </td>
+                            <td className="p-4">
+                              <button
+                                onClick={() => handleViewSubmissions(point)}
+                                className="bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/20 dark:hover:bg-teal-900/30 text-teal-700 dark:text-teal-400 px-3 py-1.5 rounded-lg text-xs font-bold border border-teal-200 dark:border-teal-900 inline-flex items-center gap-1 transition"
+                              >
+                                <Eye size={12} /> Yanıtları Gör
+                              </button>
+                            </td>
+                            <td className="p-4 text-sm">
+                              <button
+                                onClick={() => handleDeletePoint(point.id)}
+                                className="text-red-600 hover:text-red-700 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/20 transition inline-flex"
+                                title="Noktayı Sil"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {inspectionPoints.length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="p-8 text-center text-gray-500 italic text-xs">
+                              Kayıtlı denetim noktası bulunmamaktadır. Sağ üstten yeni bir nokta tanımlayabilirsiniz.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* FORMS TAB */}
+              {inspectionsSubTab === 'forms' && (
+                <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-gray-50 dark:bg-slate-700 border-b border-gray-200 dark:border-slate-600">
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşletme</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Form Başlığı</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Açıklama</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Durum</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tarih</th>
+                          <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">İşlemler</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                        {inspectionForms.map((form) => (
+                          <tr key={form.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition">
+                            <td className="p-4 text-sm font-medium text-gray-900 dark:text-white">
+                              {form.client?.name || '-'}
+                            </td>
+                            <td className="p-4 text-sm font-bold text-gray-800 dark:text-gray-200">
+                              {form.title}
+                            </td>
+                            <td className="p-4 text-xs text-gray-500 dark:text-gray-400 max-w-[250px] truncate">
+                              {form.description || <span className="italic text-gray-300">Açıklama yok</span>}
+                            </td>
+                            <td className="p-4">
+                              <button
+                                onClick={() => handleToggleFormActive(form.id, form.is_active)}
+                                className={`px-2.5 py-1 rounded-full text-xs font-bold border transition ${
+                                  form.is_active
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-250 hover:bg-emerald-100'
+                                    : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                                }`}
+                              >
+                                {form.is_active ? 'Aktif' : 'Pasif'}
+                              </button>
+                            </td>
+                            <td className="p-4 text-xs text-gray-500">
+                              {new Date(form.created_at).toLocaleDateString('tr-TR')}
+                            </td>
+                            <td className="p-4 text-sm">
+                              <button
+                                onClick={() => handleDeleteForm(form.id)}
+                                className="text-red-600 hover:text-red-700 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/20 transition inline-flex"
+                                title="Formu Sil"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {inspectionForms.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-gray-500 italic text-xs">
+                              Kayıtlı denetim formu bulunmamaktadır. Sağ üstten yeni bir form şablonu tasarlayabilirsiniz.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* --- FORM OLUŞTURMA MODALI --- */}
+      {showCreateInspectionFormModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white">
+              <div>
+                <h3 className="font-bold text-lg flex items-center gap-2">
+                  <FileText size={20} />
+                  Yeni Denetim Formu Tasarla
+                </h3>
+                <p className="text-xs opacity-80">Sahada personellerin dolduracağı evet/hayır sorularından oluşan kontrol listesi</p>
+              </div>
+              <button 
+                onClick={() => setShowCreateInspectionFormModal(false)}
+                className="p-1 hover:bg-white/10 rounded-full text-white transition"
+              >
+                <XCircle size={22} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveInspectionForm} className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Müşteri İşletme *</label>
+                  <select
+                    required
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-330 border-slate-200"
+                    value={newInsFormClientId}
+                    onChange={(e) => setNewInsFormClientId(e.target.value)}
+                  >
+                    <option value="">-- İşletme Seçin --</option>
+                    {clients.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Form Başlığı *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Örn: Atık Depolama Sahası Günlük Kontrolü"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                    value={newInsFormTitle}
+                    onChange={(e) => setNewInsFormTitle(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Yönergeler</label>
+                <textarea
+                  rows={2}
+                  placeholder="Personelin formu doldururken dikkat etmesi gereken kurallar varsa belirtin..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200 resize-none"
+                  value={newInsFormDesc}
+                  onChange={(e) => setNewInsFormDesc(e.target.value)}
+                />
+              </div>
+
+              {/* Questions Area */}
+              <div className="space-y-3 pt-2">
+                <div className="flex justify-between items-center border-b pb-2 border-gray-100 dark:border-slate-700">
+                  <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <CheckCircle size={16} className="text-blue-600" />
+                    Form Soruları
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewInsFormQuestions([
+                        ...newInsFormQuestions,
+                        { question_text: '', question_type: 'yes_no', is_required: true }
+                      ]);
+                    }}
+                    className="bg-blue-50 dark:bg-slate-700 hover:bg-blue-100 text-blue-600 dark:text-blue-400 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 border border-blue-200 dark:border-slate-600 transition"
+                  >
+                    <Plus size={14} /> Soru Ekle
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {newInsFormQuestions.map((q, idx) => (
+                    <div key={idx} className="bg-slate-50 dark:bg-slate-900/40 p-4 rounded-xl border border-slate-200/60 dark:border-slate-700/60 flex flex-col md:flex-row gap-3 items-end animate-fadeIn">
+                      <div className="flex-shrink-0 text-xs font-bold bg-slate-200 dark:bg-slate-700 w-6 h-6 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 self-center">
+                        {idx + 1}
+                      </div>
+                      
+                      <div className="flex-1 space-y-1 w-full">
+                        <label className="block text-[10px] font-bold text-gray-400 uppercase">Soru Metni *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Örn: Konteynerlerin kapakları kapalı ve sızdırmaz mı?"
+                          className="w-full p-2 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none text-slate-850 dark:text-slate-200 focus:ring-1 focus:ring-blue-500"
+                          value={q.question_text}
+                          onChange={(e) => {
+                            const updated = [...newInsFormQuestions];
+                            updated[idx].question_text = e.target.value;
+                            setNewInsFormQuestions(updated);
+                          }}
+                        />
+                      </div>
+
+                      <div className="w-full md:w-36 space-y-1">
+                        <label className="block text-[10px] font-bold text-gray-400 uppercase">Soru Türü</label>
+                        <select
+                          className="w-full p-2 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none text-slate-850 dark:text-slate-200 focus:ring-1 focus:ring-blue-500 font-semibold"
+                          value={q.question_type}
+                          onChange={(e) => {
+                            const updated = [...newInsFormQuestions];
+                            updated[idx].question_type = e.target.value as any;
+                            setNewInsFormQuestions(updated);
+                          }}
+                        >
+                          <option value="yes_no">EVET / HAYIR</option>
+                          <option value="compliant">UYGUN / DEĞİL</option>
+                          <option value="text">Serbest Metin</option>
+                          <option value="rating">Derecelendirme (1-5)</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-center gap-4 mb-2">
+                        <label className="flex items-center gap-1.5 text-xs text-gray-655 dark:text-gray-400 font-semibold cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={q.is_required}
+                            onChange={(e) => {
+                              const updated = [...newInsFormQuestions];
+                              updated[idx].is_required = e.target.checked;
+                              setNewInsFormQuestions(updated);
+                            }}
+                            className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                          />
+                          Zorunlu
+                        </label>
+
+                        {newInsFormQuestions.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewInsFormQuestions(newInsFormQuestions.filter((_, i) => i !== idx));
+                            }}
+                            className="text-red-500 hover:text-red-700 p-1 rounded hover:bg-red-50 transition"
+                            title="Soruyu Kaldır"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 justify-end pt-4 border-t border-gray-100 dark:border-slate-700 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateInspectionFormModal(false)}
+                  className="px-5 py-2.5 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300 border-slate-200 dark:border-slate-700"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-lg"
+                >
+                  Form Şablonunu Kaydet
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- NOKTA OLUŞTURMA MODALI --- */}
+      {showCreateInspectionPointModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <PlusCircle size={18} className="text-teal-655" />
+                Yeni Denetim Noktası ve QR Tanımla
+              </h3>
+              <button 
+                onClick={() => setShowCreateInspectionPointModal(false)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-655 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveInspectionPoint} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Kullanılacak Form Şablonu *</label>
+                <select
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-bold text-sm text-slate-700 dark:text-slate-350 border-slate-200"
+                  value={newInsPointFormId}
+                  onChange={(e) => setNewInsPointFormId(e.target.value)}
+                >
+                  <option value="">-- Form Seçin --</option>
+                  {inspectionForms.filter(f => f.is_active).map((form) => (
+                    <option key={form.id} value={form.id}>
+                      {form.client?.name} - {form.title}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">Sadece aktif form şablonları listelenir.</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Nokta Adı *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Kazan Dairesi Atıksu Çıkışı, A Bölgesi Deposu"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newInsPointName}
+                  onChange={(e) => setNewInsPointName(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Lokasyon Açıklaması / Konum</label>
+                <textarea
+                  rows={2}
+                  placeholder="Örn: Fabrika arka giriş kapısının sağ tarafındaki konteyner kafesi..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200 resize-none"
+                  value={newInsPointLocation}
+                  onChange={(e) => setNewInsPointLocation(e.target.value)}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-100 dark:border-slate-700">
+                <button
+                  type="submit"
+                  className="flex-1 bg-teal-600 hover:bg-teal-700 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-teal-100"
+                >
+                  Noktayı ve QR Oluştur
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateInspectionPointModal(false)}
+                  className="flex-1 border border-slate-200 py-2.5 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+                >
+                  İptal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- GÖNDERİMLERİ İNCELEME MODALI --- */}
+      {showSubmissionsModal && selectedInspectionPoint && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-teal-650 text-white">
+              <div>
+                <h3 className="font-bold text-lg flex items-center gap-2">
+                  <Clock size={20} />
+                  Denetim Gönderim Geçmişi
+                </h3>
+                <p className="text-xs opacity-90">{selectedInspectionPoint.form?.client?.name} — {selectedInspectionPoint.name}</p>
+              </div>
+              <button 
+                onClick={() => setShowSubmissionsModal(false)}
+                className="p-1 hover:bg-white/10 rounded-full text-white transition"
+              >
+                <XCircle size={22} />
+              </button>
+            </div>
+
+            <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
+              {loadingSubmissions ? (
+                <div className="flex justify-center py-12">
+                  <Loader className="animate-spin text-teal-600" size={24} />
+                </div>
+              ) : pointSubmissions.length === 0 ? (
+                <div className="text-center text-slate-400 italic text-sm py-12">
+                  Bu denetim noktasına ait henüz herhangi bir form doldurulmamış.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {pointSubmissions.map((sub) => {
+                    const isExpanded = expandedSubmissionId === sub.id;
+                    const answers = submissionAnswers[sub.id] || [];
+                    const answersCount = answers.length;
+                    const nonCompliantCount = answers.filter(a => a.answer_bool === false && a.question?.question_type !== 'text').length;
+
+                    return (
+                      <div key={sub.id} className="border border-slate-100 dark:border-slate-700 rounded-xl overflow-hidden shadow-sm bg-white dark:bg-slate-900/30">
+                        {/* Summary Header */}
+                        <div 
+                          onClick={() => handleViewSubmissionAnswers(sub.id)}
+                          className="p-4 bg-slate-50/50 dark:bg-slate-800/40 hover:bg-slate-100/50 dark:hover:bg-slate-700/30 flex justify-between items-center gap-4 cursor-pointer transition select-none"
+                        >
+                          <div>
+                            <div className="text-xs font-semibold text-slate-500">Gönderen Personel</div>
+                            <div className="text-sm font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+                              {sub.submitted_by_name || <span className="italic font-normal text-slate-400">Anonim Saha Personeli</span>}
+                            </div>
+                          </div>
+
+                          <div className="text-center">
+                            <div className="text-xs font-semibold text-slate-500">Tarih / Saat</div>
+                            <div className="text-sm text-slate-700 dark:text-slate-300 font-medium mt-0.5">
+                              {new Date(sub.submitted_at).toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' })}
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="text-xs font-semibold text-slate-500">Bulgular</div>
+                            <div className="mt-0.5">
+                              {nonCompliantCount > 0 ? (
+                                <span className="bg-red-50 text-red-700 border border-red-200 text-[10px] font-black px-2 py-0.5 rounded-full">
+                                  ⚠️ {nonCompliantCount} Uyumsuz Madde
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-50 text-emerald-700 border border-emerald-250 text-[10px] font-black px-2 py-0.5 rounded-full">
+                                  ✅ Tam Uyumlu
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Detailed answers drop-down */}
+                        {isExpanded && (
+                          <div className="p-4 border-t border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900/10 space-y-4 animate-fadeIn">
+                            {/* General notes */}
+                            {sub.general_notes && (
+                              <div className="bg-amber-50/50 dark:bg-amber-950/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3.5 text-xs text-amber-900 dark:text-amber-350">
+                                <span className="font-extrabold uppercase text-[9px] tracking-wide block mb-1">Saha Tespitleri / Genel Notlar:</span>
+                                <p className="leading-relaxed whitespace-pre-wrap">{sub.general_notes}</p>
+                              </div>
+                            )}
+
+                            {/* Question answers list */}
+                            <div className="space-y-2.5">
+                              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Verilen Cevaplar</h4>
+                              
+                              {answersCount === 0 ? (
+                                <div className="flex justify-center py-4">
+                                  <Loader className="animate-spin text-teal-600" size={18} />
+                                </div>
+                              ) : (
+                                <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-100 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50/20">
+                                  {answers.map((ans, aIdx) => (
+                                    <div key={ans.id} className="p-3 flex justify-between items-center gap-4 text-xs bg-white dark:bg-slate-900">
+                                      <div className="flex items-start gap-2">
+                                        <span className="text-[10px] font-bold text-slate-400 w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-850 flex items-center justify-center shrink-0 border">
+                                          {aIdx + 1}
+                                        </span>
+                                        <span className="font-semibold text-slate-800 dark:text-slate-200">
+                                          {ans.question?.question_text}
+                                        </span>
+                                      </div>
+
+                                      <div className="shrink-0 font-bold">
+                                        {ans.question?.question_type === 'yes_no' && (
+                                          ans.answer_bool ? (
+                                            <span className="text-emerald-600 bg-emerald-50 dark:bg-emerald-950/20 px-2.5 py-1 rounded-lg border border-emerald-100">EVET</span>
+                                          ) : (
+                                            <span className="text-red-600 bg-red-50 dark:bg-red-950/20 px-2.5 py-1 rounded-lg border border-red-100">HAYIR</span>
+                                          )
+                                        )}
+
+                                        {ans.question?.question_type === 'compliant' && (
+                                          ans.answer_bool ? (
+                                            <span className="text-emerald-600 bg-emerald-50 dark:bg-emerald-950/20 px-2.5 py-1 rounded-lg border border-emerald-100">UYGUN</span>
+                                          ) : (
+                                            <span className="text-amber-600 bg-amber-50 dark:bg-amber-950/20 px-2.5 py-1 rounded-lg border border-amber-100">UYGUN DEĞİL</span>
+                                          )
+                                        )}
+
+                                        {ans.question?.question_type === 'text' && (
+                                          <div className="text-right text-slate-700 dark:text-slate-300 font-medium max-w-xs truncate">
+                                            {ans.answer_text || <span className="italic text-gray-300">Boş bırakılmış</span>}
+                                          </div>
+                                        )}
+
+                                        {ans.question?.question_type === 'rating' && (
+                                          <span className="text-blue-600 bg-blue-50 dark:bg-blue-950/20 px-2.5 py-1 rounded-lg border border-blue-100">
+                                            ⭐ {ans.answer_text} / 5
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-gray-50 dark:bg-slate-900 border-t flex justify-end">
+              <button 
+                onClick={() => setShowSubmissionsModal(false)}
+                className="bg-slate-200 dark:bg-slate-750 text-slate-700 dark:text-slate-200 px-6 py-2 rounded-lg font-bold hover:bg-slate-300 dark:hover:bg-slate-700 transition text-sm"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- QR KOD YAZDIRMA / GÖRÜNTÜLEME MODALI --- */}
+      {showQrPrintModal && qrPrintPoint && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn text-center">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-1.5 text-lg">
+                <QrCode size={18} className="text-blue-600" />
+                QR Kod Etiketi
+              </h3>
+              <button 
+                onClick={() => {
+                  setShowQrPrintModal(false);
+                  setQrPrintPoint(null);
+                  setQrPrintCodeUrl('');
+                }}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-655 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 flex flex-col items-center">
+              <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750 w-full text-left">
+                <div className="text-slate-400 uppercase tracking-wide">İşletme:</div>
+                <div className="font-bold text-slate-850 dark:text-slate-200 text-sm mt-0.5">{qrPrintPoint.form?.client?.name}</div>
+                <div className="text-slate-400 uppercase tracking-wide mt-2">Denetim Noktası:</div>
+                <div className="font-bold text-teal-655 dark:text-teal-400 text-sm mt-0.5">{qrPrintPoint.name}</div>
+              </div>
+
+              {qrPrintCodeUrl && (
+                <div className="p-4 bg-white rounded-xl border shadow-sm">
+                  <img src={qrPrintCodeUrl} alt="QR Code" className="w-48 h-48" />
+                </div>
+              )}
+
+              <p className="text-[10px] text-gray-500 max-w-[250px]">
+                Bu QR kodunu yazdırıp sahada ilgili denetim noktasına yapıştırabilirsiniz. Personel bu kodu okutarak formu anında doldurabilir.
+              </p>
+
+              <div className="flex gap-3 w-full pt-3 border-t border-gray-100 dark:border-slate-700">
+                <button
+                  onClick={handlePrintQr}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-1.5 shadow-lg shadow-blue-100"
+                >
+                  💾 Yazdır (Print)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowQrPrintModal(false);
+                    setQrPrintPoint(null);
+                    setQrPrintCodeUrl('');
+                  }}
+                  className="flex-1 border border-slate-200 py-2.5 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition text-sm"
+                >
+                  Kapat
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
