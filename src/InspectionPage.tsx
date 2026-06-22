@@ -36,6 +36,7 @@ interface Form {
   description: string;
   organization_id: string;
   client_id: string;
+  access_password?: string;
 }
 
 interface Consultant {
@@ -65,9 +66,15 @@ export default function InspectionPage() {
   // Form responses state
   const [answers, setAnswers] = useState<Record<string, { answer_bool?: boolean; answer_text?: string }>>({});
   const [submittedByName, setSubmittedByName] = useState('');
+  const [submittedBySurname, setSubmittedBySurname] = useState('');
   const [generalNotes, setGeneralNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
+
+  // Password verification states
+  const [passwordInput, setPasswordInput] = useState('');
+  const [isPasswordVerified, setIsPasswordVerified] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -87,7 +94,7 @@ export default function InspectionPage() {
       const { data: pointData, error: pointError } = await supabase
         .from('inspection_points')
         .select('*')
-        .eq('qr_token', token)
+        .eq('qr_token', decodeURIComponent(token!))
         .single();
 
       if (pointError || !pointData) {
@@ -118,6 +125,9 @@ export default function InspectionPage() {
       }
 
       setForm(formData);
+      if (!formData.access_password || formData.access_password.trim() === '') {
+        setIsPasswordVerified(true);
+      }
 
       // 3. Get the client details (facilities)
       const { data: clientData, error: clientError } = await supabase
@@ -171,6 +181,17 @@ export default function InspectionPage() {
     }
   };
 
+  const handleVerifyPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form) return;
+    if (passwordInput.trim() === (form.access_password || '').trim()) {
+      setIsPasswordVerified(true);
+      setPasswordError(null);
+    } else {
+      setPasswordError('Girdiğiniz şifre hatalı. Lütfen tekrar deneyin.');
+    }
+  };
+
   const handleBoolChange = (questionId: string, value: boolean) => {
     setAnswers(prev => ({
       ...prev,
@@ -205,6 +226,15 @@ export default function InspectionPage() {
     e.preventDefault();
     if (!point || !form) return;
 
+    if (!submittedByName.trim()) {
+      alert('Lütfen adınızı giriniz.');
+      return;
+    }
+    if (!submittedBySurname.trim()) {
+      alert('Lütfen soyadınızı giriniz.');
+      return;
+    }
+
     // Validate required questions
     for (const q of questions) {
       if (q.is_required) {
@@ -231,7 +261,8 @@ export default function InspectionPage() {
         .from('inspection_submissions')
         .insert({
           point_id: point.id,
-          submitted_by_name: submittedByName.trim() || null,
+          submitted_by_name: submittedByName.trim(),
+          submitted_by_surname: submittedBySurname.trim(),
           general_notes: generalNotes.trim() || null
         })
         .select()
@@ -346,6 +377,59 @@ export default function InspectionPage() {
           </div>
 
           <div className="text-xs text-slate-500 border-t border-slate-700/50 pt-4 flex flex-col items-center justify-center gap-1">
+            <span className="font-semibold text-slate-400">{consultant?.name}</span>
+            <span>Çevre Danışmanlık ve Denetim Sistemi</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isPasswordVerified) {
+    const orgLogo = consultant?.consultant_logo_url || consultant?.logo_url;
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-md w-full text-center shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-indigo-500"></div>
+          
+          {orgLogo ? (
+            <img src={orgLogo} alt="Logo" className="h-12 object-contain mx-auto mb-6 max-w-[180px]" />
+          ) : (
+            <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center mx-auto mb-6">
+              <Info className="w-6 h-6 text-blue-400" />
+            </div>
+          )}
+
+          <h1 className="text-xl font-bold text-slate-100 mb-2">Şifre Korumalı Denetim</h1>
+          <p className="text-slate-400 text-sm mb-6">
+            Bu denetim formuna erişebilmek için lütfen formu oluşturan yetkilinin belirlediği şifreyi giriniz.
+          </p>
+
+          <form onSubmit={handleVerifyPassword} className="space-y-4">
+            <div>
+              <input
+                type="password"
+                placeholder="Form Giriş Şifresi"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                className="w-full bg-slate-950/60 border border-slate-800 focus:border-blue-500/70 focus:ring-1 focus:ring-blue-500/70 rounded-xl px-4 py-3 text-slate-200 text-center text-sm outline-none transition-all duration-150"
+                required
+              />
+            </div>
+            {passwordError && (
+              <p className="text-red-400 text-xs mt-1 text-center font-medium">
+                {passwordError}
+              </p>
+            )}
+            <button
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-6 rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+            >
+              Doğrula ve Formu Aç
+            </button>
+          </form>
+
+          <div className="text-xs text-slate-500 border-t border-slate-800/50 pt-4 mt-6 flex flex-col items-center justify-center gap-1">
             <span className="font-semibold text-slate-400">{consultant?.name}</span>
             <span>Çevre Danışmanlık ve Denetim Sistemi</span>
           </div>
@@ -546,20 +630,38 @@ export default function InspectionPage() {
 
           {/* Submission Info section */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-md">
-            <h3 className="text-sm font-bold text-slate-200 border-b border-slate-800 pb-2">Ek Detaylar</h3>
+            <h3 className="text-sm font-bold text-slate-200 border-b border-slate-800 pb-2">Denetçi Bilgileri</h3>
             
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-slate-500" />
-                Adınız Soyadınız (Opsiyonel)
-              </label>
-              <input
-                type="text"
-                placeholder="Örn: Ahmet Yılmaz"
-                value={submittedByName}
-                onChange={(e) => setSubmittedByName(e.target.value)}
-                className="w-full bg-slate-950/60 border border-slate-800 focus:border-teal-500/70 focus:ring-1 focus:ring-teal-500/70 rounded-xl px-4 py-3 text-slate-200 text-sm outline-none transition-all duration-150"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <User className="w-3.5 h-3.5 text-slate-500" />
+                  Adınız <span className="text-red-500 font-bold">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Ahmet"
+                  value={submittedByName}
+                  onChange={(e) => setSubmittedByName(e.target.value)}
+                  className="w-full bg-slate-950/60 border border-slate-800 focus:border-teal-500/70 focus:ring-1 focus:ring-teal-500/70 rounded-xl px-4 py-3 text-slate-200 text-sm outline-none transition-all duration-150"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <User className="w-3.5 h-3.5 text-slate-500" />
+                  Soyadınız <span className="text-red-500 font-bold">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Yılmaz"
+                  value={submittedBySurname}
+                  onChange={(e) => setSubmittedBySurname(e.target.value)}
+                  className="w-full bg-slate-950/60 border border-slate-800 focus:border-teal-500/70 focus:ring-1 focus:ring-teal-500/70 rounded-xl px-4 py-3 text-slate-200 text-sm outline-none transition-all duration-150"
+                />
+              </div>
             </div>
 
             <div>

@@ -30,10 +30,12 @@ import {
   Bell,
   QrCode,
   HelpCircle,
+  PieChart,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { MapPickerModal } from './MapPickerModal';
 import { Link } from 'react-router-dom';
+import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
 
 function formatArticleContent(content: string): string {
@@ -218,7 +220,7 @@ export default function ConsultantPanel() {
   const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections'>('clients');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
-  const [inspectionsSubTab, setInspectionsSubTab] = useState<'points' | 'forms'>('points');
+  const [inspectionsSubTab, setInspectionsSubTab] = useState<'points' | 'forms' | 'analytics'>('points');
   const [inspectionForms, setInspectionForms] = useState<any[]>([]);
   const [inspectionPoints, setInspectionPoints] = useState<any[]>([]);
   const [loadingInspections, setLoadingInspections] = useState(false);
@@ -237,6 +239,7 @@ export default function ConsultantPanel() {
   const [newInsFormTitle, setNewInsFormTitle] = useState('');
   const [newInsFormDesc, setNewInsFormDesc] = useState('');
   const [newInsFormClientId, setNewInsFormClientId] = useState('');
+  const [newInsFormPassword, setNewInsFormPassword] = useState('');
   const [newInsFormQuestions, setNewInsFormQuestions] = useState<any[]>([
     { question_text: '', question_type: 'yes_no', is_required: true }
   ]);
@@ -302,6 +305,7 @@ export default function ConsultantPanel() {
           client_id: newInsFormClientId,
           title: newInsFormTitle.trim(),
           description: newInsFormDesc.trim() || null,
+          access_password: newInsFormPassword.trim() || null,
           created_by: userId
         })
         .select()
@@ -328,6 +332,7 @@ export default function ConsultantPanel() {
       setNewInsFormTitle('');
       setNewInsFormDesc('');
       setNewInsFormClientId('');
+      setNewInsFormPassword('');
       setNewInsFormQuestions([{ question_text: '', question_type: 'yes_no', is_required: true }]);
       fetchInspections();
     } catch (err: any) {
@@ -4480,6 +4485,16 @@ export default function ConsultantPanel() {
             >
               <FileText size={14} /> Form Şablonları ({inspectionForms.length})
             </button>
+            <button
+              onClick={() => setInspectionsSubTab('analytics')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                inspectionsSubTab === 'analytics'
+                  ? 'bg-teal-650 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <PieChart size={14} /> Analiz & Raporlama
+            </button>
           </div>
 
           {loadingInspections ? (
@@ -4625,6 +4640,11 @@ export default function ConsultantPanel() {
                   </div>
                 </div>
               )}
+
+              {/* ANALYTICS TAB */}
+              {inspectionsSubTab === 'analytics' && (
+                <InspectionAnalytics inspectionForms={inspectionForms} supabase={supabase} />
+              )}
             </div>
           )}
         </div>
@@ -4687,6 +4707,17 @@ export default function ConsultantPanel() {
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200 resize-none"
                   value={newInsFormDesc}
                   onChange={(e) => setNewInsFormDesc(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Form Giriş Şifresi (Opsiyonel)</label>
+                <input
+                  type="password"
+                  placeholder="Sahada bu formu dolduracak personellerin girmesi gereken şifre (boş bırakılırsa şifresiz açılır)"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newInsFormPassword}
+                  onChange={(e) => setNewInsFormPassword(e.target.value)}
                 />
               </div>
 
@@ -4931,7 +4962,7 @@ export default function ConsultantPanel() {
                           <div>
                             <div className="text-xs font-semibold text-slate-500">Gönderen Personel</div>
                             <div className="text-sm font-bold text-slate-800 dark:text-slate-200 mt-0.5">
-                              {sub.submitted_by_name || <span className="italic font-normal text-slate-400">Anonim Saha Personeli</span>}
+                              {sub.submitted_by_name ? `${sub.submitted_by_name} ${sub.submitted_by_surname || ''}`.trim() : <span className="italic font-normal text-slate-400">Anonim Saha Personeli</span>}
                             </div>
                           </div>
 
