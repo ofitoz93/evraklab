@@ -33,6 +33,7 @@ import {
   MapPin,
   Edit2,
   QrCode,
+  Eye,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
