@@ -298,7 +298,7 @@ function NavBarContent({
                 to="/company"
                 className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
               >
-                <Users size={16} /> {!isEnvConsultant ? 'Ekip & Mevzuat' : 'Ekip'}
+                <Users size={16} /> Danışman İşlemleri
               </Link>
             )}
             <Link
@@ -560,12 +560,12 @@ function NavBarContent({
               )}
             </Link>
 
-            {canViewTeam && (
+             {canViewTeam && (
               <Link
                 to="/company"
                 className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
               >
-                <Users size={20} /> {!isEnvConsultant ? 'Ekip & Mevzuat Yönetimi' : 'Ekip Yönetimi'}
+                <Users size={20} /> Danışman İşlemleri
               </Link>
             )}
 
