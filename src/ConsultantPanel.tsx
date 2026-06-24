@@ -832,12 +832,12 @@ export default function ConsultantPanel() {
   // Change requests states
   const [changeRequests, setChangeRequests] = useState<any[]>([]);
   const [loadingChangeRequests, setLoadingChangeRequests] = useState(false);
-  const [showChangeRequestModal, setShowChangeRequestModal] = useState(false);
+  const [showClientChangeRequestModal, setShowClientChangeRequestModal] = useState(false);
   const [selectedClientForChangeRequest, setSelectedClientForChangeRequest] = useState<Client | null>(null);
   const [changeRequestNewName, setChangeRequestNewName] = useState('');
   const [changeRequestNewAddress, setChangeRequestNewAddress] = useState('');
   const [changeRequestPdfFile, setChangeRequestPdfFile] = useState<File | null>(null);
-  const [submittingChangeRequest, setSubmittingChangeRequest] = useState(false);
+  const [submittingClientChangeRequest, setSubmittingClientChangeRequest] = useState(false);
 
   const handleToggleNewClientArticle = (code: string) => {
     const current = newClient.permit_articles || [];
@@ -2803,7 +2803,7 @@ export default function ConsultantPanel() {
       return;
     }
 
-    setSubmittingChangeRequest(true);
+    setSubmittingClientChangeRequest(true);
     try {
       const file = changeRequestPdfFile;
       const fileExt = file.name.split('.').pop();
@@ -2834,7 +2834,7 @@ export default function ConsultantPanel() {
       if (insertError) throw insertError;
       
       alert('Değişiklik talebiniz başarıyla firma sahibine iletildi.');
-      setShowChangeRequestModal(false);
+      setShowClientChangeRequestModal(false);
       setSelectedClientForChangeRequest(null);
       setChangeRequestNewName('');
       setChangeRequestNewAddress('');
@@ -2843,7 +2843,7 @@ export default function ConsultantPanel() {
     } catch (err: any) {
       alert('Talep gönderilirken hata: ' + err.message);
     } finally {
-      setSubmittingChangeRequest(false);
+      setSubmittingClientChangeRequest(false);
     }
   };
 
@@ -3365,7 +3365,7 @@ export default function ConsultantPanel() {
                             setChangeRequestNewName(client.name);
                             setChangeRequestNewAddress(client.address);
                             setChangeRequestPdfFile(null);
-                            setShowChangeRequestModal(true);
+                            setShowClientChangeRequestModal(true);
                           }}
                           className="text-purple-650 hover:underline text-sm flex items-center gap-1 font-medium"
                         >
@@ -7722,14 +7722,14 @@ export default function ConsultantPanel() {
       )}
 
       {/* Change Request Modal */}
-      {showChangeRequestModal && selectedClientForChangeRequest && (
+      {showClientChangeRequestModal && selectedClientForChangeRequest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl">
             <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
               <h2 className="text-xl font-bold">Ünvan / Adres Değişikliği Talebi</h2>
               <button 
                 onClick={() => {
-                  setShowChangeRequestModal(false);
+                  setShowClientChangeRequestModal(false);
                   setSelectedClientForChangeRequest(null);
                 }} 
                 className="text-gray-400 hover:text-gray-605 dark:text-gray-300"
@@ -7780,20 +7780,20 @@ export default function ConsultantPanel() {
                 <button
                   type="button"
                   onClick={() => {
-                    setShowChangeRequestModal(false);
+                    setShowClientChangeRequestModal(false);
                     setSelectedClientForChangeRequest(null);
                   }}
                   className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-gray-700 dark:text-gray-300 dark:border-slate-750"
-                  disabled={submittingChangeRequest}
+                  disabled={submittingClientChangeRequest}
                 >
                   İptal
                 </button>
                 <button
                   type="submit"
                   className="px-4 py-2 bg-purple-600 hover:bg-purple-750 text-white rounded-lg font-medium disabled:opacity-50"
-                  disabled={submittingChangeRequest}
+                  disabled={submittingClientChangeRequest}
                 >
-                  {submittingChangeRequest ? 'Talep Gönderiliyor...' : 'Talep Gönder'}
+                  {submittingClientChangeRequest ? 'Talep Gönderiliyor...' : 'Talep Gönder'}
                 </button>
               </div>
             </form>
