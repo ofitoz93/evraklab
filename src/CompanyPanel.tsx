@@ -194,6 +194,15 @@ export default function CompanyPanel() {
   const [submittingRequest, setSubmittingRequest] = useState(false);
   const [myRequests, setMyRequests] = useState<any[]>([]);
 
+  // Change requests states (Ünvan/Adres Değişiklik Talepleri)
+  const [changeRequests, setChangeRequests] = useState<any[]>([]);
+  const [loadingChangeRequests, setLoadingChangeRequests] = useState(false);
+  const [resolvingChangeRequestId, setResolvingChangeRequestId] = useState<string | null>(null);
+  const [showChangeRejectionModal, setShowChangeRejectionModal] = useState(false);
+  const [changeRejectionReason, setChangeRejectionReason] = useState('');
+  const [selectedChangeRequestForRejection, setSelectedChangeRequestForRejection] = useState<any | null>(null);
+  const [requestsSubTab, setRequestsSubTab] = useState<'regulation' | 'change'>('regulation');
+
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
   const [inspectionsSubTab, setInspectionsSubTab] = useState<'points' | 'forms' | 'analytics'>('points');
   const [inspectionForms, setInspectionForms] = useState<any[]>([]);
@@ -367,6 +376,99 @@ export default function CompanyPanel() {
     }
   };
 
+  const fetchChangeRequests = async (clientId: string) => {
+    if (!clientId) return;
+    setLoadingChangeRequests(true);
+    try {
+      const { data, error } = await supabase
+        .from('client_change_requests')
+        .select('*, requester:requested_by(full_name)')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setChangeRequests(data || []);
+    } catch (err: any) {
+      console.error('Değişiklik talepleri alınamadı:', err.message);
+    } finally {
+      setLoadingChangeRequests(false);
+    }
+  };
+
+  const handleApproveChangeRequest = async (req: any) => {
+    if (!window.confirm('Bu ünvan/adres değişiklik talebini onaylamak istediğinizden emin misiniz? Resmi firma kayıtlarınız bu bilgilere göre güncellenecektir.')) return;
+    setResolvingChangeRequestId(req.id);
+    try {
+      const { error: updateReqError } = await supabase
+        .from('client_change_requests')
+        .update({
+          status: 'approved',
+          resolved_at: new Date().toISOString(),
+          resolved_by: myProfile?.id || null
+        })
+        .eq('id', req.id);
+      
+      if (updateReqError) throw updateReqError;
+
+      const updateData: any = {};
+      if (req.new_name) updateData.name = req.new_name;
+      if (req.new_address) updateData.address = req.new_address;
+
+      if (Object.keys(updateData).length > 0) {
+        const { error: updateClientError } = await supabase
+          .from('consultant_clients')
+          .update(updateData)
+          .eq('id', req.client_id);
+        
+        if (updateClientError) throw updateClientError;
+      }
+
+      alert('Değişiklik talebi başarıyla onaylandı ve firma bilgileri güncellendi.');
+      if (clientRecId) {
+        fetchChangeRequests(clientRecId);
+      }
+    } catch (err: any) {
+      alert('Hata oluştu: ' + err.message);
+    } finally {
+      setResolvingChangeRequestId(null);
+    }
+  };
+
+  const handleRejectChangeRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedChangeRequestForRejection) return;
+    if (!changeRejectionReason.trim()) {
+      alert('Lütfen bir red gerekçesi belirtin.');
+      return;
+    }
+
+    setResolvingChangeRequestId(selectedChangeRequestForRejection.id);
+    try {
+      const { error } = await supabase
+        .from('client_change_requests')
+        .update({
+          status: 'rejected',
+          rejection_reason: changeRejectionReason.trim(),
+          resolved_at: new Date().toISOString(),
+          resolved_by: myProfile?.id || null
+        })
+        .eq('id', selectedChangeRequestForRejection.id);
+
+      if (error) throw error;
+      alert('Talep reddedildi.');
+      setShowChangeRejectionModal(false);
+      setSelectedChangeRequestForRejection(null);
+      setChangeRejectionReason('');
+      if (clientRecId) {
+        fetchChangeRequests(clientRecId);
+      }
+    } catch (err: any) {
+      alert('Hata oluştu: ' + err.message);
+    } finally {
+      setResolvingChangeRequestId(null);
+    }
+  };
+
   const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!requestTitle.trim() || !requestDescription.trim()) {
@@ -450,6 +552,7 @@ export default function CompanyPanel() {
 
       // Fetch requests for this client
       await fetchRequestsForClient(clientId);
+      await fetchChangeRequests(clientId);
     } catch (err: any) {
       console.error('Mevzuatlar çekilirken hata:', err.message);
       setRegsError(err.message);
@@ -583,21 +686,18 @@ export default function CompanyPanel() {
   };
 
   const handleUpdateArticleCompliance = async (artId: string, status: 'compliant' | 'non_compliant') => {
-    const art = selectedRegArticles.find(a => a.id === artId);
-    if (!art) return;
-    
-    setComplianceNoteData({
-      articleId: art.id,
-      type: status,
-      articleNo: art.article_no,
-      title: art.title || '',
-      currentNotes: art.current_status_notes || '',
-      currentExpiryDate: art.expiry_date || ''
-    });
-    setComplianceNoteValue(art.current_status_notes || '');
-    setComplianceExpiryDate(art.expiry_date || '');
-    setIsComplianceExpiryless(!art.expiry_date);
-    setShowComplianceNoteModal(true);
+    try {
+      const { error } = await supabase
+        .from('client_regulation_articles')
+        .update({ compliance_status: status, is_mandatory: true, last_updated_by: myProfile?.id })
+        .eq('id', artId);
+      if (error) throw error;
+      if (selectedReg) {
+        await fetchRegulationArticles(selectedReg);
+      }
+    } catch (err: any) {
+      alert('Madde uyum durumu güncellenirken hata: ' + err.message);
+    }
   };
 
   const handleSaveComplianceNote = async () => {
@@ -756,6 +856,7 @@ export default function CompanyPanel() {
   useEffect(() => {
     if (activeTab === 'requests' && clientRecId) {
       fetchRequestsForClient(clientRecId);
+      fetchChangeRequests(clientRecId);
     }
   }, [activeTab, clientRecId]);
 
@@ -2618,6 +2719,51 @@ export default function CompanyPanel() {
                       </div>
                     </div>
 
+                    {member.role !== 'normal' && (
+                      <div className="mt-2 py-1.5 px-3 bg-slate-50 rounded-lg border text-xs flex items-center gap-2">
+                        <span className="text-gray-400 font-bold uppercase tracking-wider text-[10px]">Deneyim Yılı:</span>
+                        {myProfile?.role === 'premium_corporate' ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min="0"
+                              max="80"
+                              value={member.experience_years !== undefined && member.experience_years !== null ? member.experience_years : 0}
+                              onChange={async (e) => {
+                                const val = parseInt(e.target.value) || 0;
+                                setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, experience_years: val } : m));
+                                const { error } = await supabase
+                                  .from('profiles')
+                                  .update({ experience_years: val })
+                                  .eq('id', member.id);
+                                if (error) {
+                                  alert('Deneyim yılı güncellenirken hata: ' + error.message);
+                                  const { data: refreshed } = await supabase
+                                    .from('profiles')
+                                    .select('*')
+                                    .eq('organization_id', myProfile.organization_id);
+                                  if (refreshed) {
+                                    const sorted = refreshed.sort((a, b) => {
+                                      if (a.role === 'premium_corporate' && b.role !== 'premium_corporate') return -1;
+                                      if (a.role !== 'premium_corporate' && b.role === 'premium_corporate') return 1;
+                                      return 0;
+                                    });
+                                    setTeamMembers(sorted);
+                                  }
+                                }
+                              }}
+                              className="w-16 border rounded px-1.5 py-0.5 text-center bg-white font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                            <span className="font-medium text-gray-500">Yıl</span>
+                          </div>
+                        ) : (
+                          <span className="font-bold text-gray-700">
+                            {member.experience_years || 0} Yıl
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Yönetici Butonları */}
                     {isCorporateAdmin && member.role !== 'premium_corporate' && (
                       <div className="flex gap-2">
@@ -3263,80 +3409,217 @@ export default function CompanyPanel() {
                   rows={4}
                   className="w-full border rounded-lg p-2.5 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition resize-none"
                   value={requestDescription}
-                  onChange={(e) => setRequestDescription(e.target.value)}
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={submittingRequest}
-                className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {submittingRequest ? (
-                  <>
-                    <Loader size={16} className="animate-spin" />
-                    Gönderiliyor...
-                  </>
-                ) : (
-                  'Talebi İlet'
-                )}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 3. SEKME: AKSİYON TAKİP SİSTEMİ */}
+                  onCh      {/* 3. SEKME: TALEPLER (Mevzuat ve Ünvan/Adres) */}
       {activeTab === 'requests' && (
         <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-6">
-          <div className="border-b pb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <div>
-              <h3 className="font-bold text-gray-800 dark:text-gray-200 text-lg flex items-center gap-2">
-                <Clock className="text-purple-650" size={16} /> Gönderilen Mevzuat Talepleri
-              </h3>
-              <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
-                Danışman firmanızdan talep ettiğiniz veya şirket içi personelin talep ettiği mevzuatları görüntüleyin.
-              </p>
-            </div>
-            {(myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief' || myProfile?.role === 'corporate_staff') && (
-              <button
-                onClick={() => {
-                  setRequestClientId(isConsultant ? '' : (clientRecId || ''));
-                  setShowRequestModal(true);
-                }}
-                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-md"
-              >
-                <PlusCircle size={16} /> Yeni Mevzuat Talep Et
-              </button>
-            )}
+          {/* Subtabs Navigation */}
+          <div className="flex border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1.5 rounded-lg shadow-sm gap-2">
+            <button
+              onClick={() => setRequestsSubTab('regulation')}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                requestsSubTab === 'regulation'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+              }`}
+            >
+              Mevzuat Talepleri
+            </button>
+            <button
+              onClick={() => {
+                setRequestsSubTab('change');
+                if (clientRecId) {
+                  fetchChangeRequests(clientRecId);
+                }
+              }}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                requestsSubTab === 'change'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+              }`}
+            >
+              Ünvan & Adres Değişikliği Talepleri
+            </button>
           </div>
 
-          {myRequests.length === 0 ? (
-            <div className="p-8 text-center text-xs text-gray-450 italic bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-dashed">
-              Henüz gönderilmiş bir mevzuat talebi bulunmuyor.
+          {requestsSubTab === 'regulation' ? (
+            <div className="space-y-6">
+              <div className="border-b pb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
+                    <Clock className="text-purple-650" size={16} /> Gönderilen Mevzuat Talepleri
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
+                    Danışman firmanızdan talep ettiğiniz veya şirket içi personelin talep ettiği mevzuatları görüntüleyin.
+                  </p>
+                </div>
+                {(myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief' || myProfile?.role === 'corporate_staff') && (
+                  <button
+                    onClick={() => {
+                      setRequestClientId(isConsultant ? '' : (clientRecId || ''));
+                      setShowRequestModal(true);
+                    }}
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-md"
+                  >
+                    <PlusCircle size={16} /> Yeni Mevzuat Talep Et
+                  </button>
+                )}
+              </div>
+
+              {myRequests.length === 0 ? (
+                <div className="p-8 text-center text-xs text-gray-450 italic bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-dashed">
+                  Henüz gönderilmiş bir mevzuat talebi bulunmuyor.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {myRequests.map((req) => (
+                    <div key={req.id} className="p-4 rounded-xl border bg-slate-50/50 dark:bg-slate-900/10 dark:border-slate-800 space-y-2 text-xs">
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="font-bold text-slate-850 dark:text-slate-200">{req.title}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          req.status === 'pending'
+                            ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+                            : req.status === 'escalated'
+                            ? 'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900'
+                            : req.status === 'approved'
+                            ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
+                            : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
+                        }`}
+                        >
+                          {req.status === 'pending' ? 'Bekliyor' : req.status === 'escalated' ? 'Yönlendirildi' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                        </span>
+                      </div>
+                      {req.description && (
+                        <p className="text-gray-500 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description}</p>
+                      )}
+                      <div className="text-[10px] text-gray-450 dark:text-gray-500 flex justify-between items-center pt-1.5 border-t dark:border-slate-800">
+                        <span>Talep Eden: <b>{req.requested_by_profile?.full_name || 'Bilinmiyor'}</b></span>
+                        <span>{new Date(req.created_at).toLocaleDateString('tr-TR')}</span>
+                      </div>
+                      {req.admin_notes && (
+                        <div className="mt-2 p-2 bg-white dark:bg-slate-900 rounded border dark:border-slate-800 text-gray-650 dark:text-gray-400 text-[10px]">
+                          <b>Not:</b> {req.admin_notes}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {myRequests.map((req) => (
-                <div key={req.id} className="p-4 rounded-xl border bg-slate-50/50 dark:bg-slate-900/10 dark:border-slate-800 space-y-2 text-xs">
-                  <div className="flex justify-between items-start gap-2">
-                    <span className="font-bold text-slate-800 dark:text-slate-200">{req.title}</span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      req.status === 'pending'
-                        ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
-                        : req.status === 'escalated'
-                        ? 'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900'
-                        : req.status === 'approved'
-                        ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
-                        : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
-                    }`}
-                    >
-                      {req.status === 'pending' ? 'Bekliyor' : req.status === 'escalated' ? 'Yönlendirildi' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
-                    </span>
-                  </div>
-                  {req.description && (
-                    <p className="text-gray-500 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description}</p>
-                  )}
+            <div className="space-y-6">
+              <div className="border-b pb-3">
+                <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
+                  <RefreshCw className="text-purple-650" size={16} /> Gelen Ünvan & Adres Değişikliği Talepleri
+                </h3>
+                <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
+                  Danışman personeliniz tarafından şirketinizin resmi ünvan ve adresi için girilen değişiklik taleplerini inceleyin.
+                </p>
+              </div>
+
+              {loadingChangeRequests ? (
+                <div className="flex justify-center items-center py-12 text-xs text-gray-500 gap-2">
+                  <Loader className="animate-spin" size={14} /> Yükleniyor...
+                </div>
+              ) : changeRequests.length === 0 ? (
+                <div className="p-8 text-center text-xs text-gray-450 italic bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-dashed">
+                  Henüz gelen bir değişiklik talebi bulunmuyor.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {changeRequests.map((req) => {
+                    const isPending = req.status === 'pending';
+                    const isResolving = resolvingChangeRequestId === req.id;
+                    const canApprove = myProfile?.role === 'premium_corporate';
+
+                    return (
+                      <div key={req.id} className="p-4 rounded-xl border bg-slate-50/50 dark:bg-slate-900/10 dark:border-slate-800 space-y-3 text-xs flex flex-col justify-between">
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-start gap-2">
+                            <div>
+                              <span className="font-bold text-slate-800 dark:text-slate-200">Değişiklik Talebi</span>
+                              <div className="text-[10px] text-gray-500 dark:text-gray-400">
+                                Gönderen: <b>{req.requester?.full_name || 'Bilinmiyor'}</b>
+                              </div>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              req.status === 'pending'
+                                ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900'
+                                : req.status === 'approved'
+                                ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
+                                : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
+                            }`}>
+                              {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                            </span>
+                          </div>
+
+                          <div className="space-y-1.5 p-2 rounded bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-800">
+                            {req.new_name && (
+                              <div>
+                                <span className="text-[9px] font-bold text-gray-400 block uppercase">Talep Edilen Ünvan</span>
+                                <span className="text-gray-700 dark:text-gray-300 font-semibold">{req.new_name}</span>
+                              </div>
+                            )}
+                            {req.new_address && (
+                              <div className={req.new_name ? "pt-1.5 border-t border-dashed border-gray-150 dark:border-slate-800" : ""}>
+                                <span className="text-[9px] font-bold text-gray-400 block uppercase">Talep Edilen Adres</span>
+                                <span className="text-gray-700 dark:text-gray-300 font-semibold block whitespace-pre-wrap">{req.new_address}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="space-y-3 pt-2 border-t border-dashed border-gray-200 dark:border-slate-800">
+                          <div className="flex justify-between items-center text-[10px]">
+                            <a 
+                              href={req.gazette_pdf_url} 
+                              target="_blank" 
+                              rel="noreferrer"
+                              className="text-blue-600 dark:text-blue-400 font-bold hover:underline"
+                            >
+                              Gazete PDF'i Gör ↗
+                            </a>
+                            <span className="text-gray-400">{new Date(req.created_at).toLocaleDateString('tr-TR')}</span>
+                          </div>
+
+                          {req.status === 'rejected' && req.rejection_reason && (
+                            <div className="p-2 bg-red-50/50 dark:bg-red-950/10 text-red-800 dark:text-red-350 rounded border border-red-100 dark:border-red-900/35 text-[10px]">
+                              <span className="font-bold text-[8px] block uppercase">Red Gerekçesi</span>
+                              <p className="italic">{req.rejection_reason}</p>
+                            </div>
+                          )}
+
+                          {isPending && canApprove && (
+                            <div className="flex gap-2 pt-1">
+                              <button
+                                onClick={() => handleApproveChangeRequest(req)}
+                                disabled={isResolving}
+                                className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 px-2 rounded transition shadow-sm text-center text-xs disabled:opacity-50"
+                              >
+                                {isResolving ? 'İşleniyor...' : 'Onayla'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedChangeRequestForRejection(req);
+                                  setChangeRejectionReason('');
+                                  setShowChangeRejectionModal(true);
+                                }}
+                                disabled={isResolving}
+                                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-1.5 px-2 rounded transition border border-red-300 text-center text-xs disabled:opacity-50"
+                              >
+                                Reddet
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
                   <div className="text-[10px] text-gray-450 dark:text-gray-500 flex justify-between items-center pt-1.5 border-t dark:border-slate-800">
                     <span>Talep Eden: <b>{req.requested_by_profile?.full_name || 'Bilinmiyor'}</b></span>
                     <span>{new Date(req.created_at).toLocaleDateString('tr-TR')}</span>
@@ -5903,6 +6186,64 @@ export default function CompanyPanel() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showChangeRejectionModal && selectedChangeRequestForRejection && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[999] p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border animate-scaleIn">
+            <div className="flex justify-between items-center pb-4 border-b">
+              <h3 className="font-bold text-gray-800 text-md flex items-center gap-1.5">
+                <XCircle className="text-red-500" size={20} />
+                Değişiklik Talebini Reddet
+              </h3>
+              <button 
+                onClick={() => {
+                  setShowChangeRejectionModal(false);
+                  setSelectedChangeRequestForRejection(null);
+                  setChangeRejectionReason('');
+                }} 
+                className="text-gray-400 hover:text-gray-655"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleRejectChangeRequest} className="space-y-4 pt-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">
+                  Red Gerekçesi <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  value={changeRejectionReason}
+                  onChange={(e) => setChangeRejectionReason(e.target.value)}
+                  placeholder="Lütfen talebin neden reddedildiğini açıklayın..."
+                  className="w-full border p-2 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-purple-500 font-medium"
+                ></textarea>
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowChangeRejectionModal(false);
+                    setSelectedChangeRequestForRejection(null);
+                    setChangeRejectionReason('');
+                  }}
+                  className="px-4 py-2 border rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-50"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-red-650 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition shadow-md"
+                >
+                  Reddetmeyi Onayla
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

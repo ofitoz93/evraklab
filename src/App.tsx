@@ -293,14 +293,6 @@ function NavBarContent({
                 )}
               </Link>
             )}
-             {canViewTeam && (
-              <Link
-                to="/company"
-                className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
-              >
-                <Users size={16} /> Danışman İşlemleri
-              </Link>
-            )}
             <Link
               to="/support"
               className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1 relative"
@@ -312,12 +304,18 @@ function NavBarContent({
                 </span>
               )}
             </Link>
-            {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+            {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
               <Link
                 to="/consultant"
                 className="hover:text-[#2ca58d] dark:hover:text-[#2ca58d] transition flex items-center gap-1 font-bold text-[#2ca58d]"
               >
-                <Briefcase size={16} /> {userRole === 'corporate_chief' ? 'Şef Paneli' : 'Yönetici Paneli'}
+                <Briefcase size={16} /> {
+                  userRole === 'corporate_chief' 
+                    ? 'Şef Paneli' 
+                    : userRole === 'corporate_staff' 
+                      ? 'Danışman İşlemleri' 
+                      : 'Yönetici Paneli'
+                }
               </Link>
             )}
             {(userRole === 'admin' || userRole === 'system_admin') && (
@@ -560,15 +558,6 @@ function NavBarContent({
               )}
             </Link>
 
-             {canViewTeam && (
-              <Link
-                to="/company"
-                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
-              >
-                <Users size={20} /> Danışman İşlemleri
-              </Link>
-            )}
-
             <Link
               to="/pricing"
               className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
@@ -583,13 +572,19 @@ function NavBarContent({
               <MessageCircle size={20} /> Destek
             </Link>
 
-            {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+            {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
               <Link
                 to="/consultant"
                 onClick={() => setIsMobileMenuOpen(false)}
                 className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 font-bold text-[#2ca58d] dark:text-[#2ca58d]"
               >
-                <Briefcase size={20} /> {userRole === 'corporate_chief' ? 'Şef Paneli' : 'Yönetici Paneli'}
+                <Briefcase size={20} /> {
+                  userRole === 'corporate_chief' 
+                    ? 'Şef Paneli' 
+                    : userRole === 'corporate_staff' 
+                      ? 'Danışman İşlemleri' 
+                      : 'Yönetici Paneli'
+                }
               </Link>
             )}
 
@@ -923,7 +918,7 @@ function AppContent() {
                 <Route
                   path="/consultant"
                   element={
-                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') ? (
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
                       <ConsultantPanel />
                     ) : (
                       <Navigate to="/" />

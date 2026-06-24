@@ -670,14 +670,20 @@ export default function AdminPanel() {
 
   const [triggeringReminders, setTriggeringReminders] = useState(false);
   const handleTriggerEmailReminders = async () => {
-    if (!window.confirm('E-posta hatırlatıcılarını şimdi manuel olarak tetiklemek istiyor musunuz? Bu işlem, koşulları sağlayan belgelere sahip tüm kullanıcılara hatırlatma e-postaları gönderecektir.')) {
+    if (!window.confirm('E-posta hatırlatıcılarını şimdi manuel olarak tetiklemek istiyor musunuz? Bu işlem, koşulları sağlayan belgelere sahip tüm kullanıcılara ve hizmet sözleşmesi dolan/dolmak üzere olan işletmelere hatırlatma e-postaları gönderecektir.')) {
       return;
     }
     setTriggeringReminders(true);
     try {
-      const { error } = await supabase.rpc('send_expiry_reminders');
-      if (error) throw error;
-      alert('E-posta hatırlatma fonksiyonu başarıyla tetiklendi!');
+      // Belge geçerlilik süresi hatırlatıcıları
+      const { error: expiryErr } = await supabase.rpc('send_expiry_reminders');
+      if (expiryErr) throw expiryErr;
+
+      // İşletme hizmet sözleşmesi hatırlatıcıları
+      const { error: contractErr } = await supabase.rpc('send_client_contract_reminders');
+      if (contractErr) throw contractErr;
+
+      alert('E-posta ve sözleşme hatırlatma fonksiyonları başarıyla tetiklendi!');
       fetchEmailLogs();
     } catch (err: any) {
       console.error('Hatırlatma tetikleme hatası:', err.message);

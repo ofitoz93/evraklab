@@ -178,7 +178,7 @@ export default function Dashboard() {
             // --- C. AKSİYONLAR SORGUSU ---
             try {
               const isEnvConsultant = !!(profile.organization as any)?.is_environmental_consultant;
-              const isManager = profile.role === 'admin' || isEnvConsultant || profile.role === 'premium_corporate' || profile.role === 'corporate_chief';
+              const isManager = profile.role === 'admin' || isEnvConsultant || profile.role === 'premium_corporate' || profile.role === 'corporate_chief' || profile.role === 'corporate_staff';
               setCanAccessConsultant(isManager);
 
               let actQuery = supabase

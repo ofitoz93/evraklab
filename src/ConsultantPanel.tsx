@@ -31,12 +31,15 @@ import {
   QrCode,
   HelpCircle,
   PieChart,
+  Calendar,
+  RefreshCw,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { MapPickerModal } from './MapPickerModal';
 import { Link } from 'react-router-dom';
 import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
+import { EK1_ARTICLES, EK2_ARTICLES } from './permitArticles';
 
 function formatArticleContent(content: string): string {
   // Clean multiple spaces
@@ -199,6 +202,11 @@ interface Client {
   logo_url: string;
   created_by?: string;
   created_at?: string;
+  service_start_date?: string;
+  contract_file_url?: string;
+  permit_stage?: string;
+  permit_articles?: string[];
+  kep_address?: string;
 }
 
 interface Report {
@@ -215,6 +223,44 @@ interface Report {
   wet_signature_url: string | null;
   wet_signed_at: string | null;
 }
+
+interface VisitSchedule {
+  id: string;
+  consultant_company_id: string;
+  client_id: string;
+  personnel_id: string;
+  visit_date: string;
+  notes?: string;
+  status: 'scheduled' | 'completed' | 'cancelled';
+  change_request_status: 'none' | 'pending' | 'approved' | 'rejected';
+  change_request_reason?: string;
+  change_request_date?: string;
+  client?: { name: string };
+  personnel?: { full_name: string };
+  created_at?: string;
+  updated_at?: string;
+}
+
+const getContractStatus = (startDateStr: string) => {
+  const serviceStartDate = new Date(startDateStr);
+  const expiryDate = new Date(serviceStartDate);
+  expiryDate.setFullYear(expiryDate.getFullYear() + 1); // 1 year contract length
+  
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expiryWithoutTime = new Date(expiryDate);
+  expiryWithoutTime.setHours(0, 0, 0, 0);
+
+  const diffTime = expiryWithoutTime.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  return {
+    expiryDate,
+    daysLeft: diffDays,
+    isExpired: diffDays <= 0,
+    isWarning: diffDays > 0 && diffDays <= 10,
+  };
+};
 
 export default function ConsultantPanel() {
   const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections'>('clients');
@@ -603,7 +649,52 @@ export default function ConsultantPanel() {
   const [importingLegId, setImportingLegId] = useState<string | null>(null);
   const [clientRegulations, setClientRegulations] = useState<any[]>([]);
   const [staffRequests, setStaffRequests] = useState<any[]>([]);
-  const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments'>('pool');
+  const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments' | 'calendar'>('pool');
+
+  // --- ZİYARET PLANLAMA / ÇALIŞMA TAKVİMİ STATE'LERİ ---
+  const [visitSchedules, setVisitSchedules] = useState<VisitSchedule[]>([]);
+  const [loadingVisits, setLoadingVisits] = useState(false);
+  const [showAddVisitModal, setShowAddVisitModal] = useState(false);
+  const [newVisit, setNewVisit] = useState({
+    client_id: '',
+    visit_date: '',
+    notes: '',
+  });
+  const [showChangeRequestModal, setShowChangeRequestModal] = useState(false);
+  const [selectedVisit, setSelectedVisit] = useState<VisitSchedule | null>(null);
+  const [changeRequest, setChangeRequest] = useState({
+    requested_date: '',
+    reason: '',
+  });
+  
+  const todayDate = new Date();
+  const [visitCalendarYear, setVisitCalendarYear] = useState(todayDate.getFullYear());
+  const [visitCalendarMonth, setVisitCalendarMonth] = useState(todayDate.getMonth()); // 0-11
+  const [visitCalendarView, setVisitCalendarView] = useState<'calendar' | 'list'>('calendar');
+  const [savingVisit, setSavingVisit] = useState(false);
+  const [submittingChangeRequest, setSubmittingChangeRequest] = useState(false);
+  
+  const [selectedVisitAssignees, setSelectedVisitAssignees] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (selectedVisit) {
+      const fetchVisitAssignees = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('consultant_assignments')
+            .select('profiles!user_id(full_name, email)')
+            .eq('client_id', selectedVisit.client_id);
+          if (error) throw error;
+          setSelectedVisitAssignees(data?.map((d: any) => d.profiles).filter(Boolean) || []);
+        } catch (err) {
+          console.error('Error fetching assignees:', err);
+        }
+      };
+      fetchVisitAssignees();
+    } else {
+      setSelectedVisitAssignees([]);
+    }
+  }, [selectedVisit]);
   
   const [showAssignClientLegModal, setShowAssignClientLegModal] = useState(false);
   const [assigningGlobalLeg, setAssigningGlobalLeg] = useState<any>(null);
@@ -729,7 +820,42 @@ export default function ConsultantPanel() {
     logo_url: '',
     latitude: null as number | null,
     longitude: null as number | null,
+    service_start_date: '',
+    contract_file_url: '',
+    permit_stage: 'out_of_scope',
+    permit_articles: [] as string[],
+    kep_address: '',
   });
+  const [newClientArticleSearch, setNewClientArticleSearch] = useState('');
+  const [editClientArticleSearch, setEditClientArticleSearch] = useState('');
+
+  // Change requests states
+  const [changeRequests, setChangeRequests] = useState<any[]>([]);
+  const [loadingChangeRequests, setLoadingChangeRequests] = useState(false);
+  const [showChangeRequestModal, setShowChangeRequestModal] = useState(false);
+  const [selectedClientForChangeRequest, setSelectedClientForChangeRequest] = useState<Client | null>(null);
+  const [changeRequestNewName, setChangeRequestNewName] = useState('');
+  const [changeRequestNewAddress, setChangeRequestNewAddress] = useState('');
+  const [changeRequestPdfFile, setChangeRequestPdfFile] = useState<File | null>(null);
+  const [submittingChangeRequest, setSubmittingChangeRequest] = useState(false);
+
+  const handleToggleNewClientArticle = (code: string) => {
+    const current = newClient.permit_articles || [];
+    const updated = current.includes(code)
+      ? current.filter(c => c !== code)
+      : [...current, code];
+    setNewClient({ ...newClient, permit_articles: updated });
+  };
+
+  const handleToggleEditClientArticle = (code: string) => {
+    if (!editingClient) return;
+    const current = editingClient.permit_articles || [];
+    const updated = current.includes(code)
+      ? current.filter(c => c !== code)
+      : [...current, code];
+    setEditingClient({ ...editingClient, permit_articles: updated });
+  };
+  const [uploadingContract, setUploadingContract] = useState(false);
   const [showAddClientMap, setShowAddClientMap] = useState(false);
   const [showEditClientMap, setShowEditClientMap] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -743,6 +869,24 @@ export default function ConsultantPanel() {
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [currentAssignments, setCurrentAssignments] = useState<string[]>([]);
+  const [allAssignments, setAllAssignments] = useState<any[]>([]);
+  const [clientSubView, setClientSubView] = useState<'grid' | 'personnel' | 'requests'>('grid');
+
+  const getPersonnelQuota = (memberId: string) => {
+    const memberAssigns = allAssignments.filter(a => a.user_id === memberId);
+    let totalDays = 0;
+    memberAssigns.forEach(assign => {
+      const client = clients.find(c => c.id === assign.client_id);
+      if (client) {
+        if (client.permit_stage === 'ek1') {
+          totalDays += 2;
+        } else if (client.permit_stage === 'ek2') {
+          totalDays += 1;
+        }
+      }
+    });
+    return totalDays;
+  };
 
   // Ekip Yönetimi (Yönetici Paneli) State'leri
   const [invitations, setInvitations] = useState<any[]>([]);
@@ -780,10 +924,176 @@ export default function ConsultantPanel() {
     }
   }, [activeTab, orgId]);
 
+  useEffect(() => {
+    if (activeTab === 'legislations' && legSubTab === 'calendar' && orgId) {
+      fetchVisitSchedules();
+    }
+  }, [activeTab, legSubTab, orgId]);
+
+  const fetchVisitSchedules = async () => {
+    if (!orgId) return;
+    setLoadingVisits(true);
+    try {
+      let query = supabase
+        .from('visit_schedules')
+        .select(`
+          *,
+          client:consultant_clients(name),
+          personnel:profiles!personnel_id(full_name)
+        `)
+        .eq('consultant_company_id', orgId);
+
+      const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
+      const canViewAll = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || !!currentUserPerms?.can_view_all_clients;
+
+      if (isRestrictedRole && !canViewAll) {
+        // Fetch assigned clients from consultant_assignments
+        const { data: assignments } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', userId);
+        const cIds = assignments?.map((a) => a.client_id) || [];
+        if (cIds.length > 0) {
+          query = query.in('client_id', cIds);
+        } else {
+          setVisitSchedules([]);
+          setLoadingVisits(false);
+          return;
+        }
+      }
+
+      const { data, error } = await query.order('visit_date', { ascending: true });
+      if (error) throw error;
+      setVisitSchedules(data || []);
+    } catch (err: any) {
+      console.error('Ziyaretler yüklenirken hata:', err.message);
+    } finally {
+      setLoadingVisits(false);
+    }
+  };
+
+  const handleCreateVisit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orgId) return;
+    if (!newVisit.client_id || !newVisit.visit_date) {
+      alert('Lütfen tüm zorunlu alanları doldurun.');
+      return;
+    }
+
+    setSavingVisit(true);
+    try {
+      const { error } = await supabase.from('visit_schedules').insert([{
+        consultant_company_id: orgId,
+        client_id: newVisit.client_id,
+        visit_date: newVisit.visit_date,
+        notes: newVisit.notes || null,
+        status: 'scheduled',
+      }]);
+
+      if (error) throw error;
+      alert('Ziyaret başarıyla planlandı!');
+      setShowAddVisitModal(false);
+      setNewVisit({ client_id: '', visit_date: '', notes: '' });
+      fetchVisitSchedules();
+    } catch (err: any) {
+      alert('Ziyaret planlanırken hata: ' + err.message);
+    } finally {
+      setSavingVisit(false);
+    }
+  };
+
+  const handleDeleteVisit = async (id: string) => {
+    if (!window.confirm('Bu ziyareti silmek istediğinizden emin misiniz?')) return;
+    try {
+      const { error } = await supabase.from('visit_schedules').delete().eq('id', id);
+      if (error) throw error;
+      alert('Ziyaret başarıyla silindi!');
+      fetchVisitSchedules();
+    } catch (err: any) {
+      alert('Ziyaret silinirken hata: ' + err.message);
+    }
+  };
+
+  const handleSubmitChangeRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedVisit) return;
+    if (!changeRequest.requested_date || !changeRequest.reason) {
+      alert('Lütfen yeni tarih ve gerekçenizi belirtin.');
+      return;
+    }
+
+    setSubmittingChangeRequest(true);
+    try {
+      const { error } = await supabase
+        .from('visit_schedules')
+        .update({
+          change_request_status: 'pending',
+          change_request_date: changeRequest.requested_date,
+          change_request_reason: changeRequest.reason,
+          personnel_id: userId, // Track who made this change request
+        })
+        .eq('id', selectedVisit.id);
+
+      if (error) throw error;
+      alert('Değişiklik talebiniz başarıyla firma sahibine iletildi.');
+      setShowChangeRequestModal(false);
+      setSelectedVisit(null);
+      setChangeRequest({ requested_date: '', reason: '' });
+      fetchVisitSchedules();
+    } catch (err: any) {
+      alert('Talep gönderilirken hata: ' + err.message);
+    } finally {
+      setSubmittingChangeRequest(false);
+    }
+  };
+
+  const handleProcessChangeRequest = async (visitId: string, approve: boolean) => {
+    const visit = visitSchedules.find(v => v.id === visitId);
+    if (!visit) return;
+
+    const action = approve ? 'onaylamak' : 'reddetmek';
+    if (!window.confirm(`Bu değişiklik talebini ${action} istediğinizden emin misiniz?`)) return;
+
+    try {
+      const updates: any = {
+        change_request_status: approve ? 'approved' : 'rejected',
+      };
+      
+      if (approve && visit.change_request_date) {
+        updates.visit_date = visit.change_request_date;
+      }
+
+      const { error } = await supabase
+        .from('visit_schedules')
+        .update(updates)
+        .eq('id', visitId);
+
+      if (error) throw error;
+      alert(`Değişiklik talebi başarıyla ${approve ? 'onaylandı' : 'reddedildi'}.`);
+      fetchVisitSchedules();
+    } catch (err: any) {
+      alert('İşlem gerçekleştirilirken hata: ' + err.message);
+    }
+  };
+
+  const handleUpdateVisitStatus = async (visitId: string, newStatus: 'scheduled' | 'completed' | 'cancelled') => {
+    try {
+      const { error } = await supabase
+        .from('visit_schedules')
+        .update({ status: newStatus })
+        .eq('id', visitId);
+      if (error) throw error;
+      alert(`Ziyaret durumu başarıyla güncellendi.`);
+      fetchVisitSchedules();
+    } catch (err: any) {
+      alert('Durum güncellenirken hata: ' + err.message);
+    }
+  };
+
   const fetchTeamMembers = async () => {
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email, role, extra_permissions')
+      .select('id, full_name, email, role, extra_permissions, experience_years')
       .eq('organization_id', orgId);
     
     const sortedMembers = (members || []).sort((a, b) => {
@@ -1206,6 +1516,39 @@ export default function ConsultantPanel() {
       setUploadingLogo(false);
     }
   };
+  
+  const handleContractUpload = async (e: React.ChangeEvent<HTMLInputElement>, isEditMode = false) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingContract(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `contract_${Math.random()}.${fileExt}`;
+      const filePath = `contracts/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('client_assets')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage
+        .from('client_assets')
+        .getPublicUrl(filePath);
+
+      if (isEditMode) {
+        setEditingClient((prev: any) => ({ ...prev, contract_file_url: data.publicUrl }));
+      } else {
+        setNewClient(prev => ({ ...prev, contract_file_url: data.publicUrl }));
+      }
+      alert('Sözleşme dosyası başarıyla yüklendi!');
+    } catch (err: any) {
+      alert('Sözleşme yüklenirken hata: ' + err.message);
+    } finally {
+      setUploadingContract(false);
+    }
+  };
 
   const handleOrgLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1280,7 +1623,7 @@ export default function ConsultantPanel() {
     // Fetch team members of the consultant company
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email')
+      .select('id, full_name, email, role, extra_permissions, experience_years')
       .eq('organization_id', orgId);
     setTeamMembers(members || []);
 
@@ -1307,13 +1650,24 @@ export default function ConsultantPanel() {
           .eq('user_id', uId);
         if (error) throw error;
         setCurrentAssignments(prev => prev.filter(id => id !== uId));
+        setAllAssignments(prev => prev.filter(a => !(a.client_id === selectedClient.id && a.user_id === uId)));
       } else {
         // Add assignment
+        if (selectedClient?.permit_stage === 'ek1') {
+          const member = teamMembers.find(m => m.id === uId);
+          const experience = member ? (member.experience_years || 0) : 0;
+          if (experience < 3) {
+            alert(`Atama Hatası: EK-1 kapsamındaki işletmelere çevre yönetimi hizmeti verecek personelin en az 3 yıl mesleki tecrübeye sahip olması gerekmektedir. Seçilen personelin deneyimi: ${experience} Yıl.`);
+            return;
+          }
+        }
+
         const { error } = await supabase
           .from('consultant_assignments')
           .insert([{ client_id: selectedClient.id, user_id: uId }]);
         if (error) throw error;
         setCurrentAssignments(prev => [...prev, uId]);
+        setAllAssignments(prev => [...prev, { client_id: selectedClient.id, user_id: uId }]);
       }
     } catch (err: any) {
       alert('Atama yapılırken hata: ' + err.message);
@@ -1331,6 +1685,26 @@ export default function ConsultantPanel() {
       return 'border-rose-250 dark:border-rose-800 bg-rose-50/10 dark:bg-rose-950/5';
     }
     return 'border-amber-250 dark:border-amber-800 bg-amber-50/10 dark:bg-amber-950/5';
+  };
+
+  const getContractStatus = (startDateStr: string | undefined) => {
+    if (!startDateStr) return null;
+    const start = new Date(startDateStr);
+    // Expiry is start date + 1 year
+    const expiry = new Date(start.getFullYear() + 1, start.getMonth(), start.getDate());
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    expiry.setHours(0, 0, 0, 0);
+
+    const diffMs = expiry.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    
+    return {
+      expiryDate: expiry,
+      daysLeft: diffDays,
+      isExpired: diffDays <= 0,
+      isWarning: diffDays > 0 && diffDays <= 10
+    };
   };
 
   const fetchUserDocuments = async (uid: string) => {
@@ -1388,6 +1762,11 @@ export default function ConsultantPanel() {
           }
         }
 
+        if (profile.role === 'corporate_staff') {
+          setActiveTab('legislations');
+          setLegSubTab('calendar');
+        }
+
         if (profile.organization_id) {
           const { data: org } = await supabase.from('organizations').select('*').eq('id', profile.organization_id).single();
           setOrgData(org);
@@ -1396,6 +1775,7 @@ export default function ConsultantPanel() {
         await Promise.all([
           fetchClients(profile.organization_id, profile.role, session.user.id, perms),
           fetchReports(profile.organization_id, profile.role, session.user.id, perms),
+          fetchChangeRequests(profile.organization_id, profile.role, session.user.id, perms),
         ]);
       }
     } catch (err) {
@@ -1511,6 +1891,52 @@ export default function ConsultantPanel() {
     } finally {
       setParsingPdf(false);
     }
+  };
+
+  const handleAddEmptyArticle = () => {
+    const nextNum = legArticles.length + 1;
+    const newArt = {
+      article_no: `MADDE ${nextNum}`,
+      title: '',
+      content: '',
+      order_index: nextNum
+    };
+    setLegArticles([...legArticles, newArt]);
+  };
+
+  const handleUpdateArticleField = (index: number, field: string, value: string) => {
+    const updated = [...legArticles];
+    updated[index] = {
+      ...updated[index],
+      [field]: value
+    };
+    setLegArticles(updated);
+  };
+
+  const handleDeleteArticle = (index: number) => {
+    const updated = legArticles.filter((_, idx) => idx !== index).map((art, idx) => ({
+      ...art,
+      order_index: idx + 1
+    }));
+    setLegArticles(updated);
+  };
+
+  const handleMoveArticle = (index: number, direction: 'up' | 'down') => {
+    if (direction === 'up' && index === 0) return;
+    if (direction === 'down' && index === legArticles.length - 1) return;
+    
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    const updated = [...legArticles];
+    
+    const temp = updated[index];
+    updated[index] = updated[targetIndex];
+    updated[targetIndex] = temp;
+    
+    const final = updated.map((art, idx) => ({
+      ...art,
+      order_index: idx + 1
+    }));
+    setLegArticles(final);
   };
 
   const handleSaveLegislation = async (e: React.FormEvent) => {
@@ -1768,21 +2194,18 @@ export default function ConsultantPanel() {
   };
 
   const handleUpdateArticleCompliance = async (articleId: string, status: 'compliant' | 'non_compliant') => {
-    const art = selectedClientRegulationArticles.find(a => a.id === articleId);
-    if (!art) return;
-    
-    setComplianceNoteData({
-      articleId: art.id,
-      type: status,
-      articleNo: art.article_no,
-      title: art.title || '',
-      currentNotes: art.current_status_notes || '',
-      currentExpiryDate: art.expiry_date || ''
-    });
-    setComplianceNoteValue(art.current_status_notes || '');
-    setComplianceExpiryDate(art.expiry_date || '');
-    setIsComplianceExpiryless(!art.expiry_date);
-    setShowComplianceNoteModal(true);
+    try {
+      const { error } = await supabase
+        .from('client_regulation_articles')
+        .update({ compliance_status: status, is_mandatory: true, last_updated_by: userId })
+        .eq('id', articleId);
+      if (error) throw error;
+      if (selectedClientRegulation) {
+        await fetchClientRegulationArticles(selectedClientRegulation);
+      }
+    } catch (err: any) {
+      alert('Madde uyum durumu güncellenirken hata: ' + err.message);
+    }
   };
 
   const handleSaveComplianceNote = async () => {
@@ -2303,7 +2726,125 @@ export default function ConsultantPanel() {
       query = query.eq('consultant_company_id', oId);
     }
     const { data } = await query.order('created_at', { ascending: false });
-    if (data) setClients(data);
+    if (data) {
+      setClients(data);
+      const clientIds = data.map((c: any) => c.id);
+      if (clientIds.length > 0) {
+        const { data: assigns } = await supabase
+          .from('consultant_assignments')
+          .select('*')
+          .in('client_id', clientIds);
+        setAllAssignments(assigns || []);
+      } else {
+        setAllAssignments([]);
+      }
+    }
+  };
+
+  const fetchChangeRequests = async (oId?: string, role?: string, uId?: string, perms?: any) => {
+    const currentOrgId = oId || orgId;
+    const currentRole = role || userRole;
+    const currentUserId = uId || userId;
+    const currentPerms = perms || currentUserPerms;
+
+    if (!currentOrgId) return;
+    setLoadingChangeRequests(true);
+    try {
+      let query = supabase
+        .from('client_change_requests')
+        .select('*, client:client_id(name), requester:requested_by(full_name)');
+      
+      const isRestrictedRole = currentRole === 'corporate_staff' || currentRole === 'corporate_chief';
+      if (isRestrictedRole && !currentPerms?.can_view_all_clients) {
+        const { data: assignments } = await supabase
+          .from('consultant_assignments')
+          .select('client_id')
+          .eq('user_id', currentUserId);
+        const cIds = assignments?.map((a) => a.client_id) || [];
+        if (cIds.length > 0) {
+          query = query.in('client_id', cIds);
+        } else {
+          setChangeRequests([]);
+          return;
+        }
+      } else {
+        const { data: clientRecs } = await supabase
+          .from('consultant_clients')
+          .select('id')
+          .eq('consultant_company_id', currentOrgId);
+        const cIds = clientRecs?.map(c => c.id) || [];
+        if (cIds.length > 0) {
+          query = query.in('client_id', cIds);
+        } else {
+          setChangeRequests([]);
+          return;
+        }
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
+      if (error) throw error;
+      setChangeRequests(data || []);
+    } catch (err: any) {
+      console.error('Değişiklik talepleri alınamadı:', err);
+    } finally {
+      setLoadingChangeRequests(false);
+    }
+  };
+
+  const handleClientChangeRequestSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClientForChangeRequest) return;
+    if (!changeRequestPdfFile) {
+      alert('Lütfen Ticaret Sicil Gazetesi PDF dosyasını yükleyin.');
+      return;
+    }
+    if (!changeRequestNewName.trim() && !changeRequestNewAddress.trim()) {
+      alert('Lütfen yeni ünvan veya yeni adres alanlarından en az birini doldurun.');
+      return;
+    }
+
+    setSubmittingChangeRequest(true);
+    try {
+      const file = changeRequestPdfFile;
+      const fileExt = file.name.split('.').pop();
+      const fileName = `gazette_${selectedClientForChangeRequest.id}_${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
+      const filePath = `change_requests/${fileName}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('client_assets')
+        .upload(filePath, file);
+        
+      if (uploadError) throw uploadError;
+      
+      const { data: urlData } = supabase.storage
+        .from('client_assets')
+        .getPublicUrl(filePath);
+        
+      const { error: insertError } = await supabase
+        .from('client_change_requests')
+        .insert({
+          client_id: selectedClientForChangeRequest.id,
+          requested_by: userId,
+          new_name: changeRequestNewName.trim() || null,
+          new_address: changeRequestNewAddress.trim() || null,
+          gazette_pdf_url: urlData.publicUrl,
+          status: 'pending'
+        });
+
+      if (insertError) throw insertError;
+      
+      alert('Değişiklik talebiniz başarıyla firma sahibine iletildi.');
+      setShowChangeRequestModal(false);
+      setSelectedClientForChangeRequest(null);
+      setChangeRequestNewName('');
+      setChangeRequestNewAddress('');
+      setChangeRequestPdfFile(null);
+      fetchChangeRequests();
+    } catch (err: any) {
+      alert('Talep gönderilirken hata: ' + err.message);
+    } finally {
+      setSubmittingChangeRequest(false);
+    }
   };
 
   const fetchReports = async (oId: string, role: string, uId: string, perms?: any) => {
@@ -2353,11 +2894,30 @@ export default function ConsultantPanel() {
           created_by: userId,
           latitude: newClient.latitude || null,
           longitude: newClient.longitude || null,
+          service_start_date: newClient.service_start_date || null,
+          contract_file_url: newClient.contract_file_url || null,
+          permit_stage: newClient.permit_stage || 'out_of_scope',
+          permit_articles: newClient.permit_articles || [],
+          kep_address: newClient.kep_address || null,
         },
       ]);
       if (error) throw error;
       setShowAddClient(false);
-      setNewClient({ name: '', address: '', tax_no: '', phone: '', logo_url: '', latitude: null, longitude: null });
+      setNewClient({
+        name: '',
+        address: '',
+        tax_no: '',
+        phone: '',
+        logo_url: '',
+        latitude: null,
+        longitude: null,
+        service_start_date: '',
+        contract_file_url: '',
+        permit_stage: 'out_of_scope',
+        permit_articles: [],
+        kep_address: '',
+      });
+      setNewClientArticleSearch('');
       fetchClients(orgId, userRole, userId);
     } catch (err: any) {
       alert('Firma eklenirken hata: ' + err.message);
@@ -2369,7 +2929,17 @@ export default function ConsultantPanel() {
       alert('Bu işletmeyi düzenleme yetkiniz bulunmamaktadır (Firma Sahibi tarafından oluşturulmuş veya oluşturulma süresi 24 saati geçmiş).');
       return;
     }
-    setEditingClient(client);
+    setEditingClient({
+      ...client,
+      permit_stage: client.permit_stage || 'out_of_scope',
+      permit_articles: Array.isArray(client.permit_articles)
+        ? client.permit_articles
+        : typeof client.permit_articles === 'string'
+          ? JSON.parse(client.permit_articles || '[]')
+          : [],
+      kep_address: client.kep_address || ''
+    });
+    setEditClientArticleSearch('');
     setShowEditClient(true);
   };
 
@@ -2392,6 +2962,11 @@ export default function ConsultantPanel() {
           logo_url: editingClient.logo_url,
           latitude: editingClient.latitude || null,
           longitude: editingClient.longitude || null,
+          service_start_date: editingClient.service_start_date || null,
+          contract_file_url: editingClient.contract_file_url || null,
+          permit_stage: editingClient.permit_stage || 'out_of_scope',
+          permit_articles: editingClient.permit_articles || [],
+          kep_address: editingClient.kep_address || null,
         })
         .eq('id', editingClient.id);
 
@@ -2472,17 +3047,17 @@ export default function ConsultantPanel() {
 
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
 
-  const isAdminOrChief = userRole === 'admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
-  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+  const isAdminOrChief = userRole === 'admin' || userRole === 'system_admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
+  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'system_admin';
   
-  // Granular Permissions for Chief / Staff
-  const canViewClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_clients !== false);
-  const canCreateClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_create_clients);
-  const canEditClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients);
-  const canAssignClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
-  const canDeleteClients = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
-  const canViewReports = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
-  const canViewTeam = userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
+  // Granular Permissions for Chief / Staff / Admins
+  const canViewClients = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_clients !== false);
+  const canCreateClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_create_clients);
+  const canEditClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients);
+  const canAssignClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
+  const canDeleteClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
+  const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
+  const canViewTeam = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
 
 
   const checkClientEditable = (client: Client) => {
@@ -2502,12 +3077,12 @@ export default function ConsultantPanel() {
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <FileText className="text-blue-600" /> {userRole === 'corporate_chief' ? 'Şef Paneli' : 'Raporlar Paneli'}
+            <Scale className="text-blue-600" /> Danışman İşlemleri
           </h1>
           <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
         </div>
           <div className="flex items-center gap-2">
-            {canCreateClients && (
+            {activeTab === 'clients' && canCreateClients && (
               <button
                 onClick={() => setShowAddClient(true)}
                 className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
@@ -2515,7 +3090,7 @@ export default function ConsultantPanel() {
                 <Plus size={18} /> Yeni İşletme
               </button>
             )}
-          {userRole !== 'corporate_chief' && (
+          {activeTab === 'reports' && userRole !== 'corporate_chief' && (
             <Link
               to="/consultant/reports/add"
               className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
@@ -2631,66 +3206,353 @@ export default function ConsultantPanel() {
       </div>
 
       {activeTab === 'clients' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {clients.map((client) => (
-            <div
-              key={client.id}
-              className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 hover:shadow-md transition"
+        <div className="space-y-6">
+          <div className="flex border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1.5 rounded-lg shadow-sm gap-2 flex-wrap">
+            <button
+              onClick={() => setClientSubView('grid')}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                clientSubView === 'grid'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+              }`}
             >
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  {client.logo_url ? (
-                    <img src={client.logo_url} alt="Logo" className="w-12 h-12 rounded-lg object-contain border" />
-                  ) : (
-                    <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400">
-                      <Building size={24} />
+              Tüm İşletmeler
+            </button>
+            <button
+              onClick={() => setClientSubView('personnel')}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                clientSubView === 'personnel'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+              }`}
+            >
+              Personel Atamaları (Kota ve İşletmeler)
+            </button>
+            <button
+              onClick={() => {
+                setClientSubView('requests');
+                fetchChangeRequests();
+              }}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                clientSubView === 'requests'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+              }`}
+            >
+              Değişiklik Talepleri (Ünvan & Adres)
+            </button>
+          </div>
+
+          {clientSubView === 'grid' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {clients.map((client) => (
+                <div
+                  key={client.id}
+                  className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 hover:shadow-md transition"
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      {client.logo_url ? (
+                        <img src={client.logo_url} alt="Logo" className="w-12 h-12 rounded-lg object-contain border" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400">
+                          <Building size={24} />
+                        </div>
+                      )}
+                      <div>
+                        <h3 className="font-bold text-gray-900 dark:text-white line-clamp-1">{client.name}</h3>
+                        <p className="text-xs text-gray-500">Vergi No: {client.tax_no || 'Belirtilmemiş'}</p>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          {client.permit_stage === 'ek1' ? (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-450 dark:border-rose-900/50 uppercase">
+                              EK-1
+                            </span>
+                          ) : client.permit_stage === 'ek2' ? (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-450 dark:border-amber-900/50 uppercase">
+                              EK-2
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-gray-50 text-gray-655 border-gray-200 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-800 uppercase">
+                              Kapsam Dışı
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                  <div>
-                    <h3 className="font-bold text-gray-900 dark:text-white line-clamp-1">{client.name}</h3>
-                    <p className="text-xs text-gray-500">Vergi No: {client.tax_no || 'Belirtilmemiş'}</p>
                   </div>
+                  <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
+                    <p className="line-clamp-2"><span className="font-medium">Adres:</span> {client.address}</p>
+                    <p><span className="font-medium">Tel:</span> {client.phone}</p>
+                    {client.kep_address && <p><span className="font-medium">KEP:</span> {client.kep_address}</p>}
+                    {client.permit_stage !== 'out_of_scope' && (() => {
+                      const articlesArray = Array.isArray(client.permit_articles)
+                        ? client.permit_articles
+                        : typeof client.permit_articles === 'string'
+                          ? JSON.parse(client.permit_articles || '[]')
+                          : [];
+                      if (articlesArray.length === 0) return null;
+                      return (
+                        <div className="text-xs pt-1">
+                          <span className="font-semibold text-slate-700 dark:text-slate-350">Maddeler:</span>{' '}
+                          <span className="bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded font-mono font-bold text-blue-600 dark:text-blue-400 max-w-full inline-block truncate" title={articlesArray.join(', ')}>
+                            {articlesArray.join(', ')}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                    {client.service_start_date && (() => {
+                      const status = getContractStatus(client.service_start_date);
+                      return (
+                        <div className="mt-3 p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800 space-y-2">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Sözleşme Durumu</span>
+                            {status.isExpired ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/50 uppercase">
+                                Süresi Geçti
+                              </span>
+                            ) : status.isWarning ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase animate-pulse">
+                                Son {status.daysLeft} Gün
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900/50 uppercase">
+                                {status.daysLeft} Gün Kaldı
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex justify-between text-[11px] text-gray-500">
+                            <span>Başlangıç: <b>{new Date(client.service_start_date).toLocaleDateString('tr-TR')}</b></span>
+                            <span>Bitiş: <b>{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
+                          </div>
+                          {client.contract_file_url && (
+                            <div className="pt-1.5 border-t border-dashed border-gray-200 dark:border-slate-700 flex justify-end">
+                              <a 
+                                href={client.contract_file_url} 
+                                target="_blank" 
+                                rel="noreferrer"
+                                className="text-[11px] text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 font-bold flex items-center gap-1 transition"
+                              >
+                                Sözleşme Nüshası ↗
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  {(canDeleteClients || checkClientEditable(client) || canAssignClients || true) && (
+                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex flex-wrap justify-between items-center gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        {checkClientEditable(client) && (
+                          <button 
+                            onClick={() => handleOpenEditModal(client)}
+                            className="text-amber-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                          >
+                            <Edit2 size={14} /> Düzenle
+                          </button>
+                        )}
+                        {canDeleteClients && (
+                          <button 
+                            onClick={() => handleDeleteClient(client.id)}
+                            className="text-red-600 hover:underline text-sm flex items-center gap-1 font-medium"
+                          >
+                            <Trash2 size={14} /> Sil
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => {
+                            setSelectedClientForChangeRequest(client);
+                            setChangeRequestNewName(client.name);
+                            setChangeRequestNewAddress(client.address);
+                            setChangeRequestPdfFile(null);
+                            setShowChangeRequestModal(true);
+                          }}
+                          className="text-purple-650 hover:underline text-sm flex items-center gap-1 font-medium"
+                        >
+                          <RefreshCw size={14} /> Ünvan/Adres Talebi
+                        </button>
+                      </div>
+                      {canAssignClients && (
+                        <button 
+                          onClick={() => openAssignModal(client)}
+              ) : clientSubView === 'personnel' ? (
+            <div className="space-y-6">
+              {teamMembers
+                .filter(member => member.role !== 'normal')
+                .map(member => {
+                  const assigned = allAssignments
+                    .filter(a => a.user_id === member.id)
+                    .map(a => clients.find(c => c.id === a.client_id))
+                    .filter(Boolean);
+
+                  const totalDays = getPersonnelQuota(member.id);
+                  const percentage = Math.min((totalDays / 16) * 100, 100);
+                  const isExceeded = totalDays > 16;
+
+                  return (
+                    <div key={member.id} className="p-6 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm space-y-4">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-gray-100 dark:border-slate-700">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/40 flex items-center justify-center font-bold text-sm uppercase">
+                            {member.full_name?.charAt(0)}
+                          </div>
+                          <div>
+                            <h4 className="font-extrabold text-gray-950 dark:text-white text-base flex items-center gap-2">
+                              {member.full_name}
+                              <span className="text-[10px] font-normal px-2 py-0.5 rounded border bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900 uppercase">
+                                {roleLabels[member.role] || member.role}
+                              </span>
+                            </h4>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {member.email} • <span className="font-bold text-slate-600 dark:text-slate-350">Deneyim: {member.experience_years || 0} Yıl</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="w-full md:w-64 space-y-1">
+                          <div className="flex justify-between text-xs font-bold">
+                            <span className="text-gray-500">İş Günü Kotası</span>
+                            <span className={isExceeded ? "text-rose-600 dark:text-rose-455 font-black" : "text-gray-750 dark:text-gray-300 font-black"}>
+                              {totalDays} / 16 Gün ({((totalDays / 16) * 100).toFixed(0)}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                            <div
+                              style={{ width: `${percentage}%` }}
+                              className={`h-full rounded-full transition-all duration-300 ${
+                                isExceeded 
+                                  ? 'bg-rose-500' 
+                                  : totalDays > 12 
+                                    ? 'bg-amber-500' 
+                                    : 'bg-emerald-500'
+                              }`}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Sorumlu Olduğu İşletmeler ({assigned.length})</h5>
+                        {assigned.length > 0 ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                            {assigned.map((client: any) => (
+                              <div key={client.id} className="p-4 rounded-xl border border-gray-100 dark:border-slate-750 bg-slate-50/50 dark:bg-slate-900/30 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2.5">
+                                  {client.logo_url ? (
+                                    <img src={client.logo_url} alt="Logo" className="w-8 h-8 rounded object-contain border bg-white" />
+                                  ) : (
+                                    <div className="w-8 h-8 rounded bg-gray-200 dark:bg-slate-800 flex items-center justify-center text-gray-400">
+                                      <Building size={16} />
+                                    </div>
+                                  )}
+                                  <div>
+                                    <span className="font-bold text-sm text-gray-800 dark:text-gray-250 line-clamp-1">{client.name}</span>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      {client.permit_stage === 'ek1' ? (
+                                        <span className="text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/20 dark:text-rose-455 dark:border-rose-900/50 uppercase">
+                                          EK-1 (2 Gün)
+                                        </span>
+                                      ) : client.permit_stage === 'ek2' ? (
+                                        <span className="text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-455 dark:border-amber-900/50 uppercase">
+                                          EK-2 (1 Gün)
+                                        </span>
+                                      ) : (
+                                        <span className="text-[9px] font-medium px-1.5 py-0.2 rounded bg-gray-50 text-gray-600 border border-gray-200 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-800 uppercase">
+                                          Kapsam Dışı
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-400 italic">Bu personele henüz bir işletme atanmamış.</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+              <div className="border-b pb-3">
+                <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
+                  <RefreshCw size={18} className="text-purple-600" /> Ünvan & Adres Değişikliği Talepleri
+                </h3>
+                <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
+                  İşletmelerin resmi ünvan veya adres güncellemeleri için gönderilen talepleri görüntüleyin. Bu talepler onaylandığında resmi kayıtlar otomatik güncellenir.
+                </p>
+              </div>
+
+              {loadingChangeRequests ? (
+                <div className="flex justify-center items-center py-12 text-xs text-gray-500 gap-2">
+                  <Loader className="animate-spin" size={14} /> Yükleniyor...
                 </div>
-              </div>
-              <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
-                <p className="line-clamp-2"><span className="font-medium">Adres:</span> {client.address}</p>
-                <p><span className="font-medium">Tel:</span> {client.phone}</p>
-              </div>
-              {(canDeleteClients || checkClientEditable(client) || canAssignClients) && (
-                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex justify-between items-center gap-2">
-                  <div className="flex gap-2">
-                    {checkClientEditable(client) && (
-                      <button 
-                        onClick={() => handleOpenEditModal(client)}
-                        className="text-amber-600 hover:underline text-sm flex items-center gap-1 font-medium"
-                      >
-                        <Edit2 size={14} /> Düzenle
-                      </button>
-                    )}
-                    {canDeleteClients && (
-                      <button 
-                        onClick={() => handleDeleteClient(client.id)}
-                        className="text-red-600 hover:underline text-sm flex items-center gap-1 font-medium"
-                      >
-                        <Trash2 size={14} /> Sil
-                      </button>
-                    )}
-                  </div>
-                  {canAssignClients && (
-                    <button 
-                      onClick={() => openAssignModal(client)}
-                      className="text-blue-600 hover:underline text-sm flex items-center gap-1 font-medium"
-                    >
-                      <Users size={14} /> Personel Ata
-                    </button>
-                  )}
+              ) : changeRequests.length === 0 ? (
+                <div className="p-8 text-center text-xs text-gray-400 italic bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-dashed">
+                  Henüz gönderilmiş bir değişiklik talebi bulunmuyor.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {changeRequests.map((req) => (
+                    <div key={req.id} className="p-4 rounded-xl border bg-slate-50/50 dark:bg-slate-900/10 dark:border-slate-800 space-y-3 text-xs">
+                      <div className="flex justify-between items-start gap-2">
+                        <div>
+                          <span className="font-bold text-slate-900 dark:text-white text-sm">{req.client?.name}</span>
+                          <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
+                            Talep Eden: <b>{req.requester?.full_name || 'Bilinmeyen'}</b>
+                          </div>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          req.status === 'pending'
+                            ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-450 dark:border-amber-900'
+                            : req.status === 'approved'
+                            ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900'
+                            : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900'
+                        }`}>
+                          {req.status === 'pending' ? 'Bekliyor' : req.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5 p-2.5 rounded bg-white dark:bg-slate-900/50 border border-gray-100 dark:border-slate-800">
+                        {req.new_name && (
+                          <div>
+                            <span className="text-[10px] font-bold text-gray-400 block uppercase">Talep Edilen Yeni Ünvan</span>
+                            <span className="text-gray-700 dark:text-gray-300 font-semibold">{req.new_name}</span>
+                          </div>
+                        )}
+                        {req.new_address && (
+                          <div className={req.new_name ? "pt-1.5 border-t border-dashed border-gray-150 dark:border-slate-800" : ""}>
+                            <span className="text-[10px] font-bold text-gray-400 block uppercase">Talep Edilen Yeni Adres</span>
+                            <span className="text-gray-700 dark:text-gray-300 font-semibold block whitespace-pre-wrap">{req.new_address}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex justify-between items-center pt-2 border-t border-dashed border-gray-200 dark:border-slate-800 text-[10px]">
+                        <a 
+                          href={req.gazette_pdf_url} 
+                          target="_blank" 
+                          rel="noreferrer"
+                          className="text-blue-600 dark:text-blue-400 font-bold hover:underline"
+                        >
+                          Gazete PDF'i ↗
+                        </a>
+                        <span className="text-gray-400">{new Date(req.created_at).toLocaleDateString('tr-TR')}</span>
+                      </div>
+
+                      {req.status === 'rejected' && req.rejection_reason && (
+                        <div className="p-2 bg-red-50/50 dark:bg-red-950/10 text-red-800 dark:text-red-350 rounded border border-red-100 dark:border-red-900/35">
+                          <span className="font-bold text-[9px] block uppercase">Red Gerekçesi</span>
+                          <p className="italic">{req.rejection_reason}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
-            </div>
-          ))}
-          {clients.length === 0 && (
-            <div className="col-span-full p-8 text-center text-gray-500 border-2 border-dashed border-gray-300 rounded-xl">
-              Henüz bir işletme kaydı bulunmuyor.
             </div>
           )}
         </div>
@@ -2906,6 +3768,68 @@ export default function ConsultantPanel() {
                         </button>
                       )}
                     </div>
+
+                    {member.role !== 'normal' && (() => {
+                      const totalDays = getPersonnelQuota(member.id);
+                      const percentage = Math.min((totalDays / 16) * 100, 100);
+                      const isExceeded = totalDays > 16;
+                      return (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2 px-3 bg-slate-50/70 dark:bg-slate-900/50 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-400 font-bold uppercase tracking-wider text-[10px]">Deneyim Yılı:</span>
+                            {userRole === 'premium_corporate' ? (
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="80"
+                                  value={member.experience_years !== undefined && member.experience_years !== null ? member.experience_years : 0}
+                                  onChange={async (e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, experience_years: val } : m));
+                                    const { error } = await supabase
+                                      .from('profiles')
+                                      .update({ experience_years: val })
+                                      .eq('id', member.id);
+                                    if (error) {
+                                      alert('Deneyim yılı güncellenirken hata: ' + error.message);
+                                      fetchTeamMembers();
+                                    }
+                                  }}
+                                  className="w-16 border rounded px-1.5 py-0.5 text-center bg-white dark:bg-slate-900 dark:border-slate-700 font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                                <span className="font-medium text-gray-500">Yıl</span>
+                              </div>
+                            ) : (
+                              <span className="font-bold text-gray-700 dark:text-gray-300">
+                                {member.experience_years || 0} Yıl
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex justify-between font-bold text-[10px] uppercase text-gray-400 tracking-wider">
+                              <span>İş Günü Kotası</span>
+                              <span className={isExceeded ? "text-rose-600 dark:text-rose-455 font-black" : "text-gray-650 dark:text-gray-300 font-black"}>
+                                {totalDays} / 16 Gün ({((totalDays / 16) * 100).toFixed(0)}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-250 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                              <div
+                                style={{ width: `${percentage}%` }}
+                                className={`h-full rounded-full transition-all duration-300 ${
+                                  isExceeded 
+                                    ? 'bg-rose-500' 
+                                    : totalDays > 12 
+                                      ? 'bg-amber-500' 
+                                      : 'bg-emerald-500'
+                                }`}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Rol & Yetkiler */}
                     {userRole === 'premium_corporate' && member.id !== userId && (
@@ -3407,18 +4331,20 @@ export default function ConsultantPanel() {
                 Yönetmelik ve kanunları inceleyin, hizmet verdiğiniz işletmelere atama yapın ve maddeleri özelleştirin.
               </p>
             </div>
-            <button
-              onClick={() => {
-                setSelectedReqClientId('');
-                setSelectedReqRegulationId('');
-                setRequestTitle('');
-                setRequestDescription('');
-                setShowAddRequestModal(true);
-              }}
-              className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition"
-            >
-              <PlusCircle size={16} /> {userRole === 'premium_corporate' ? 'Admin\'den Mevzuat Talep Et' : 'Yeni Mevzuat Talep Et'}
-            </button>
+            {legSubTab === 'pool' && (
+              <button
+                onClick={() => {
+                  setSelectedReqClientId('');
+                  setSelectedReqRegulationId('');
+                  setRequestTitle('');
+                  setRequestDescription('');
+                  setShowAddRequestModal(true);
+                }}
+                className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition"
+              >
+                <PlusCircle size={16} /> {userRole === 'premium_corporate' ? 'Admin\'den Mevzuat Talep Et' : 'Yeni Mevzuat Talep Et'}
+              </button>
+            )}
           </div>
 
           {/* Alt Sekmeler Menüsü */}
@@ -3442,6 +4368,16 @@ export default function ConsultantPanel() {
               }`}
             >
               <Building size={14} /> İşletme Atamaları
+            </button>
+            <button
+              onClick={() => setLegSubTab('calendar')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                legSubTab === 'calendar'
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <Calendar size={14} /> Ziyaret Takvimi
             </button>
           </div>
 
@@ -3507,7 +4443,7 @@ export default function ConsultantPanel() {
                       <BookOpen size={18} className="text-teal-600" />
                       Firma Mevzuat Havuzu (Bizim Havuzumuz)
                     </h3>
-                    {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
+                    {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
                       <button
                         onClick={() => {
                           setLegTitle('');
@@ -4091,6 +5027,359 @@ export default function ConsultantPanel() {
                     )}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* 3. SEKME: ZİYARET TAKVİMİ */}
+            {legSubTab === 'calendar' && (
+              <div className="space-y-6 animate-fadeIn">
+                {/* Takvim Üst Kontrolleri */}
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (visitCalendarMonth === 0) {
+                          setVisitCalendarMonth(11);
+                          setVisitCalendarYear(prev => prev - 1);
+                        } else {
+                          setVisitCalendarMonth(prev => prev - 1);
+                        }
+                      }}
+                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300 transition"
+                    >
+                      &larr; Önceki Ay
+                    </button>
+                    <span className="font-bold text-base text-slate-800 dark:text-slate-100 min-w-[120px] text-center capitalize">
+                      {new Date(visitCalendarYear, visitCalendarMonth).toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (visitCalendarMonth === 11) {
+                          setVisitCalendarMonth(0);
+                          setVisitCalendarYear(prev => prev + 1);
+                        } else {
+                          setVisitCalendarMonth(prev => prev + 1);
+                        }
+                      }}
+                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300 transition"
+                    >
+                      Sonraki Ay &rarr;
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
+                    {/* Görünüm Değiştirici */}
+                    <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setVisitCalendarView('calendar')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                          visitCalendarView === 'calendar'
+                            ? 'bg-white dark:bg-slate-800 text-teal-650 dark:text-teal-400 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'
+                        }`}
+                      >
+                        Takvim Görünümü
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisitCalendarView('list')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                          visitCalendarView === 'list'
+                            ? 'bg-white dark:bg-slate-800 text-teal-650 dark:text-teal-400 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'
+                        }`}
+                      >
+                        Liste Görünümü
+                      </button>
+                    </div>
+
+                    {isManager && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewVisit({ client_id: '', personnel_id: '', visit_date: '', notes: '' });
+                          setShowAddVisitModal(true);
+                        }}
+                        className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition shadow-sm ml-auto md:ml-0"
+                      >
+                        <PlusCircle size={15} /> Yeni Ziyaret Planla
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Değişiklik Talepleri (Yalnızca Yöneticilere) */}
+                {isManager && visitSchedules.some(v => v.change_request_status === 'pending') && (
+                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 p-6 rounded-xl space-y-4 animate-fadeIn">
+                    <h3 className="font-bold text-amber-800 dark:text-amber-400 text-sm flex items-center gap-2">
+                      <AlertCircle size={18} /> Bekleyen Ziyaret Değişiklik Talepleri
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {visitSchedules
+                        .filter(v => v.change_request_status === 'pending')
+                        .map(visit => (
+                          <div key={visit.id} className="bg-white dark:bg-slate-850 p-4 rounded-xl border border-amber-100 dark:border-amber-900/30 shadow-sm flex flex-col justify-between gap-3">
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-start">
+                                <span className="font-bold text-xs text-slate-800 dark:text-slate-200">{visit.client?.name}</span>
+                                <span className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-bold px-2 py-0.5 rounded">Talep Beklemede</span>
+                              </div>
+                              <p className="text-xs text-slate-500">
+                                Talep Eden: <b>{visit.personnel?.full_name}</b>
+                              </p>
+                              <div className="text-xs pt-1">
+                                Planlanan: <b className="text-slate-650 dark:text-slate-350">{new Date(visit.visit_date).toLocaleDateString('tr-TR')}</b>
+                              </div>
+                              <div className="text-xs">
+                                Talep Edilen Tarih: <b className="text-teal-650 dark:text-teal-400">{new Date(visit.change_request_date!).toLocaleDateString('tr-TR')}</b>
+                              </div>
+                              <p className="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-900 p-2 rounded italic mt-1.5 border border-slate-100 dark:border-slate-800">
+                                &ldquo;{visit.change_request_reason}&rdquo;
+                              </p>
+                            </div>
+                            <div className="flex gap-2 justify-end pt-2 border-t border-dashed border-gray-150 dark:border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => handleProcessChangeRequest(visit.id, false)}
+                                className="bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-650 dark:text-red-400 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                              >
+                                Reddet
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleProcessChangeRequest(visit.id, true)}
+                                className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                              >
+                                Onayla ve Güncelle
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* YÜKLENİYOR DURUMU */}
+                {loadingVisits ? (
+                  <div className="flex flex-col items-center justify-center p-12 text-slate-500 gap-3">
+                    <Loader className="animate-spin text-teal-600" size={32} />
+                    <span className="text-sm font-medium">Ziyaret takvimi yükleniyor...</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* TAKVİM GÖRÜNÜMÜ */}
+                    {visitCalendarView === 'calendar' && (() => {
+                      const firstDayOfMonth = new Date(visitCalendarYear, visitCalendarMonth, 1).getDay();
+                      const startOffset = firstDayOfMonth === 0 ? 6 : firstDayOfMonth - 1;
+                      const daysInMonth = new Date(visitCalendarYear, visitCalendarMonth + 1, 0).getDate();
+                      const gridCells = [];
+                      
+                      const prevMonthDate = new Date(visitCalendarYear, visitCalendarMonth, 0);
+                      const prevMonthDays = prevMonthDate.getDate();
+                      for (let i = startOffset - 1; i >= 0; i--) {
+                        gridCells.push({
+                          day: prevMonthDays - i,
+                          isCurrentMonth: false,
+                          dateStr: `${visitCalendarYear}-${String(visitCalendarMonth === 0 ? 12 : visitCalendarMonth).padStart(2, '0')}-${String(prevMonthDays - i).padStart(2, '0')}`
+                        });
+                      }
+
+                      for (let i = 1; i <= daysInMonth; i++) {
+                        const monthStr = String(visitCalendarMonth + 1).padStart(2, '0');
+                        const dayStr = String(i).padStart(2, '0');
+                        gridCells.push({
+                          day: i,
+                          isCurrentMonth: true,
+                          dateStr: `${visitCalendarYear}-${monthStr}-${dayStr}`
+                        });
+                      }
+
+                      const remainingCells = 42 - gridCells.length;
+                      for (let i = 1; i <= remainingCells; i++) {
+                        gridCells.push({
+                          day: i,
+                          isCurrentMonth: false,
+                          dateStr: `${visitCalendarYear}-${String(visitCalendarMonth === 11 ? 1 : visitCalendarMonth + 2).padStart(2, '0')}-${String(i).padStart(2, '0')}`
+                        });
+                      }
+
+                      const weekDays = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+                      
+                      return (
+                        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl shadow-sm overflow-hidden">
+                          <div className="grid grid-cols-7 border-b border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
+                            {weekDays.map(d => (
+                              <div key={d} className="p-3 text-center text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                {d}
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="grid grid-cols-7 divide-x divide-y divide-gray-100 dark:divide-slate-800 bg-slate-50/20">
+                            {gridCells.map((cell, idx) => {
+                              const cellVisits = visitSchedules.filter(v => v.visit_date === cell.dateStr);
+                              const todayStr = new Date().toISOString().split('T')[0];
+                              const isToday = cell.dateStr === todayStr;
+
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`min-h-[120px] p-2 space-y-1 transition duration-150 relative ${
+                                    cell.isCurrentMonth
+                                      ? 'bg-white dark:bg-slate-850'
+                                      : 'bg-slate-50/50 dark:bg-slate-900/20 text-slate-400 dark:text-slate-650'
+                                  } ${isToday ? 'ring-2 ring-inset ring-teal-500 dark:ring-teal-400/50 bg-teal-50/10 dark:bg-teal-950/10' : ''}`}
+                                >
+                                  <div className="flex justify-between items-center mb-1">
+                                    <span className={`text-xs font-black px-1.5 py-0.5 rounded-full ${
+                                      isToday 
+                                        ? 'bg-teal-600 text-white' 
+                                        : cell.isCurrentMonth 
+                                          ? 'text-slate-800 dark:text-slate-200' 
+                                          : 'text-slate-400 dark:text-slate-600'
+                                    }`}>
+                                      {cell.day}
+                                    </span>
+                                    {isToday && (
+                                      <span className="text-[9px] uppercase tracking-wide text-teal-600 dark:text-teal-400 font-bold">Bugün</span>
+                                    )}
+                                  </div>
+
+                                  <div className="space-y-1.5 overflow-y-auto max-h-[85px] scrollbar-thin">
+                                    {cellVisits.map(visit => {
+                                      const isPending = visit.change_request_status === 'pending';
+                                      const isDone = visit.status === 'completed';
+                                      const isCancelled = visit.status === 'cancelled';
+                                      
+                                      let statusColor = 'bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/50';
+                                      if (isPending) statusColor = 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50';
+                                      if (isDone) statusColor = 'bg-green-50 text-green-700 border-green-100 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900/50';
+                                      if (isCancelled) statusColor = 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-900/40 dark:text-slate-400 dark:border-slate-800';
+
+                                      return (
+                                        <div
+                                          key={visit.id}
+                                          onClick={() => {
+                                            setSelectedVisit(visit);
+                                            setChangeRequest({ requested_date: '', reason: '' });
+                                          }}
+                                          className={`p-1.5 rounded-lg border text-[10px] font-bold cursor-pointer hover:shadow-sm transition ${statusColor} line-clamp-2`}
+                                          title={`${visit.client?.name} (${visit.personnel?.full_name})`}
+                                        >
+                                          <div className="line-clamp-1">{visit.client?.name}</div>
+                                          {visit.personnel?.full_name && (
+                                            <div className="text-[8px] opacity-75 font-normal line-clamp-1">Talep Eden: {visit.personnel.full_name}</div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* LİSTE GÖRÜNÜMÜ */}
+                    {visitCalendarView === 'list' && (() => {
+                      const filteredVisits = visitSchedules.filter(v => {
+                        const d = new Date(v.visit_date);
+                        return d.getFullYear() === visitCalendarYear && d.getMonth() === visitCalendarMonth;
+                      });
+
+                      return (
+                        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-sm overflow-hidden">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-gray-50 dark:bg-slate-900/50 border-b border-gray-200 dark:border-slate-700">
+                                  <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Tarih</th>
+                                  <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">İşletme</th>
+                                  <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Talep Eden</th>
+                                  <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Açıklama/Notlar</th>
+                                  <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Durum</th>
+                                  <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">İşlemler</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                                {filteredVisits.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={6} className="p-8 text-center text-xs text-gray-400 italic">
+                                      Bu ay için planlanmış herhangi bir ziyaret bulunmuyor.
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  filteredVisits.map(visit => {
+                                    const isPending = visit.change_request_status === 'pending';
+                                    return (
+                                      <tr key={visit.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10 text-xs">
+                                        <td className="p-4 font-bold text-slate-800 dark:text-slate-200">
+                                          {new Date(visit.visit_date).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric', weekday: 'long' })}
+                                        </td>
+                                        <td className="p-4 font-bold text-teal-650 dark:text-teal-400">
+                                          {visit.client?.name}
+                                        </td>
+                                        <td className="p-4 font-medium text-slate-700 dark:text-slate-355">
+                                          {visit.personnel?.full_name || '-'}
+                                        </td>
+                                        <td className="p-4 text-slate-500 dark:text-slate-400 max-w-[200px] truncate" title={visit.notes}>
+                                          {visit.notes || '-'}
+                                        </td>
+                                        <td className="p-4 space-y-1">
+                                          <div className="flex gap-2 items-center flex-wrap">
+                                            {visit.status === 'completed' ? (
+                                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-150 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900/50 uppercase">Tamamlandı</span>
+                                            ) : visit.status === 'cancelled' ? (
+                                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-650 border border-slate-200 dark:bg-slate-900/40 dark:text-slate-400 dark:border-slate-800 uppercase">İptal Edildi</span>
+                                            ) : (
+                                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-150 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/50 uppercase">Planlandı</span>
+                                            )}
+                                            {isPending && (
+                                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase animate-pulse">Talep Var</span>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="p-4 text-right">
+                                          <div className="flex justify-end gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                setSelectedVisit(visit);
+                                                setChangeRequest({ requested_date: '', reason: '' });
+                                              }}
+                                              className="bg-slate-50 hover:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600 px-2 py-1 rounded-md text-xs font-bold text-slate-700 dark:text-slate-200 transition"
+                                            >
+                                              Detay
+                                            </button>
+                                            {isManager && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleDeleteVisit(visit.id)}
+                                                className="bg-red-50 hover:bg-red-100 dark:bg-red-950/20 px-2 py-1 rounded-md text-xs font-bold text-red-650 dark:text-red-400 transition"
+                                                title="Ziyareti Sil"
+                                              >
+                                                Sil
+                                              </button>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
               </div>
             )}
 
@@ -5875,7 +7164,24 @@ export default function ConsultantPanel() {
                         {member.full_name?.charAt(0)}
                       </div>
                       <div>
-                        <p className="text-sm font-bold">{member.full_name}</p>
+                        <p className="text-sm font-bold flex items-center gap-1.5">
+                          {member.full_name}
+                          {member.role !== 'normal' && (() => {
+                            const totalDays = getPersonnelQuota(member.id);
+                            const isExceeded = totalDays > 16;
+                            return (
+                              <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${
+                                isExceeded 
+                                  ? 'bg-rose-50 text-rose-705 border-rose-200' 
+                                  : totalDays > 12 
+                                    ? 'bg-amber-50 text-amber-705 border-amber-200'
+                                    : 'bg-emerald-50 text-emerald-705 border-emerald-200'
+                              }`}>
+                                Kota: {totalDays}/16g
+                              </span>
+                            );
+                          })()}
+                        </p>
                         <p className="text-[10px] text-gray-400">{member.email}</p>
                       </div>
                     </div>
@@ -5907,7 +7213,7 @@ export default function ConsultantPanel() {
       {/* Add Client Modal */}
       {showAddClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
               <h2 className="text-xl font-bold">Yeni İşletme Ekle</h2>
               <button onClick={() => setShowAddClient(false)} className="text-gray-400 hover:text-gray-600">
@@ -5950,6 +7256,140 @@ export default function ConsultantPanel() {
                   onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })}
                   className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">KEP Adresi</label>
+                <input
+                  type="text"
+                  value={newClient.kep_address || ''}
+                  onChange={(e) => setNewClient({ ...newClient, kep_address: e.target.value })}
+                  placeholder="örnek@hs01.kep.tr"
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Çevre İzin/Lisans Kapsamı</label>
+                <select
+                  value={newClient.permit_stage}
+                  onChange={(e) => {
+                    const stage = e.target.value;
+                    setNewClient({ ...newClient, permit_stage: stage, permit_articles: [] });
+                    setNewClientArticleSearch('');
+                  }}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 bg-white dark:text-white"
+                >
+                  <option value="out_of_scope">Kapsam Dışı</option>
+                  <option value="ek1">EK-1 (Çevreye Kirletici Etkisi Yüksek Tesisler)</option>
+                  <option value="ek2">EK-2 (Çevreye Kirletici Etkisi Olan Tesisler)</option>
+                </select>
+              </div>
+
+              {(newClient.permit_stage === 'ek1' || newClient.permit_stage === 'ek2') && (
+                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      İzin/Lisans Maddeleri ({newClient.permit_articles.length} Seçildi)
+                    </label>
+                    {newClient.permit_articles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setNewClient({ ...newClient, permit_articles: [] })}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Maddelerde ara (örn: Enerji, 1.1)..."
+                    value={newClientArticleSearch}
+                    onChange={(e) => setNewClientArticleSearch(e.target.value)}
+                    className="w-full border rounded-lg p-1.5 text-xs dark:bg-slate-800 dark:border-slate-700"
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
+                    {(() => {
+                      const articlesList = newClient.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                      const filtered = articlesList.filter(art =>
+                        art.code.toLowerCase().includes(newClientArticleSearch.toLowerCase()) ||
+                        art.title.toLowerCase().includes(newClientArticleSearch.toLowerCase())
+                      );
+                      if (filtered.length === 0) {
+                        return <p className="text-center text-xs text-gray-450 py-2 italic">Eşleşen madde bulunamadı.</p>;
+                      }
+                      return filtered.map((art) => {
+                        const isChecked = newClient.permit_articles.includes(art.code);
+                        return (
+                          <label
+                            key={art.code}
+                            className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs transition ${
+                              isChecked
+                                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleNewClientArticle(art.code)}
+                              className="mt-0.5 w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                            />
+                            <span>
+                              <strong className="text-blue-700 dark:text-blue-400 mr-1">{art.code}</strong>
+                              {art.title}
+                            </span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Hizmet Başlangıç Tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm font-medium"
+                    value={newClient.service_start_date}
+                    onChange={(e) => setNewClient({ ...newClient, service_start_date: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Sözleşme Dosyası (.pdf, görsel)</label>
+                  <div className="flex items-center gap-2">
+                    {newClient.contract_file_url ? (
+                      <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 p-2 rounded-lg border w-full justify-between">
+                        <a href={newClient.contract_file_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline truncate max-w-[180px]">
+                          Sözleşmeyi Gör ↗
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => setNewClient({ ...newClient, contract_file_url: '' })}
+                          className="text-red-500 hover:text-red-700 text-xs font-bold"
+                        >
+                          Sil
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="w-full flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-2 hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer transition">
+                        <Upload size={14} className="text-gray-400 mr-1.5" />
+                        <span className="text-xs text-gray-500 font-medium">
+                          {uploadingContract ? 'Yükleniyor...' : 'Sözleşme Yükle'}
+                        </span>
+                        <input
+                          type="file"
+                          accept=".pdf,image/*"
+                          className="hidden"
+                          onChange={(e) => handleContractUpload(e, false)}
+                          disabled={uploadingContract}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Konum Koordinatları</label>
@@ -6025,7 +7465,7 @@ export default function ConsultantPanel() {
       {/* Edit Client Modal */}
       {showEditClient && editingClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
               <h2 className="text-xl font-bold">İşletme Bilgilerini Düzenle</h2>
               <button 
@@ -6074,6 +7514,140 @@ export default function ConsultantPanel() {
                   onChange={(e) => setEditingClient({ ...editingClient, phone: e.target.value })}
                   className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">KEP Adresi</label>
+                <input
+                  type="text"
+                  value={editingClient.kep_address || ''}
+                  onChange={(e) => setEditingClient({ ...editingClient, kep_address: e.target.value })}
+                  placeholder="örnek@hs01.kep.tr"
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Çevre İzin/Lisans Kapsamı</label>
+                <select
+                  value={editingClient.permit_stage || 'out_of_scope'}
+                  onChange={(e) => {
+                    const stage = e.target.value;
+                    setEditingClient({ ...editingClient, permit_stage: stage, permit_articles: [] });
+                    setEditClientArticleSearch('');
+                  }}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 bg-white dark:text-white"
+                >
+                  <option value="out_of_scope">Kapsam Dışı</option>
+                  <option value="ek1">EK-1 (Çevreye Kirletici Etkisi Yüksek Tesisler)</option>
+                  <option value="ek2">EK-2 (Çevreye Kirletici Etkisi Olan Tesisler)</option>
+                </select>
+              </div>
+
+              {(editingClient.permit_stage === 'ek1' || editingClient.permit_stage === 'ek2') && (
+                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      İzin/Lisans Maddeleri ({(editingClient.permit_articles || []).length} Seçildi)
+                    </label>
+                    {(editingClient.permit_articles || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingClient({ ...editingClient, permit_articles: [] })}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Maddelerde ara (örn: Enerji, 1.1)..."
+                    value={editClientArticleSearch}
+                    onChange={(e) => setEditClientArticleSearch(e.target.value)}
+                    className="w-full border rounded-lg p-1.5 text-xs dark:bg-slate-800 dark:border-slate-700"
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
+                    {(() => {
+                      const articlesList = editingClient.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                      const filtered = articlesList.filter(art =>
+                        art.code.toLowerCase().includes(editClientArticleSearch.toLowerCase()) ||
+                        art.title.toLowerCase().includes(editClientArticleSearch.toLowerCase())
+                      );
+                      if (filtered.length === 0) {
+                        return <p className="text-center text-xs text-gray-455 py-2 italic">Eşleşen madde bulunamadı.</p>;
+                      }
+                      return filtered.map((art) => {
+                        const isChecked = (editingClient.permit_articles || []).includes(art.code);
+                        return (
+                          <label
+                            key={art.code}
+                            className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs transition ${
+                              isChecked
+                                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleEditClientArticle(art.code)}
+                              className="mt-0.5 w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                            />
+                            <span>
+                              <strong className="text-blue-700 dark:text-blue-400 mr-1">{art.code}</strong>
+                              {art.title}
+                            </span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Hizmet Başlangıç Tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm font-medium"
+                    value={editingClient.service_start_date || ''}
+                    onChange={(e) => setEditingClient({ ...editingClient, service_start_date: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Sözleşme Dosyası (.pdf, görsel)</label>
+                  <div className="flex items-center gap-2">
+                    {editingClient.contract_file_url ? (
+                      <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 p-2 rounded-lg border w-full justify-between">
+                        <a href={editingClient.contract_file_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline truncate max-w-[180px]">
+                          Sözleşmeyi Gör ↗
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => setEditingClient({ ...editingClient, contract_file_url: '' })}
+                          className="text-red-500 hover:text-red-700 text-xs font-bold"
+                        >
+                          Sil
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="w-full flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-2 hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer transition">
+                        <Upload size={14} className="text-gray-400 mr-1.5" />
+                        <span className="text-xs text-gray-500 font-medium">
+                          {uploadingContract ? 'Yükleniyor...' : 'Sözleşme Yükle'}
+                        </span>
+                        <input
+                          type="file"
+                          accept=".pdf,image/*"
+                          className="hidden"
+                          onChange={(e) => handleContractUpload(e, true)}
+                          disabled={uploadingContract}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Konum Koordinatları</label>
@@ -6141,6 +7715,85 @@ export default function ConsultantPanel() {
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium"
                 >
                   Kaydet
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Change Request Modal */}
+      {showChangeRequestModal && selectedClientForChangeRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+              <h2 className="text-xl font-bold">Ünvan / Adres Değişikliği Talebi</h2>
+              <button 
+                onClick={() => {
+                  setShowChangeRequestModal(false);
+                  setSelectedClientForChangeRequest(null);
+                }} 
+                className="text-gray-400 hover:text-gray-605 dark:text-gray-300"
+              >
+                X
+              </button>
+            </div>
+            <form onSubmit={handleClientChangeRequestSubmit} className="p-6 space-y-4">
+              <div className="text-xs p-3 bg-amber-50 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300 rounded-lg border border-amber-200/50">
+                <b>Mevcut Bilgiler:</b>
+                <div className="mt-1">Ünvan: {selectedClientForChangeRequest.name}</div>
+                <div>Adres: {selectedClientForChangeRequest.address || 'Belirtilmemiş'}</div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium mb-1">Yeni Ünvan (Değişmeyecekse boş bırakın)</label>
+                <input
+                  type="text"
+                  value={changeRequestNewName}
+                  onChange={(e) => setChangeRequestNewName(e.target.value)}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                  placeholder={selectedClientForChangeRequest.name}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Yeni Adres (Değişmeyecekse boş bırakın)</label>
+                <textarea
+                  value={changeRequestNewAddress}
+                  onChange={(e) => setChangeRequestNewAddress(e.target.value)}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 h-20"
+                  placeholder={selectedClientForChangeRequest.address}
+                ></textarea>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Ticaret Sicil Gazetesi PDF *</label>
+                <input
+                  type="file"
+                  accept=".pdf"
+                  required
+                  onChange={(e) => setChangeRequestPdfFile(e.target.files?.[0] || null)}
+                  className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+              </div>
+
+              <div className="pt-4 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowChangeRequestModal(false);
+                    setSelectedClientForChangeRequest(null);
+                  }}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-gray-700 dark:text-gray-300 dark:border-slate-750"
+                  disabled={submittingChangeRequest}
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-750 text-white rounded-lg font-medium disabled:opacity-50"
+                  disabled={submittingChangeRequest}
+                >
+                  {submittingChangeRequest ? 'Talep Gönderiliyor...' : 'Talep Gönder'}
                 </button>
               </div>
             </form>
@@ -6286,23 +7939,96 @@ export default function ConsultantPanel() {
                 )}
               </div>
 
-              {/* Maddeler Listesi Önizleme */}
-              {legArticles.length > 0 && (
-                <div className="space-y-3">
-                  <h4 className="font-bold text-xs text-slate-400 uppercase tracking-wider">Ayrıştırılan Maddeler ({legArticles.length} Adet)</h4>
-                  <div className="border border-slate-150 dark:border-slate-750 rounded-2xl divide-y max-h-60 overflow-y-auto bg-slate-50/20">
+              {/* Maddeler Listesi Önizleme / Düzenleme */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="font-bold text-xs text-slate-400 uppercase tracking-wider">
+                    Mevzuat Maddeleri ({legArticles.length} Adet)
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={handleAddEmptyArticle}
+                    className="bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold px-3 py-1.5 rounded-xl flex items-center gap-1 transition shadow-sm"
+                  >
+                    <PlusCircle size={13} /> Manuel Madde Ekle
+                  </button>
+                </div>
+
+                {legArticles.length === 0 ? (
+                  <div className="text-center p-8 border border-dashed border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/20 text-xs text-slate-400 italic">
+                    Henüz madde eklenmedi. Yukarıdan PDF/Metin ayrıştırabilir veya "Manuel Madde Ekle" butonu ile elle maddeleri girmeye başlayabilirsiniz.
+                  </div>
+                ) : (
+                  <div className="border border-slate-150 dark:border-slate-750 rounded-2xl divide-y max-h-80 overflow-y-auto bg-slate-50/20 p-2 space-y-3">
                     {legArticles.map((art, idx) => (
-                      <div key={idx} className="p-3.5 space-y-1 bg-white dark:bg-slate-900/10">
-                        <div className="font-bold text-xs text-slate-800 dark:text-slate-200 flex justify-between">
-                          <span>{art.article_no} - {art.title}</span>
-                          <span className="text-[10px] text-slate-400 font-mono">Sıra: {art.order_index}</span>
+                      <div key={idx} className="p-3.5 space-y-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 shadow-sm relative group">
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                          <div className="md:col-span-3">
+                            <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Madde No</label>
+                            <input
+                              type="text"
+                              required
+                              placeholder="Örn: MADDE 1"
+                              className="w-full p-2 rounded-lg border bg-white dark:bg-slate-850 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 border-slate-200 outline-none focus:ring-1 focus:ring-teal-500"
+                              value={art.article_no}
+                              onChange={(e) => handleUpdateArticleField(idx, 'article_no', e.target.value)}
+                            />
+                          </div>
+                          <div className="md:col-span-6">
+                            <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Madde Başlığı</label>
+                            <input
+                              type="text"
+                              placeholder="Örn: Amaç ve Kapsam"
+                              className="w-full p-2 rounded-lg border bg-white dark:bg-slate-850 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 border-slate-200 outline-none focus:ring-1 focus:ring-teal-500"
+                              value={art.title}
+                              onChange={(e) => handleUpdateArticleField(idx, 'title', e.target.value)}
+                            />
+                          </div>
+                          <div className="md:col-span-3 flex items-center justify-end gap-1.5 pt-4">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => handleMoveArticle(idx, 'up')}
+                              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 rounded-lg text-slate-500 transition"
+                              title="Yukarı Taşı"
+                            >
+                              <ChevronUp size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === legArticles.length - 1}
+                              onClick={() => handleMoveArticle(idx, 'down')}
+                              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 rounded-lg text-slate-500 transition"
+                              title="Aşağı Taşı"
+                            >
+                              <ChevronDown size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteArticle(idx)}
+                              className="p-1.5 hover:bg-red-50 dark:hover:bg-red-950/20 text-red-500 rounded-lg transition ml-2"
+                              title="Maddeyi Sil"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
                         </div>
-                        <p className="text-xs text-slate-650 dark:text-slate-400 whitespace-pre-wrap leading-relaxed">{art.content}</p>
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Madde Metni / İçeriği</label>
+                          <textarea
+                            required
+                            rows={3}
+                            placeholder="Madde metnini buraya giriniz..."
+                            className="w-full p-2 rounded-lg border bg-white dark:bg-slate-850 dark:border-slate-700 text-xs text-slate-650 dark:text-slate-300 border-slate-200 outline-none resize-y focus:ring-1 focus:ring-teal-500 font-medium"
+                            value={art.content}
+                            onChange={(e) => handleUpdateArticleField(idx, 'content', e.target.value)}
+                          />
+                        </div>
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Butonlar */}
               <div className="flex gap-3 pt-3 border-t border-gray-150 dark:border-slate-750">
@@ -6449,6 +8175,293 @@ export default function ConsultantPanel() {
                 Kapat
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* YENİ ZİYARET EKLEME MODALİ */}
+      {showAddVisitModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 shadow-2xl animate-scaleIn">
+            <h3 className="text-base font-bold text-slate-800 dark:text-slate-100 mb-4 border-b pb-2 flex items-center gap-2">
+              <Calendar size={18} className="text-teal-600" /> Yeni Ziyaret Planla
+            </h3>
+            <form onSubmit={handleCreateVisit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Hizmet Verilecek İşletme</label>
+                <select
+                  required
+                  value={newVisit.client_id}
+                  onChange={(e) => setNewVisit({ ...newVisit, client_id: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm outline-none focus:ring-1 focus:ring-teal-500 bg-white"
+                >
+                  <option value="">İşletme Seçin...</option>
+                  {clients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+
+              <div>
+                <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Ziyaret Tarihi</label>
+                <input
+                  required
+                  type="date"
+                  value={newVisit.visit_date}
+                  onChange={(e) => setNewVisit({ ...newVisit, visit_date: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm outline-none focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Açıklama / Notlar</label>
+                <textarea
+                  rows={3}
+                  value={newVisit.notes}
+                  onChange={(e) => setNewVisit({ ...newVisit, notes: e.target.value })}
+                  placeholder="Ziyarete ilişkin notlar ekleyin..."
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm outline-none resize-none focus:ring-1 focus:ring-teal-500"
+                ></textarea>
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-150 dark:border-slate-700 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowAddVisitModal(false)}
+                  className="px-4 py-2 border rounded-lg text-slate-600 dark:text-slate-350 text-xs font-bold transition hover:bg-slate-50 dark:hover:bg-slate-700"
+                >
+                  Vazgeç
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingVisit}
+                  className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                >
+                  {savingVisit ? 'Kaydediliyor...' : 'Ziyareti Planla'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ZİYARET DETAY / İŞLEMLER MODALİ */}
+      {selectedVisit && !showChangeRequestModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 shadow-2xl animate-scaleIn space-y-4">
+            <div className="flex justify-between items-start border-b pb-2">
+              <h3 className="text-base font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <Calendar size={18} className="text-teal-650" /> Ziyaret Detayları
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSelectedVisit(null)}
+                className="text-slate-400 hover:text-slate-650 dark:hover:text-slate-200 text-lg font-bold"
+              >
+                &times;
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <span className="font-bold text-slate-400 uppercase tracking-wide">İşletme</span>
+                <p className="text-sm font-bold text-slate-850 dark:text-slate-100">{selectedVisit.client?.name}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="font-bold text-slate-400 uppercase tracking-wide">Tarih</span>
+                  <p className="font-bold text-slate-700 dark:text-slate-200">
+                    {new Date(selectedVisit.visit_date).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' })}
+                  </p>
+                </div>
+                <div>
+                  <span className="font-bold text-slate-400 uppercase tracking-wide">Durum</span>
+                  <div>
+                    {selectedVisit.status === 'completed' ? (
+                      <span className="inline-block text-[9px] font-black px-2 py-0.5 rounded bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300 uppercase">Tamamlandı</span>
+                    ) : selectedVisit.status === 'cancelled' ? (
+                      <span className="inline-block text-[9px] font-black px-2 py-0.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-450 uppercase">İptal Edildi</span>
+                    ) : (
+                      <span className="inline-block text-[9px] font-black px-2 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 uppercase">Planlandı</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <span className="font-bold text-slate-400 uppercase tracking-wide">Firmaya Atanan Personeller</span>
+                <p className="font-semibold text-slate-700 dark:text-slate-200">
+                  {selectedVisitAssignees.map((a: any) => a.full_name).join(', ') || 'Bu firmaya atanan personel bulunmuyor.'}
+                </p>
+              </div>
+
+              {selectedVisit.notes && (
+                <div>
+                  <span className="font-bold text-slate-400 uppercase tracking-wide">Notlar</span>
+                  <p className="text-slate-600 dark:text-slate-350 bg-slate-50 dark:bg-slate-900 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 whitespace-pre-wrap">{selectedVisit.notes}</p>
+                </div>
+              )}
+
+              {/* Değişiklik Talebi Durumu */}
+              {selectedVisit.change_request_status !== 'none' && (
+                <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-750">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-slate-400 uppercase tracking-wide">Değişiklik Talebi</span>
+                    <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${
+                      selectedVisit.change_request_status === 'pending'
+                        ? 'bg-amber-100 text-amber-800'
+                        : selectedVisit.change_request_status === 'approved'
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-red-100 text-red-800'
+                    }`}>
+                      {selectedVisit.change_request_status === 'pending' ? 'Beklemede' : selectedVisit.change_request_status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                    </span>
+                  </div>
+                  {selectedVisit.change_request_status === 'pending' && selectedVisit.personnel?.full_name && (
+                    <p className="text-[10px] text-slate-500 mb-1">Talep Eden: <b>{selectedVisit.personnel.full_name}</b></p>
+                  )}
+                  {selectedVisit.change_request_date && (
+                    <p className="text-[10px] text-slate-500">Önerilen Tarih: <b>{new Date(selectedVisit.change_request_date).toLocaleDateString('tr-TR')}</b></p>
+                  )}
+                  {selectedVisit.change_request_reason && (
+                    <p className="text-[10px] text-slate-550 dark:text-slate-400 italic mt-0.5">&ldquo;{selectedVisit.change_request_reason}&rdquo;</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2 justify-between pt-3 border-t border-gray-150 dark:border-slate-700">
+              <div className="flex gap-2">
+                {/* Manager actions: Complete, Cancel, Delete */}
+                {isManager ? (
+                  <>
+                    {selectedVisit.status === 'scheduled' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleUpdateVisitStatus(selectedVisit.id, 'completed');
+                            setSelectedVisit(null);
+                          }}
+                          className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                        >
+                          Tamamlandı Yap
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleUpdateVisitStatus(selectedVisit.id, 'cancelled');
+                            setSelectedVisit(null);
+                          }}
+                          className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-205 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                        >
+                          İptal Et
+                        </button>
+                      </>
+                    )}
+                    {selectedVisit.status !== 'scheduled' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleUpdateVisitStatus(selectedVisit.id, 'scheduled');
+                          setSelectedVisit(null);
+                        }}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                      >
+                        Yeniden Planla
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleDeleteVisit(selectedVisit.id);
+                        setSelectedVisit(null);
+                      }}
+                      className="bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                    >
+                      Sil
+                    </button>
+                  </>
+                ) : (
+                  /* Staff actions: Submit change request */
+                  selectedVisit.status === 'scheduled' && selectedVisit.change_request_status !== 'pending' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowChangeRequestModal(true)}
+                      className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition"
+                    >
+                      Tarih Değişikliği Talep Et
+                    </button>
+                  )
+                )}
+              </div>
+              
+              <button
+                type="button"
+                onClick={() => setSelectedVisit(null)}
+                className="px-4 py-1.5 border rounded-lg text-slate-600 dark:text-slate-350 text-xs font-bold transition hover:bg-slate-50 dark:hover:bg-slate-700"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TARİH DEĞİŞİKLİĞİ TALEP MODALİ */}
+      {showChangeRequestModal && selectedVisit && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 shadow-2xl animate-scaleIn">
+            <h3 className="text-base font-bold text-slate-800 dark:text-slate-100 mb-4 border-b pb-2 flex items-center gap-2">
+              <Calendar className="text-amber-600" size={18} /> Ziyaret Tarihi Değişiklik Talebi
+            </h3>
+            <form onSubmit={handleSubmitChangeRequest} className="space-y-4">
+              <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border text-xs text-slate-650 dark:text-slate-350">
+                <p>Müşteri: <b>{selectedVisit.client?.name}</b></p>
+                <p className="mt-1">Şu Anki Tarih: <b>{new Date(selectedVisit.visit_date).toLocaleDateString('tr-TR')}</b></p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Talep Edilen Yeni Tarih</label>
+                <input
+                  required
+                  type="date"
+                  value={changeRequest.requested_date}
+                  onChange={(e) => setChangeRequest({ ...changeRequest, requested_date: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm outline-none focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Değişiklik Gerekçesi</label>
+                <textarea
+                  required
+                  rows={4}
+                  value={changeRequest.reason}
+                  onChange={(e) => setChangeRequest({ ...changeRequest, reason: e.target.value })}
+                  placeholder="Bu ziyaret tarihini neden değiştirmek istediğinizi açıklayın..."
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm outline-none resize-none focus:ring-1 focus:ring-teal-500"
+                ></textarea>
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-150 dark:border-slate-700 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowChangeRequestModal(false)}
+                  className="px-4 py-2 border rounded-lg text-slate-600 dark:text-slate-350 text-xs font-bold transition hover:bg-slate-50 dark:hover:bg-slate-700"
+                >
+                  Vazgeç
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingChangeRequest}
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                >
+                  {submittingChangeRequest ? 'İletiliyor...' : 'Talebi Gönder'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
