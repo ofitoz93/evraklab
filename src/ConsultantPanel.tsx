@@ -3375,7 +3375,17 @@ export default function ConsultantPanel() {
                       {canAssignClients && (
                         <button 
                           onClick={() => openAssignModal(client)}
-              ) : clientSubView === 'personnel' ? (
+                          className="bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                        >
+                          Personel Ata
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : clientSubView === 'personnel' ? (
             <div className="space-y-6">
               {teamMembers
                 .filter(member => member.role !== 'normal')
@@ -7715,6 +7725,7 @@ export default function ConsultantPanel() {
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium"
                 >
                   Kaydet
+                </button>
               </div>
             </form>
           </div>

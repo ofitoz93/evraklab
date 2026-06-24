@@ -3409,7 +3409,30 @@ export default function CompanyPanel() {
                   rows={4}
                   className="w-full border rounded-lg p-2.5 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition resize-none"
                   value={requestDescription}
-                  onCh      {/* 3. SEKME: TALEPLER (Mevzuat ve Ünvan/Adres) */}
+                  onChange={(e) => setRequestDescription(e.target.value)}
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={submittingRequest}
+                className="w-full bg-purple-600 hover:bg-purple-750 text-white py-3 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {submittingRequest ? (
+                  <>
+                    <Loader size={16} className="animate-spin" />
+                    Gönderiliyor...
+                  </>
+                ) : (
+                  'Talebi İlet'
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 3. SEKME: TALEPLER (Mevzuat ve Ünvan/Adres) */}
       {activeTab === 'requests' && (
         <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-6">
           {/* Subtabs Navigation */}
@@ -3620,22 +3643,6 @@ export default function CompanyPanel() {
           )}
         </div>
       )}
-                  <div className="text-[10px] text-gray-450 dark:text-gray-500 flex justify-between items-center pt-1.5 border-t dark:border-slate-800">
-                    <span>Talep Eden: <b>{req.requested_by_profile?.full_name || 'Bilinmiyor'}</b></span>
-                    <span>{new Date(req.created_at).toLocaleDateString('tr-TR')}</span>
-                  </div>
-                  {req.admin_notes && (
-                    <div className="mt-2 p-2 bg-white dark:bg-slate-900 rounded border dark:border-slate-800 text-gray-650 dark:text-gray-400 text-[10px]">
-                      <b>Not:</b> {req.admin_notes}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {activeTab === 'actions' && (
         <div className="space-y-6 animate-fadeIn">
           {/* Header & New Action Button */}
