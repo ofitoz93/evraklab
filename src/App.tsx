@@ -53,6 +53,8 @@ import EnvReportForm from './EnvReportForm';
 import EnvReportView from './EnvReportView';
 import ExternalSignPage from './ExternalSignPage';
 import InspectionPage from './InspectionPage';
+import ClientEvaluationPage from './ClientEvaluationPage';
+
 
 // --- THEME CONTEXT ---
 type Theme = 'light' | 'dark';
@@ -897,6 +899,7 @@ function AppContent() {
                 <Route path="/consultant/reports/:id" element={<EnvReportView />} />
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="/inspect/:token" element={<InspectionPage />} />
+                <Route path="/evaluate-client/:token" element={<ClientEvaluationPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             ) : (
@@ -928,7 +931,7 @@ function AppContent() {
                 <Route
                   path="/consultant/reports/add"
                   element={
-                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief') ? (
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
                       <EnvReportForm />
                     ) : (
                       <Navigate to="/" />
@@ -948,6 +951,7 @@ function AppContent() {
                 />
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="/inspect/:token" element={<InspectionPage />} />
+                <Route path="/evaluate-client/:token" element={<ClientEvaluationPage />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             )}

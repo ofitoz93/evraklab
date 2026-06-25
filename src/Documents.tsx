@@ -85,6 +85,72 @@ export default function Documents() {
   const [selectedDocForWetSig, setSelectedDocForWetSig] = useState<any>(null);
   const [uploadingWetSig, setUploadingWetSig] = useState(false);
 
+  // Required documents states
+  const [requiredDocs, setRequiredDocs] = useState<any[]>([]);
+  const [allClients, setAllClients] = useState<any[]>([]);
+  const [allDocTypes, setAllDocTypes] = useState<any[]>([]);
+
+  // Exemption Modal State
+  const [exemptModalOpen, setExemptModalOpen] = useState(false);
+  const [selectedReqDocForExempt, setSelectedReqDocForExempt] = useState<any>(null);
+  const [exemptReason, setExemptReason] = useState('');
+  const [savingExempt, setSavingExempt] = useState(false);
+
+  const fetchOnlyRequiredDocs = async () => {
+    try {
+      const { data: reqDocsData } = await supabase
+        .from('client_required_documents')
+        .select('*');
+      setRequiredDocs(reqDocsData || []);
+    } catch (err) {
+      console.error('Error reloading required docs:', err);
+    }
+  };
+
+  const handleOpenExemptModal = (reqDoc: any) => {
+    setSelectedReqDocForExempt(reqDoc);
+    setExemptReason(reqDoc.exempt_reason || '');
+    setExemptModalOpen(true);
+  };
+
+  const handleSaveExemption = async () => {
+    if (!selectedReqDocForExempt) return;
+    setSavingExempt(true);
+    try {
+      const { error } = await supabase
+        .from('client_required_documents')
+        .update({
+          is_exempt: true,
+          exempt_reason: exemptReason.trim()
+        })
+        .eq('id', selectedReqDocForExempt.id);
+      if (error) throw error;
+      await fetchOnlyRequiredDocs();
+      setExemptModalOpen(false);
+    } catch (err: any) {
+      alert('Muafiyet kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingExempt(false);
+    }
+  };
+
+  const handleRemoveExemption = async (reqDoc: any) => {
+    if (!window.confirm('Bu belgenin muafiyetini kaldırmak istediğinize emin misiniz?')) return;
+    try {
+      const { error } = await supabase
+        .from('client_required_documents')
+        .update({
+          is_exempt: false,
+          exempt_reason: null
+        })
+        .eq('id', reqDoc.id);
+      if (error) throw error;
+      await fetchOnlyRequiredDocs();
+    } catch (err: any) {
+      alert('Muafiyet kaldırılırken hata: ' + err.message);
+    }
+  };
+
   useEffect(() => {
     fetchDocuments();
     checkInvites();
@@ -159,6 +225,29 @@ export default function Documents() {
           .eq('organization_id', myOrgId)
           .neq('id', session.user.id);
         setTeamMembers(members || []);
+
+        // Fetch client, required docs and all doc types for matrix matching
+        try {
+          const { data: clientsData } = await supabase
+            .from('consultant_clients')
+            .select('id, name')
+            .eq('consultant_company_id', myOrgId);
+          setAllClients(clientsData || []);
+
+          const { data: reqDocsData } = await supabase
+            .from('client_required_documents')
+            .select('*');
+          setRequiredDocs(reqDocsData || []);
+
+          const { data: typesData } = await supabase
+            .from('user_definitions')
+            .select('id, label')
+            .eq('category', 'doc_type')
+            .eq('organization_id', myOrgId);
+          setAllDocTypes(typesData || []);
+        } catch (err) {
+          console.error('Error fetching required docs config:', err);
+        }
       }
 
       let hasActivePremium = false;
@@ -446,7 +535,7 @@ export default function Documents() {
     try {
       const reportId = selectedDocForWetSig.env_report_id;
       const fileExt = file.name.split('.').pop();
-      const filePath = `wet_signatures/report_${reportId}_signed.${fileExt}`;
+      const filePath = `wet_signatures/report_${reportId}_signed_${Date.now()}.${fileExt}`;
       const { error: uploadError } = await supabase.storage
         .from('client_assets')
         .upload(filePath, file, { upsert: true });
@@ -639,6 +728,148 @@ export default function Documents() {
         </div>
       </div>
 
+      {/* ZORUNLU / EKSİK BELGELER PANELİ */}
+      {filterLoc && (
+        (() => {
+          const activeClient = allClients.find(
+            (c) => c.name && filterLoc && c.name.trim().toLowerCase() === filterLoc.trim().toLowerCase()
+          );
+
+          if (!activeClient) return null;
+
+          const clientReqs = requiredDocs.filter((rd) => rd.client_id === activeClient.id);
+
+          if (clientReqs.length === 0) return null;
+
+          return (
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-100 dark:border-slate-700 mb-6 space-y-4">
+              <div className="flex items-center justify-between border-b border-gray-100 dark:border-slate-700 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-lg">
+                    <FileText size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200">
+                      Zorunlu / Eksik Belgeler Checklist - {filterLoc}
+                    </h3>
+                    <p className="text-[11px] text-gray-400">Bu işletme için tanımlanmış zorunlu belgelerin listesi ve güncel durumu</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {clientReqs.map((req) => {
+                  const typeDef = allDocTypes.find((t) => t.id === req.type_def_id);
+                  if (!typeDef) return null;
+
+                  const reqLabel = typeDef?.label?.trim().toLowerCase();
+                  const matchedDoc = docs.find(
+                    (d) =>
+                      d.type_def?.label &&
+                      d.type_def.label.trim().toLowerCase() === reqLabel &&
+                      d.location_def?.label &&
+                      d.location_def.label.trim().toLowerCase() === filterLoc.trim().toLowerCase()
+                  );
+
+                  let status: 'uploaded' | 'exempt' | 'missing' = 'missing';
+                  if (req.is_exempt) {
+                    status = 'exempt';
+                  } else if (matchedDoc) {
+                    status = 'uploaded';
+                  }
+
+                  return (
+                    <div
+                      key={req.id}
+                      className={`p-4 rounded-xl border flex flex-col justify-between gap-3 transition ${
+                        status === 'uploaded'
+                          ? 'bg-emerald-50/20 border-emerald-100 dark:bg-emerald-950/10 dark:border-emerald-900/40'
+                          : status === 'exempt'
+                          ? 'bg-blue-50/20 border-blue-100 dark:bg-blue-950/10 dark:border-blue-900/40'
+                          : 'bg-rose-50/20 border-rose-100 dark:bg-rose-950/10 dark:border-rose-900/40'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                          {typeDef.label}
+                        </span>
+                        {status === 'uploaded' ? (
+                          <span className="px-2 py-0.5 text-[9px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-450 rounded-full flex items-center gap-1">
+                            ✓ Yüklendi
+                          </span>
+                        ) : status === 'exempt' ? (
+                          <span
+                            className="px-2 py-0.5 text-[9px] font-bold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-450 rounded-full flex items-center gap-1 cursor-help"
+                            title={`Muafiyet Nedeni: ${req.exempt_reason || 'Belirtilmedi'}`}
+                          >
+                            ℹ Muaf
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 text-[9px] font-bold bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-450 rounded-full flex items-center gap-1">
+                            ⚠ Eksik
+                          </span>
+                        )}
+                      </div>
+
+                      {status === 'exempt' && req.exempt_reason && (
+                        <div className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/20 p-2 rounded-lg italic">
+                          "{req.exempt_reason}"
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 mt-1 border-t border-gray-100 dark:border-slate-700/50 pt-2 text-[10px]">
+                        {status === 'missing' && (
+                          <>
+                            <button
+                              onClick={() =>
+                                navigate(
+                                  `/add-document?typeDefId=${req.type_def_id}&clientName=${encodeURIComponent(
+                                    filterLoc
+                                  )}`
+                                )
+                              }
+                              className="text-rose-600 dark:text-rose-400 font-bold hover:underline"
+                            >
+                              Belge Ekle
+                            </button>
+                            <span className="text-gray-350">•</span>
+                            <button
+                              onClick={() => handleOpenExemptModal(req)}
+                              className="text-gray-500 hover:text-blue-600 dark:text-gray-405 font-bold"
+                            >
+                              Muaf Yap
+                            </button>
+                          </>
+                        )}
+                        {status === 'exempt' && (
+                          <button
+                            onClick={() => handleRemoveExemption(req)}
+                            className="text-blue-600 dark:text-blue-400 font-bold hover:underline"
+                          >
+                            Muafiyeti Kaldır
+                          </button>
+                        )}
+                        {status === 'uploaded' && matchedDoc && (
+                          <button
+                            onClick={() => {
+                              setPreviewDoc(matchedDoc);
+                              setPreviewModalOpen(true);
+                            }}
+                            className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline"
+                          >
+                            Belgeyi Önizle
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()
+      )}
+
       <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
         {filteredDocs.length === 0 ? (
           <div className="p-10 text-center text-gray-400">
@@ -682,12 +913,22 @@ export default function Documents() {
                         {Math.abs(daysLeft)} GÜN)
                       </span>
                     );
-                  else if (daysLeft !== null && daysLeft <= 30)
-                    statusBadge = (
-                      <span className="text-orange-600 font-bold text-xs bg-orange-50 px-2 py-1 rounded border border-orange-200 flex items-center gap-1 w-fit">
-                        <Clock size={10} /> KRİTİK ({daysLeft} GÜN)
-                      </span>
-                    );
+                  else if (daysLeft !== null && daysLeft <= 30) {
+                    const isMonthlyReport = doc.type_def?.label?.toLowerCase().includes('aylık') || doc.type_def?.label?.toLowerCase().includes('aylik');
+                    if (isMonthlyReport) {
+                      statusBadge = (
+                        <span className="text-green-600 font-bold text-xs bg-green-50 px-2 py-1 rounded border border-green-200 flex items-center gap-1 w-fit">
+                          <CheckCircle size={10} /> GÜNCEL ({daysLeft} GÜN)
+                        </span>
+                      );
+                    } else {
+                      statusBadge = (
+                        <span className="text-orange-600 font-bold text-xs bg-orange-50 px-2 py-1 rounded border border-orange-200 flex items-center gap-1 w-fit">
+                          <Clock size={10} /> KRİTİK ({daysLeft} GÜN)
+                        </span>
+                      );
+                    }
+                  }
                   else
                     statusBadge = (
                       <span className="text-green-600 font-bold text-xs bg-green-50 px-2 py-1 rounded border border-green-200 flex items-center gap-1 w-fit">
@@ -1063,6 +1304,52 @@ export default function Documents() {
                 {renewing ? '...' : 'Güncelle'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+      {/* EXEMPTION MODAL */}
+      {exemptModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 border border-gray-100 dark:border-slate-800 animate-scaleIn">
+            <div className="flex justify-between items-center border-b border-gray-100 dark:border-slate-800 pb-3">
+              <h3 className="text-base font-bold text-gray-800 dark:text-gray-150">Belge Muafiyeti Tanımla</h3>
+              <button
+                onClick={() => setExemptModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Lütfen bu belgenin bu işletme için neden muaf olduğunu belirten bir açıklama yazınız:
+              </p>
+              <textarea
+                placeholder="Örn: İşletmenin tehlikeli atık üretimi bulunmadığı için Tehlikeli Atık Mali Sorumluluk Sigortası'ndan muaftır."
+                value={exemptReason}
+                onChange={(e) => setExemptReason(e.target.value)}
+                className="w-full p-3 border rounded-xl bg-white dark:bg-slate-950 border-gray-200 dark:border-slate-800 text-xs outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white h-24 resize-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-gray-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setExemptModalOpen(false)}
+                className="px-4 py-2 text-xs font-semibold text-gray-500 hover:bg-gray-50 dark:hover:bg-slate-850 rounded-lg transition"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                disabled={savingExempt || !exemptReason.trim()}
+                onClick={handleSaveExemption}
+                className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 rounded-lg transition flex items-center gap-1.5"
+              >
+                {savingExempt ? 'Kaydediliyor...' : 'Kaydet'}
+              </button>
+            </div>
           </div>
         </div>
       )}

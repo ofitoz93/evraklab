@@ -21,6 +21,8 @@ export default function EditDocument() {
   const [myOrgId, setMyOrgId] = useState<string | null>(null);
   const [docScope, setDocScope] = useState<'personal' | 'corporate'>('personal');
   const [corporateClients, setCorporateClients] = useState<any[]>([]);
+  const [allOrgClients, setAllOrgClients] = useState<any[]>([]);
+  const [docLocLabel, setDocLocLabel] = useState('');
 
   // Listeler
   const [typeOptions, setTypeOptions] = useState<any[]>([]);
@@ -109,6 +111,14 @@ export default function EditDocument() {
       
       setUserRole(currentRole);
       setMyOrgId(currentOrgId);
+
+      if (currentOrgId) {
+        const { data: allClients } = await supabase
+          .from('consultant_clients')
+          .select('name')
+          .eq('consultant_company_id', currentOrgId);
+        setAllOrgClients(allClients || []);
+      }
     }
 
     const { data } = await supabase
@@ -136,19 +146,18 @@ export default function EditDocument() {
 
       await fetchDefinitions(session?.user.id || '', scope === 'corporate', currentOrgId);
 
-      if (scope === 'corporate' && data.location_def_id) {
+      if (data.location_def_id) {
+        setLocation(data.location_def_id);
         const { data: def } = await supabase
           .from('user_definitions')
           .select('label')
           .eq('id', data.location_def_id)
           .single();
         if (def) {
-          setLocation(def.label);
-        } else {
-          setLocation('');
+          setDocLocLabel(def.label);
         }
       } else {
-        setLocation(data.location_def_id || '');
+        setLocation('');
       }
     }
     setLoading(false);
@@ -158,7 +167,7 @@ export default function EditDocument() {
     const targetOrgId = orgId || myOrgId;
     let query = supabase.from('user_definitions').select('*');
     if (isCorporate && targetOrgId) {
-      query = query.eq('user_id', userId).eq('organization_id', targetOrgId);
+      query = query.eq('organization_id', targetOrgId);
     } else {
       query = query.eq('user_id', userId).is('organization_id', null);
     }
@@ -190,6 +199,52 @@ export default function EditDocument() {
       });
       setLocOptions(Array.from(uniqueLocsMap.values()));
     }
+  };
+
+  const getFilteredLocOptions = () => {
+    if (docScope !== 'corporate') {
+      return locOptions;
+    }
+
+    // 1. Filter existing user_definitions
+    const filteredDefs = locOptions.filter((l) => {
+      if (!l.label) return false;
+      const labelLower = l.label.trim().toLowerCase();
+
+      // Check if this definition is a client name in the organization
+      const isClient = allOrgClients.some(
+        (c) => c.name && c.name.trim().toLowerCase() === labelLower
+      );
+
+      if (isClient) {
+        // If it is a client, only show it if the client is assigned to the current user
+        return corporateClients.some(
+          (c) => c.name && c.name.trim().toLowerCase() === labelLower
+        );
+      }
+
+      // If it is not a client, it's a manual location, so show it
+      return true;
+    });
+
+    // 2. Add assigned corporate clients that don't have an existing definition in locOptions
+    const finalOptions = [...filteredDefs];
+    corporateClients.forEach((c) => {
+      if (!c.name) return;
+      const clientNameLower = c.name.trim().toLowerCase();
+      const hasDef = locOptions.some(
+        (l) => l.label && l.label.trim().toLowerCase() === clientNameLower
+      );
+      if (!hasDef) {
+        finalOptions.push({
+          id: `CLIENT_NAME:${c.name}`,
+          label: c.name,
+          isDynamic: true,
+        });
+      }
+    });
+
+    return finalOptions;
   };
 
   // --- YENİ KONTROLLÜ EKLEME FONKSİYONU ---
@@ -373,17 +428,60 @@ export default function EditDocument() {
       if (!session) return;
 
       // LOKASYON KONTROLÜ (Ortak)
-      let finalLocId = (location && location !== 'NEW_LOC') ? location : null;
-      const manualLocName = (window as any).tempManualLoc;
-
-      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
-      if (location === 'NEW_LOC' && manualLocName && canCreateLoc) {
-        const { data: newLoc } = await supabase
-          .from('user_definitions')
-          .insert([{ user_id: session.user.id, category: 'location', label: manualLocName }])
-          .select()
-          .single();
-        if (newLoc) finalLocId = newLoc.id;
+      let finalLocId = null;
+      if (location && location !== 'NEW_LOC') {
+        if (location.startsWith('CLIENT_NAME:')) {
+          const clientName = location.replace('CLIENT_NAME:', '');
+          
+          // Check if definition already exists
+          let existingQuery = supabase
+            .from('user_definitions')
+            .select('id')
+            .eq('category', 'location')
+            .ilike('label', clientName.trim());
+          
+          if (docScope === 'corporate' && myOrgId) {
+            existingQuery = existingQuery.eq('organization_id', myOrgId);
+          } else {
+            existingQuery = existingQuery.is('organization_id', null).eq('user_id', session.user.id);
+          }
+          
+          const { data: existingDefs } = await existingQuery;
+          if (existingDefs && existingDefs.length > 0) {
+            finalLocId = existingDefs[0].id;
+          } else {
+            // Create it
+            const { data: newLoc } = await supabase
+              .from('user_definitions')
+              .insert([{ 
+                user_id: session.user.id, 
+                category: 'location', 
+                label: clientName.trim(),
+                organization_id: docScope === 'corporate' ? myOrgId : null,
+              }])
+              .select()
+              .single();
+            if (newLoc) finalLocId = newLoc.id;
+          }
+        } else {
+          finalLocId = location;
+        }
+      } else if (location === 'NEW_LOC') {
+        const manualLocName = (window as any).tempManualLoc;
+        const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+        if (manualLocName && canCreateLoc) {
+          const { data: newLoc } = await supabase
+            .from('user_definitions')
+            .insert([{ 
+              user_id: session.user.id, 
+              category: 'location', 
+              label: manualLocName,
+              organization_id: docScope === 'corporate' ? myOrgId : null,
+            }])
+            .select()
+            .single();
+          if (newLoc) finalLocId = newLoc.id;
+        }
       }
 
       const selectedType = typeOptions.find(t => t.id === docType);
@@ -481,10 +579,10 @@ export default function EditDocument() {
               onChange={(e) => setLocation(e.target.value)}
             >
               <option value="">Belirtilmemiş</option>
-              {location && !locOptions.find((l) => l.id === location) && (
-                <option value={location}>Eski Kayıt</option>
+              {location && !getFilteredLocOptions().some((l) => l.id === location) && (
+                <option value={location}>{docLocLabel || 'Eski Kayıt'}</option>
               )}
-              {locOptions.map((l) => (
+              {getFilteredLocOptions().map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.label}
                 </option>

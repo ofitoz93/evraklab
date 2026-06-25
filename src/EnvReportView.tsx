@@ -149,29 +149,6 @@ export default function EnvReportView() {
     }, 1000);
   };
 
-  const generateSignLink = async () => {
-    try {
-      // Şifreli bir token oluştur (basitçe rastgele string ve id)
-      let token = report.signature_link_token;
-      if (!token) {
-        token = btoa(`${report.id}-${Date.now()}`); // Basit bir encode
-        await supabase
-          .from('env_reports')
-          .update({ signature_link_token: token })
-          .eq('id', report.id);
-        
-        setReport({ ...report, signature_link_token: token });
-      }
-
-      const link = `${window.location.origin}/sign-report/${token}`;
-      await navigator.clipboard.writeText(link);
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 3000);
-    } catch (err) {
-      console.error(err);
-      alert('Link kopyalanamadı.');
-    }
-  };
 
   const handleWetSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -179,7 +156,7 @@ export default function EnvReportView() {
     setUploadingWetSig(true);
     try {
       const fileExt = file.name.split('.').pop();
-      const filePath = `wet_signatures/report_${report.id}_signed.${fileExt}`;
+      const filePath = `wet_signatures/report_${report.id}_signed_${Date.now()}.${fileExt}`;
       const { error: uploadError } = await supabase.storage
         .from('client_assets')
         .upload(filePath, file, { upsert: true });
@@ -338,13 +315,6 @@ export default function EnvReportView() {
               <CheckCircle size={16} /> Islak İmzalıyı Görüntüle
             </a>
           )}
-          <button
-            onClick={generateSignLink}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 transition text-sm font-medium"
-          >
-            {linkCopied ? <CheckCircle size={16} /> : <LinkIcon size={16} />}
-            {linkCopied ? 'Link Kopyalandı!' : 'Dışarıdan İmza Linki'}
-          </button>
           <button
             onClick={handlePrint}
             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-bold"

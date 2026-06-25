@@ -685,20 +685,25 @@ export default function CompanyPanel() {
     }
   };
 
-  const handleUpdateArticleCompliance = async (artId: string, status: 'compliant' | 'non_compliant') => {
-    try {
-      const { error } = await supabase
-        .from('client_regulation_articles')
-        .update({ compliance_status: status, is_mandatory: true, last_updated_by: myProfile?.id })
-        .eq('id', artId);
-      if (error) throw error;
-      if (selectedReg) {
-        await fetchRegulationArticles(selectedReg);
-      }
-    } catch (err: any) {
-      alert('Madde uyum durumu güncellenirken hata: ' + err.message);
-    }
+  const handleUpdateArticleCompliance = (artId: string, status: 'compliant' | 'non_compliant') => {
+    const art = selectedRegArticles.find(a => a.id === artId);
+    if (!art) return;
+
+    setComplianceNoteData({
+      articleId: art.id,
+      type: status,
+      articleNo: art.article_no,
+      title: art.title || '',
+      currentNotes: art.current_status_notes || '',
+      currentExpiryDate: art.expiry_date || '',
+      currentMandatoryState: art.is_mandatory
+    });
+    setComplianceNoteValue(art.current_status_notes || '');
+    setComplianceExpiryDate(art.expiry_date || '');
+    setIsComplianceExpiryless(!art.expiry_date);
+    setShowComplianceNoteModal(true);
   };
+
 
   const handleSaveComplianceNote = async () => {
     if (!complianceNoteData) return;
@@ -814,15 +819,15 @@ export default function CompanyPanel() {
 
   const getStatusStyles = (art: any) => {
     if (!art.is_mandatory) {
-      return 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-900 opacity-80';
+      return 'border-slate-200 dark:border-slate-700 bg-slate-100/70 dark:bg-slate-900/70 opacity-70';
     }
     if (art.compliance_status === 'compliant') {
-      return 'border-emerald-250 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/20';
+      return 'border-emerald-500 dark:border-emerald-500/50 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-350';
     }
     if (art.compliance_status === 'non_compliant') {
-      return 'border-rose-250 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/20';
+      return 'border-rose-500 dark:border-rose-500/50 bg-rose-50 dark:bg-rose-950/30 text-rose-900 dark:text-rose-350';
     }
-    return 'border-amber-250 dark:border-amber-800 bg-white dark:bg-slate-800';
+    return 'border-amber-300 dark:border-amber-500/50 bg-white dark:bg-slate-800';
   };
 
   const isNearExpiry = (expiryDateStr: string | null) => {
@@ -1895,15 +1900,7 @@ export default function CompanyPanel() {
         
       if (error) throw error;
       
-      if (articleId) {
-        await supabase
-          .from('client_regulation_articles')
-          .update({
-            current_status_notes: notesVal.trim(),
-            last_updated_by: myProfile?.id
-          })
-          .eq('id', articleId);
-      }
+      
       
       alert('Aksiyon tamamlandı ve onay bekliyor durumuna getirildi!');
       setShowCompleteActionModal(false);
@@ -1936,13 +1933,11 @@ export default function CompanyPanel() {
         
       if (error) throw error;
       
-      if (action.article_id) {
+            if (action.article_id) {
         await supabase
           .from('client_regulation_articles')
           .update({
-            current_status_requested: false,
-            current_status_notes: action.notes,
-            last_updated_by: action.assigned_to
+            current_status_requested: false
           })
           .eq('id', action.article_id);
       }
@@ -2002,12 +1997,7 @@ export default function CompanyPanel() {
         
       if (error) throw error;
       
-      if (articleId) {
-        await supabase
-          .from('client_regulation_articles')
-          .update({ current_status_requested: false })
-          .eq('id', articleId);
-      }
+      
       
       alert('Aksiyon silindi.');
       await fetchComplianceActions();
@@ -3264,7 +3254,7 @@ export default function CompanyPanel() {
                           </div>
 
                           {/* Mevcut Durum Notu (Current Status Note) Section */}
-                          {art.is_mandatory && (
+                          {(
                             <div className="pt-3 mt-3 border-t border-gray-100 dark:border-slate-800 space-y-2">
                               {editingNotesArtId === art.id ? (
                                 <div className="space-y-2">
@@ -3297,9 +3287,11 @@ export default function CompanyPanel() {
                               ) : (
                                 <div className="flex justify-between items-start gap-4 flex-wrap sm:flex-nowrap">
                                   <div className="flex-1 bg-slate-50 dark:bg-slate-900/60 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
-                                    <div className="font-extrabold text-[9px] text-slate-400 uppercase tracking-wide">Mevcut Durum</div>
+                                    <div className="font-extrabold text-[9px] text-slate-400 dark:text-slate-500 uppercase tracking-wide">
+                                      {art.compliance_status === 'compliant' ? 'Uygunluk Açıklaması' : art.compliance_status === 'non_compliant' ? 'Uygunsuzluk Açıklaması' : 'Mevcut Durum / Gerekçe'}
+                                    </div>
                                     <p className="text-slate-700 dark:text-slate-350 mt-0.5 whitespace-pre-wrap leading-relaxed">
-                                      {art.current_status_notes || <span className="italic text-gray-400">Durum girilmemiş</span>}
+                                      {art.current_status_notes || <span className="italic text-gray-400">Açıklama girilmemiş</span>}
                                     </p>
                                   </div>
                                   <div className="flex gap-2 shrink-0">
@@ -5506,9 +5498,12 @@ export default function CompanyPanel() {
                     >
                       <option value="">-- Evrak Seçin --</option>
                       {userDocuments
-                        .filter(d => !selectedEvidenceLocation || d.location_def?.label === selectedEvidenceLocation)
+                        .filter(d => {
+                          if (!selectedEvidenceLocation) return true;
+                          return d.location_def?.label === selectedEvidenceLocation;
+                        })
                         .map(d => (
-                          <option key={d.id} value={d.file_url}>{d.title}</option>
+                          <option key={d.id} value={d.file_url}>{d.title}{d.location_def?.label ? ` (${d.location_def.label})` : ''}</option>
                         ))}
                     </select>
                   </div>
