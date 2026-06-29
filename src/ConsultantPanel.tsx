@@ -824,13 +824,13 @@ export default function ConsultantPanel() {
   }, []);
 
   useEffect(() => {
-    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions' || activeTab === 'legislations' || activeTab === 'inspections') && orgId) {
+    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions' || activeTab === 'document_matrix' || activeTab === 'legislations' || activeTab === 'inspections') && orgId) {
       fetchTeamMembers();
     }
     if (activeTab === 'team' && orgId) {
       fetchInvitations();
     }
-    if (activeTab === 'definitions' && orgId) {
+    if ((activeTab === 'definitions' || activeTab === 'document_matrix') && orgId) {
       fetchDefinitionsTab();
       fetchRequiredDocs();
       fetchAllDocsForMatrix();
@@ -3653,9 +3653,9 @@ export default function ConsultantPanel() {
   };
 
   const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'documents' | 'finance' | 'hr' | 'settings' => {
-    if (['clients', 'inspections'].includes(tab)) return 'operations';
+    if (['clients', 'inspections', 'definitions'].includes(tab)) return 'operations';
     if (['legislations', 'actions', 'requests'].includes(tab)) return 'compliance';
-    if (['reports'].includes(tab)) return 'documents';
+    if (['reports', 'document_matrix'].includes(tab)) return 'documents';
     if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
     if (['team', 'evaluations'].includes(tab)) return 'hr';
     return 'settings';
@@ -3682,11 +3682,7 @@ export default function ConsultantPanel() {
         setActiveTab('evaluations');
       }
     } else if (moduleName === 'settings') {
-      if (userRole === 'premium_corporate') {
-        setActiveTab('settings');
-      } else {
-        setActiveTab('definitions');
-      }
+      setActiveTab('settings');
     }
   };
 
@@ -3699,6 +3695,12 @@ export default function ConsultantPanel() {
       icon: <Building size={18} />,
       tabs: [
         { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients },
+        {
+          id: 'definitions',
+          label: 'Belge & Şablon Tanımları',
+          icon: <SettingsIcon size={14} />,
+          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
+        },
         { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: true },
       ]
     },
@@ -3718,6 +3720,7 @@ export default function ConsultantPanel() {
       icon: <FileText size={18} />,
       tabs: [
         { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports },
+        { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: true },
       ]
     },
     {
@@ -3750,12 +3753,6 @@ export default function ConsultantPanel() {
       icon: <SettingsIcon size={18} />,
       tabs: [
         { id: 'settings', label: 'Şirket Ayarları', icon: <SettingsIcon size={14} />, show: userRole === 'premium_corporate' },
-        {
-          id: 'definitions',
-          label: 'Tanımlamalar',
-          icon: <SettingsIcon size={14} />,
-          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
-        },
       ]
     }
   ];
