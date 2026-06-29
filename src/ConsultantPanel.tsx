@@ -3043,6 +3043,11 @@ export default function ConsultantPanel() {
   };
 
   const fetchClients = async (oId: string, role: string, uId: string, perms?: any) => {
+    if (!oId && role !== 'system_admin' && role !== 'admin') {
+      setClients([]);
+      setAllAssignments([]);
+      return;
+    }
     let query = supabase.from('consultant_clients').select('*');
     
     // Kurumsal şef ve personel sadece atandığı firmaları görür (perm yoksa).
@@ -3258,6 +3263,10 @@ export default function ConsultantPanel() {
   };
 
   const fetchReports = async (oId: string, role: string, uId: string, perms?: any) => {
+    if (!oId && role !== 'system_admin' && role !== 'admin') {
+      setReports([]);
+      return;
+    }
     let query = supabase
       .from('env_reports')
       .select('*, client:client_id(name), creator:creator_id(full_name)');
@@ -3455,21 +3464,6 @@ export default function ConsultantPanel() {
     return 'Geçerli Yüklendi';
   };
 
-  if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
-
-  const isAdminOrChief = userRole === 'admin' || userRole === 'system_admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
-  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'system_admin';
-  
-  // Granular Permissions for Chief / Staff / Admins
-  const canViewClients = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_clients !== false);
-  const canCreateClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_create_clients);
-  const canEditClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients);
-  const canAssignClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
-  const canDeleteClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
-  const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
-  const canViewTeam = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
-
-
   const getMonthsSinceServiceStart = (startDateStr: string | null | undefined) => {
     if (!startDateStr) return [];
     const start = new Date(startDateStr);
@@ -3628,6 +3622,23 @@ export default function ConsultantPanel() {
       fetchFinanceData();
     }
   }, [orgId, activeTab]);
+
+  if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
+
+  const isAdminOrChief = userRole === 'admin' || userRole === 'system_admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
+  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'system_admin';
+  
+  // Granular Permissions for Chief / Staff / Admins
+  const canViewClients = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_clients !== false);
+  const canCreateClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_create_clients);
+  const canEditClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients);
+  const canAssignClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
+  const canDeleteClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
+  const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
+  const canViewTeam = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
+
+
+
 
   const checkClientEditable = (client: Client) => {
     if (userRole === 'premium_corporate' || userRole === 'admin') return true;
