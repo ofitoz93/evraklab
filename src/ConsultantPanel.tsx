@@ -1305,6 +1305,61 @@ export default function ConsultantPanel() {
     }
   };
 
+  const handleAskStatusForMissing = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMissingDocType || !askTargetUserId || !selectedMissingClientName) return;
+    
+    const client = clients.find(c => c.name === selectedMissingClientName);
+    if (!client) {
+      alert('İşletme bulunamadı.');
+      return;
+    }
+
+    setIsSubmittingAsk(true);
+    try {
+      if (askMode === 'chat') {
+        const messageText = askNote.trim() || `Lütfen bu eksik evrağın durumunu kontrol edip yüklenmesini sağlayın: ${selectedMissingDocType} (${client.name})`;
+        const { error } = await supabase.from('company_messages').insert([
+          {
+            organization_id: orgId,
+            sender_id: userId,
+            receiver_id: askTargetUserId,
+            message: messageText,
+            document_id: null,
+            document_title: `Eksik Belge: ${selectedMissingDocType}`,
+          },
+        ]);
+        if (error) throw error;
+        alert('Durum sorusu sohbet üzerinden ilgili personele iletildi!');
+      } else {
+        const descText = askNote.trim() || `${selectedMissingDocType} belgesinin eksik olduğu tespit edilmiş ve temini talep edilmiştir.`;
+        const { error } = await supabase
+          .from('compliance_actions')
+          .insert({
+            client_id: client.id,
+            article_id: null,
+            title: `Eksik Belge Temini: ${selectedMissingDocType}`,
+            description: descText,
+            due_date: askDueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            created_by: userId,
+            assigned_to: askTargetUserId,
+            status: 'pending'
+          });
+        if (error) throw error;
+        alert('Görev/Aksiyon başarıyla oluşturuldu ve personele atandı!');
+        await fetchComplianceActions();
+      }
+      setAskNote('');
+      setShowMissingModal(false);
+      setSelectedMissingDocType(null);
+      setSelectedMissingClientName(null);
+    } catch (err: any) {
+      alert('İşlem gerçekleştirilirken hata oluştu: ' + err.message);
+    } finally {
+      setIsSubmittingAsk(false);
+    }
+  };
+
   const handleToggleRequiredDoc = async (clientId: string, type: any, makeRequired: boolean) => {
     try {
       const targetId = type.isGroup ? type.rowIds[0] : type.id;
@@ -10537,6 +10592,85 @@ export default function ConsultantPanel() {
                 </p>
               </div>
             </div>
+
+            {isManager && (
+              <div className="border-t border-gray-150 dark:border-slate-700 pt-4 mt-3 space-y-3">
+                <h4 className="font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5 text-sm">
+                  <Send size={14} className="text-blue-500" />
+                  Personele Durumu Sor / Görevlendir
+                </h4>
+                
+                <form onSubmit={handleAskStatusForMissing} className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase tracking-wide block mb-1">Muhatap Personel</label>
+                      <select
+                        value={askTargetUserId}
+                        onChange={(e) => setAskTargetUserId(e.target.value)}
+                        className="w-full border rounded-xl p-2 bg-white dark:bg-slate-900 dark:border-slate-700 text-xs focus:ring-1 focus:ring-blue-500 outline-none text-gray-900 dark:text-white"
+                        required
+                      >
+                        <option value="">Personel Seçin...</option>
+                        {teamMembers.map((member) => {
+                          const clientObj = clients.find(c => c.name === selectedMissingClientName);
+                          const isAssigned = clientObj ? allAssignments.some(a => a.client_id === clientObj.id && a.user_id === member.id) : false;
+                          return (
+                            <option key={member.id} value={member.id}>
+                              {member.full_name} {isAssigned ? '(Atanmış)' : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase tracking-wide block mb-1">İletişim Kanalı</label>
+                      <select
+                        value={askMode}
+                        onChange={(e) => setAskMode(e.target.value as 'chat' | 'action')}
+                        className="w-full border rounded-xl p-2 bg-white dark:bg-slate-900 dark:border-slate-700 text-xs focus:ring-1 focus:ring-blue-500 outline-none text-gray-900 dark:text-white"
+                      >
+                        <option value="chat">Sohbet (Chat) Üzerinden Sor</option>
+                        <option value="action">Yeni Aksiyon/Görev Aç</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {askMode === 'action' && (
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase tracking-wide block mb-1">Termin Tarihi (Son Gün)</label>
+                      <input
+                        type="date"
+                        value={askDueDate}
+                        onChange={(e) => setAskDueDate(e.target.value)}
+                        className="w-full border rounded-xl p-2 bg-white dark:bg-slate-900 dark:border-slate-700 text-xs focus:ring-1 focus:ring-blue-500 outline-none text-gray-900 dark:text-white"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-[10px] text-gray-400 uppercase tracking-wide block mb-1">Not / Açıklama</label>
+                    <textarea
+                      rows={2}
+                      value={askNote}
+                      onChange={(e) => setAskNote(e.target.value)}
+                      placeholder={askMode === 'chat' 
+                        ? `Lütfen bu eksik evrağın durumunu kontrol edip yüklenmesini sağlayın: ${selectedMissingDocType}` 
+                        : `Bu eksik evrağın temin edilmesi talep edilmiştir.`}
+                      className="w-full border rounded-xl p-2.5 bg-white dark:bg-slate-900 dark:border-slate-700 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none text-gray-900 dark:text-white"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmittingAsk || !askTargetUserId}
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition text-xs disabled:opacity-55 cursor-pointer"
+                  >
+                    {isSubmittingAsk ? 'Gönderiliyor...' : (askMode === 'chat' ? 'Sohbete İlet ve Sor' : 'Aksiyon Oluştur ve Ata')}
+                  </button>
+                </form>
+              </div>
+            )}
 
             <div className="flex justify-end pt-3 border-t border-gray-150 dark:border-slate-700">
               <button
