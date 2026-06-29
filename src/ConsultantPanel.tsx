@@ -38,6 +38,7 @@ import {
   ExternalLink,
   Send,
   Star,
+  Table,
 } from 'lucide-react';
 
 import QRCode from 'qrcode';
@@ -3470,15 +3471,26 @@ export default function ConsultantPanel() {
     const end = new Date();
     
     const monthsList: { year: number; month: number; label: string }[] = [];
+    const seen = new Set<string>();
+    
     let current = new Date(start.getFullYear(), start.getMonth(), 1);
     const endLimit = new Date(end.getFullYear(), end.getMonth(), 1);
     
-    while (current <= endLimit) {
-      monthsList.push({
-        year: current.getFullYear(),
-        month: current.getMonth() + 1,
-        label: current.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })
-      });
+    let limit = 0;
+    while (current <= endLimit && limit < 500) {
+      limit++;
+      const y = current.getFullYear();
+      const m = current.getMonth() + 1;
+      const key = `${y}-${m}`;
+      
+      if (!seen.has(key)) {
+        seen.add(key);
+        monthsList.push({
+          year: y,
+          month: m,
+          label: current.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })
+        });
+      }
       current.setMonth(current.getMonth() + 1);
     }
     return monthsList.reverse(); // Newest first
