@@ -640,7 +640,49 @@ export default function CompanyPanel() {
         .order('order_index', { ascending: true });
 
       if (error) throw error;
-      setSelectedRegArticles(data || []);
+
+      const nowStr = new Date().toISOString().split('T')[0];
+      const expiredArticles = (data || []).filter(
+        (art: any) =>
+          art.compliance_status === 'compliant' &&
+          art.expiry_date &&
+          art.expiry_date < nowStr
+      );
+
+      if (expiredArticles.length > 0) {
+        const expiredIds = expiredArticles.map((art: any) => art.id);
+        await supabase
+          .from('client_regulation_articles')
+          .update({
+            compliance_status: 'non_compliant',
+            current_status_notes: 'Süresi dolduğu için sistem tarafından otomatik olarak Uygun Değil durumuna getirildi.'
+          })
+          .in('id', expiredIds);
+
+        const { data: updatedData, error: updatedError } = await supabase
+          .from('client_regulation_articles')
+          .select('*, updater:profiles!last_updated_by(full_name)')
+          .eq('client_regulation_id', reg.id)
+          .order('order_index', { ascending: true });
+
+        if (!updatedError && updatedData) {
+          setSelectedRegArticles(updatedData);
+        } else {
+          const mappedData = (data || []).map((art: any) => {
+            if (expiredIds.includes(art.id)) {
+              return {
+                ...art,
+                compliance_status: 'non_compliant',
+                current_status_notes: 'Süresi dolduğu için sistem tarafından otomatik olarak Uygun Değil durumuna getirildi.'
+              };
+            }
+            return art;
+          });
+          setSelectedRegArticles(mappedData);
+        }
+      } else {
+        setSelectedRegArticles(data || []);
+      }
     } catch (err: any) {
       console.error('Maddeler çekilirken hata:', err.message);
     } finally {
@@ -821,10 +863,20 @@ export default function CompanyPanel() {
     if (!art.is_mandatory) {
       return 'border-slate-200 dark:border-slate-700 bg-slate-100/70 dark:bg-slate-900/70 opacity-70';
     }
+
+    const nowStr = new Date().toISOString().split('T')[0];
+    const isExpired = art.expiry_date && art.expiry_date < nowStr;
+
     if (art.compliance_status === 'compliant') {
+      if (isExpired) {
+        return 'border-rose-500 dark:border-rose-500/50 bg-rose-50 dark:bg-rose-950/30 text-rose-900 dark:text-rose-350 animate-compliance-blink';
+      }
       return 'border-emerald-500 dark:border-emerald-500/50 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-350';
     }
     if (art.compliance_status === 'non_compliant') {
+      if (isExpired) {
+        return 'border-rose-500 dark:border-rose-500/50 bg-rose-50 dark:bg-rose-950/30 text-rose-900 dark:text-rose-350 animate-compliance-blink';
+      }
       return 'border-rose-500 dark:border-rose-500/50 bg-rose-50 dark:bg-rose-950/30 text-rose-900 dark:text-rose-350';
     }
     return 'border-amber-300 dark:border-amber-500/50 bg-white dark:bg-slate-800';
@@ -2535,6 +2587,56 @@ export default function CompanyPanel() {
     printWindow.document.close();
   };
 
+  const getModuleForTab = (tab: string): 'compliance' | 'operations' | 'hr' => {
+    if (['compliance', 'actions', 'requests'].includes(tab)) return 'compliance';
+    if (['waste', 'inspections'].includes(tab)) return 'operations';
+    return 'hr';
+  };
+  const activeModule = getModuleForTab(activeTab);
+
+  const selectModule = (moduleName: 'compliance' | 'operations' | 'hr') => {
+    if (moduleName === 'compliance') {
+      setActiveTab('compliance');
+      setSearchParams({ tab: 'compliance' });
+    } else if (moduleName === 'operations') {
+      setActiveTab('waste');
+      setSearchParams({ tab: 'waste' });
+    } else if (moduleName === 'hr') {
+      setActiveTab('team');
+      setSearchParams({ tab: 'team' });
+    }
+  };
+
+  const modules = [
+    {
+      id: 'compliance',
+      label: 'Mevzuat & Yasal Uyum',
+      icon: <Shield size={18} />,
+      tabs: [
+        { id: 'compliance', label: 'Mevzuatlarımız', icon: <Shield size={14} />, show: true },
+        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
+        { id: 'requests', label: 'Gönderilen Mevzuat Talepleri', icon: <Clock size={14} />, show: true },
+      ]
+    },
+    {
+      id: 'operations',
+      label: 'Operasyon & Çevre',
+      icon: <PieChart size={18} />,
+      tabs: [
+        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: true },
+        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: isConsultant },
+      ]
+    },
+    {
+      id: 'hr',
+      label: 'İK & Yönetim',
+      icon: <Users size={18} />,
+      tabs: [
+        { id: 'team', label: 'Ekip Yönetimi', icon: <Users size={14} />, show: true },
+      ]
+    }
+  ];
+
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
   if (!myOrg)
     return (
@@ -2576,88 +2678,58 @@ export default function CompanyPanel() {
         </div>
       </div>
 
-      <div className="flex border-b border-gray-200 dark:border-slate-700">
-        <button
-          onClick={() => {
-            setActiveTab('team');
-            setSearchParams({ tab: 'team' });
-          }}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'team'
-              ? 'border-purple-600 text-purple-600 dark:text-purple-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Users size={16} /> Ekip Yönetimi
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab('compliance');
-            setSearchParams({ tab: 'compliance' });
-          }}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'compliance'
-              ? 'border-purple-600 text-purple-600 dark:text-purple-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Shield size={16} /> Mevzuatlarımız
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab('requests');
-            setSearchParams({ tab: 'requests' });
-          }}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'requests'
-              ? 'border-purple-600 text-purple-600 dark:text-purple-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Clock size={16} /> Gönderilen Mevzuat Talepleri
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab('actions');
-            setSearchParams({ tab: 'actions' });
-          }}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'actions'
-              ? 'border-purple-600 text-purple-600 dark:text-purple-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <CheckCircle size={16} /> Aksiyon Takip
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab('waste');
-            setSearchParams({ tab: 'waste' });
-          }}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-            activeTab === 'waste'
-              ? 'border-purple-600 text-purple-600 dark:text-purple-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Trash2 size={16} /> Atık Yönetimi
-        </button>
-        {isConsultant && (
-          <button
-            onClick={() => {
-              setActiveTab('inspections');
-              setSearchParams({ tab: 'inspections' });
-            }}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition ${
-              activeTab === 'inspections'
-                ? 'border-purple-600 text-purple-600 dark:text-purple-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <QrCode size={16} /> Saha QR Denetimleri
-          </button>
-        )}
+      {/* Modüller (Ana Kategoriler) */}
+      <div className="bg-slate-100/80 dark:bg-slate-900/50 p-2 rounded-2xl border border-gray-200 dark:border-slate-800 flex gap-2 overflow-x-auto whitespace-nowrap scrollbar-thin">
+        {modules.filter(m => m.tabs.some(t => t.show)).map((mod) => {
+          const isActive = activeModule === mod.id;
+          return (
+            <button
+              key={mod.id}
+              onClick={() => selectModule(mod.id as any)}
+              className={`px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
+                isActive
+                  ? 'bg-purple-650 text-white shadow-md shadow-purple-600/10 scale-[1.02]'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-purple-650 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              {mod.icon}
+              <span>{mod.label}</span>
+            </button>
+          );
+        })}
       </div>
+
+      {/* Alt Sayfalar / Modül Sekmeleri (Yalnızca 1'den fazla gösterilebilir sekme varsa) */}
+      {(() => {
+        const currentMod = modules.find(m => m.id === activeModule);
+        const visibleTabs = currentMod?.tabs.filter(t => t.show) || [];
+        if (visibleTabs.length <= 1) return null;
+
+        return (
+          <div className="flex border-b border-gray-250 dark:border-slate-700 bg-white dark:bg-slate-800 p-1.5 rounded-xl shadow-sm gap-1.5 flex-wrap">
+            {visibleTabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setActiveTab(tab.id as any);
+                    setSearchParams({ tab: tab.id });
+                  }}
+                  className={`px-4 py-2 text-xs font-extrabold rounded-lg transition-all duration-200 flex items-center gap-1.5 cursor-pointer border ${
+                    isActive
+                      ? 'bg-purple-50 dark:bg-purple-950/20 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-900/30'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {activeTab === 'team' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -3185,16 +3257,39 @@ export default function CompanyPanel() {
                               {art.is_mandatory && (
                                 <div className="text-[10px] text-gray-400 mt-1 font-semibold flex items-center gap-1.5 flex-wrap">
                                   <span>Geçerlilik Süresi:</span>
-                                  {isNearExpiry(art.expiry_date) ? (
-                                    <span className="font-extrabold text-rose-600 dark:text-rose-400 animate-pulse flex items-center gap-1 bg-rose-50 dark:bg-rose-950/20 px-1.5 py-0.5 rounded border border-rose-200">
-                                      <span>⏳</span>
-                                      {new Date(art.expiry_date).toLocaleDateString('tr-TR')} (Süresi Yaklaşıyor!)
-                                    </span>
-                                  ) : (
-                                    <span className="font-extrabold text-purple-600 dark:text-purple-400 font-mono">
-                                      {art.expiry_date ? new Date(art.expiry_date).toLocaleDateString('tr-TR') : 'Süresiz'}
-                                    </span>
-                                  )}
+                                  {(() => {
+                                    if (!art.expiry_date) {
+                                      return (
+                                        <span className="font-extrabold text-purple-600 dark:text-purple-400 font-mono">
+                                          Süresiz
+                                        </span>
+                                      );
+                                    }
+                                    const nowStr = new Date().toISOString().split('T')[0];
+                                    const isExpired = art.expiry_date < nowStr;
+                                    
+                                    if (isExpired) {
+                                      return (
+                                        <span className="font-black text-rose-600 dark:text-rose-400 animate-pulse flex items-center gap-1 bg-rose-50 dark:bg-rose-950/20 px-1.5 py-0.5 rounded border border-rose-200 uppercase">
+                                          <span>🚨</span>
+                                          {new Date(art.expiry_date).toLocaleDateString('tr-TR')} (SÜRESİ GEÇTİ!)
+                                        </span>
+                                      );
+                                    }
+                                    if (isNearExpiry(art.expiry_date)) {
+                                      return (
+                                        <span className="font-extrabold text-amber-600 dark:text-amber-400 animate-pulse flex items-center gap-1 bg-amber-50 dark:bg-amber-950/20 px-1.5 py-0.5 rounded border border-amber-200">
+                                          <span>⏳</span>
+                                          {new Date(art.expiry_date).toLocaleDateString('tr-TR')} (Süresi Yaklaşıyor!)
+                                        </span>
+                                      );
+                                    }
+                                    return (
+                                      <span className="font-extrabold text-purple-600 dark:text-purple-400 font-mono">
+                                        {new Date(art.expiry_date).toLocaleDateString('tr-TR')}
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                               )}
 

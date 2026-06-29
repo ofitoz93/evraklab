@@ -73,3 +73,18 @@ h6 {
     overflow: visible !important;
   }
 }
+
+@keyframes compliance-blink {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+    border-color: rgba(239, 68, 68, 0.8);
+  }
+  50% {
+    box-shadow: 0 0 15px 4px rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.3);
+  }
+}
+
+.animate-compliance-blink {
+  animation: compliance-blink 1.5s infinite ease-in-out;
+}

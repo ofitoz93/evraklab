@@ -121,7 +121,7 @@ const getContractStatus = (startDateStr: string) => {
 };
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
@@ -510,6 +510,22 @@ export default function ConsultantPanel() {
   const [staffRequests, setStaffRequests] = useState<any[]>([]);
   const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments' | 'calendar' | 'tracking'>('pool');
   const [selectedClientForLegTracking, setSelectedClientForLegTracking] = useState<any>(null);
+
+  // --- FİNANS & MALİYET MODÜLÜ STATE'LERİ ---
+  const [financePayments, setFinancePayments] = useState<any[]>([]);
+  const [financeExpenses, setFinanceExpenses] = useState<any[]>([]);
+  const [loadingFinance, setLoadingFinance] = useState(false);
+  const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
+  const [newExpense, setNewExpense] = useState({
+    title: '',
+    category: 'Ofis/Kira',
+    amount: '',
+    expense_date: new Date().toISOString().split('T')[0],
+    notes: ''
+  });
+  const [savingExpense, setSavingExpense] = useState(false);
+  const [updatingClientFee, setUpdatingClientFee] = useState<string | null>(null);
+  const [tempClientFeeVal, setTempClientFeeVal] = useState('');
 
   // --- ZİYARET PLANLAMA / ÇALIŞMA TAKVİMİ STATE'LERİ ---
   const [visitSchedules, setVisitSchedules] = useState<VisitSchedule[]>([]);
@@ -1825,10 +1841,20 @@ export default function ConsultantPanel() {
     if (!art.is_mandatory) {
       return 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/50 opacity-70';
     }
+
+    const nowStr = new Date().toISOString().split('T')[0];
+    const isExpired = art.expiry_date && art.expiry_date < nowStr;
+
     if (art.compliance_status === 'compliant') {
+      if (isExpired) {
+        return 'border-rose-250 dark:border-rose-800 bg-rose-50/10 dark:bg-rose-950/5 animate-compliance-blink';
+      }
       return 'border-emerald-250 dark:border-emerald-800 bg-emerald-50/10 dark:bg-emerald-950/5';
     }
     if (art.compliance_status === 'non_compliant') {
+      if (isExpired) {
+        return 'border-rose-250 dark:border-rose-800 bg-rose-50/10 dark:bg-rose-950/5 animate-compliance-blink';
+      }
       return 'border-rose-250 dark:border-rose-800 bg-rose-50/10 dark:bg-rose-950/5';
     }
     return 'border-amber-250 dark:border-amber-800 bg-amber-50/10 dark:bg-amber-950/5';
@@ -2318,7 +2344,49 @@ export default function ConsultantPanel() {
         .eq('client_regulation_id', cr.id)
         .order('order_index', { ascending: true });
       if (error) throw error;
-      setSelectedClientRegulationArticles(data || []);
+
+      const nowStr = new Date().toISOString().split('T')[0];
+      const expiredArticles = (data || []).filter(
+        (art: any) =>
+          art.compliance_status === 'compliant' &&
+          art.expiry_date &&
+          art.expiry_date < nowStr
+      );
+
+      if (expiredArticles.length > 0) {
+        const expiredIds = expiredArticles.map((art: any) => art.id);
+        await supabase
+          .from('client_regulation_articles')
+          .update({
+            compliance_status: 'non_compliant',
+            current_status_notes: 'Süresi dolduğu için sistem tarafından otomatik olarak Uygun Değil durumuna getirildi.'
+          })
+          .in('id', expiredIds);
+
+        const { data: updatedData, error: updatedError } = await supabase
+          .from('client_regulation_articles')
+          .select('*, updater:profiles!last_updated_by(full_name)')
+          .eq('client_regulation_id', cr.id)
+          .order('order_index', { ascending: true });
+
+        if (!updatedError && updatedData) {
+          setSelectedClientRegulationArticles(updatedData);
+        } else {
+          const mappedData = (data || []).map((art: any) => {
+            if (expiredIds.includes(art.id)) {
+              return {
+                ...art,
+                compliance_status: 'non_compliant',
+                current_status_notes: 'Süresi dolduğu için sistem tarafından otomatik olarak Uygun Değil durumuna getirildi.'
+              };
+            }
+            return art;
+          });
+          setSelectedClientRegulationArticles(mappedData);
+        }
+      } else {
+        setSelectedClientRegulationArticles(data || []);
+      }
 
       // Fetch compliance actions linked to articles for this client
       const { data: acts, error: errActs } = await supabase
@@ -2375,19 +2443,23 @@ export default function ConsultantPanel() {
     }
   };
 
-  const handleUpdateArticleCompliance = async (articleId: string, status: 'compliant' | 'non_compliant') => {
-    try {
-      const { error } = await supabase
-        .from('client_regulation_articles')
-        .update({ compliance_status: status, is_mandatory: true, last_updated_by: userId })
-        .eq('id', articleId);
-      if (error) throw error;
-      if (selectedClientRegulation) {
-        await fetchClientRegulationArticles(selectedClientRegulation);
-      }
-    } catch (err: any) {
-      alert('Madde uyum durumu güncellenirken hata: ' + err.message);
-    }
+  const handleUpdateArticleCompliance = (articleId: string, status: 'compliant' | 'non_compliant') => {
+    const art = selectedClientRegulationArticles.find(a => a.id === articleId);
+    if (!art) return;
+
+    setComplianceNoteData({
+      articleId: art.id,
+      type: status,
+      articleNo: art.article_no,
+      title: art.title || '',
+      currentNotes: art.current_status_notes || '',
+      currentExpiryDate: art.expiry_date || '',
+      currentMandatoryState: art.is_mandatory
+    });
+    setComplianceNoteValue(art.current_status_notes || '');
+    setComplianceExpiryDate(art.expiry_date || '');
+    setIsComplianceExpiryless(!art.expiry_date);
+    setShowComplianceNoteModal(true);
   };
 
   const handleSaveComplianceNote = async () => {
@@ -3398,6 +3470,165 @@ export default function ConsultantPanel() {
   const canViewTeam = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
 
 
+  const getMonthsSinceServiceStart = (startDateStr: string | null | undefined) => {
+    if (!startDateStr) return [];
+    const start = new Date(startDateStr);
+    const end = new Date();
+    
+    const monthsList: { year: number; month: number; label: string }[] = [];
+    let current = new Date(start.getFullYear(), start.getMonth(), 1);
+    const endLimit = new Date(end.getFullYear(), end.getMonth(), 1);
+    
+    while (current <= endLimit) {
+      monthsList.push({
+        year: current.getFullYear(),
+        month: current.getMonth() + 1,
+        label: current.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })
+      });
+      current.setMonth(current.getMonth() + 1);
+    }
+    return monthsList.reverse(); // Newest first
+  };
+
+  // --- FİNANS & MALİYET FONKSİYONLARI ---
+  const fetchFinanceData = async () => {
+    if (!orgId) return;
+    setLoadingFinance(true);
+    try {
+      const { data: payData, error: payErr } = await supabase
+        .from('client_payments')
+        .select('*')
+        .eq('consultant_company_id', orgId);
+      if (payErr) console.error('Error fetching payments:', payErr);
+      setFinancePayments(payData || []);
+
+      const { data: expData, error: expErr } = await supabase
+        .from('company_expenses')
+        .select('*')
+        .eq('consultant_company_id', orgId)
+        .order('expense_date', { ascending: false });
+      if (expErr) console.error('Error fetching expenses:', expErr);
+      setFinanceExpenses(expData || []);
+    } catch (err: any) {
+      console.error('Finans verileri çekilirken hata:', err);
+    } finally {
+      setLoadingFinance(false);
+    }
+  };
+
+  const handleUpdateClientFee = async (clientId: string, fee: number) => {
+    try {
+      const { error } = await supabase
+        .from('consultant_clients')
+        .update({ monthly_fee: fee })
+        .eq('id', clientId);
+      if (error) throw error;
+      
+      setClients(prev => prev.map(c => c.id === clientId ? { ...c, monthly_fee: fee } : c));
+      setUpdatingClientFee(null);
+      alert('Müşteri aylık ücreti başarıyla güncellendi!');
+    } catch (err: any) {
+      alert('Üret güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleTogglePaymentStatus = async (clientId: string, year: number, month: number, isPaid: boolean, amount: number) => {
+    try {
+      if (isPaid) {
+        const existing = financePayments.find(p => p.client_id === clientId && p.year === year && p.month === month);
+        if (existing) {
+          const { error } = await supabase
+            .from('client_payments')
+            .update({ is_paid: true, payment_date: new Date().toISOString().split('T')[0] })
+            .eq('id', existing.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase
+            .from('client_payments')
+            .insert({
+              client_id: clientId,
+              consultant_company_id: orgId,
+              year,
+              month,
+              amount,
+              is_paid: true,
+              payment_date: new Date().toISOString().split('T')[0]
+            });
+          if (error) throw error;
+        }
+      } else {
+        const existing = financePayments.find(p => p.client_id === clientId && p.year === year && p.month === month);
+        if (existing) {
+          const { error } = await supabase
+            .from('client_payments')
+            .update({ is_paid: false, payment_date: null })
+            .eq('id', existing.id);
+          if (error) throw error;
+        }
+      }
+      await fetchFinanceData();
+    } catch (err: any) {
+      alert('Ödeme durumu güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleSaveExpense = async () => {
+    if (!newExpense.title.trim() || !newExpense.amount) {
+      alert('Lütfen başlık ve tutar giriniz!');
+      return;
+    }
+    setSavingExpense(true);
+    try {
+      const { error } = await supabase
+        .from('company_expenses')
+        .insert({
+          consultant_company_id: orgId,
+          title: newExpense.title.trim(),
+          category: newExpense.category,
+          amount: parseFloat(newExpense.amount),
+          expense_date: newExpense.expense_date,
+          notes: newExpense.notes.trim() || null
+        });
+      if (error) throw error;
+      
+      setShowAddExpenseModal(false);
+      setNewExpense({
+        title: '',
+        category: 'Ofis/Kira',
+        amount: '',
+        expense_date: new Date().toISOString().split('T')[0],
+        notes: ''
+      });
+      await fetchFinanceData();
+      alert('Gider kaydı başarıyla eklendi!');
+    } catch (err: any) {
+      alert('Gider kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingExpense(false);
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    if (!window.confirm('Bu gider kaydını silmek istediğinizden emin misiniz?')) return;
+    try {
+      const { error } = await supabase
+        .from('company_expenses')
+        .delete()
+        .eq('id', expenseId);
+      if (error) throw error;
+      await fetchFinanceData();
+      alert('Gider kaydı silindi.');
+    } catch (err: any) {
+      alert('Gider silinirken hata: ' + err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (orgId && ['finance_summary', 'finance_payments', 'finance_expenses'].includes(activeTab)) {
+      fetchFinanceData();
+    }
+  }, [orgId, activeTab]);
+
   const checkClientEditable = (client: Client) => {
     if (userRole === 'premium_corporate' || userRole === 'admin') return true;
     if (userRole === 'corporate_chief') {
@@ -3409,6 +3640,114 @@ export default function ConsultantPanel() {
     }
     return false;
   };
+
+  const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'documents' | 'finance' | 'hr' | 'settings' => {
+    if (['clients', 'inspections'].includes(tab)) return 'operations';
+    if (['legislations', 'actions', 'requests'].includes(tab)) return 'compliance';
+    if (['reports'].includes(tab)) return 'documents';
+    if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
+    if (['team', 'evaluations'].includes(tab)) return 'hr';
+    return 'settings';
+  };
+  const activeModule = getModuleForTab(activeTab);
+
+  const selectModule = (moduleName: 'operations' | 'compliance' | 'documents' | 'finance' | 'hr' | 'settings') => {
+    if (moduleName === 'operations') {
+      if (canViewClients) {
+        setActiveTab('clients');
+      } else {
+        setActiveTab('inspections');
+      }
+    } else if (moduleName === 'compliance') {
+      setActiveTab('legislations');
+    } else if (moduleName === 'documents') {
+      setActiveTab('reports');
+    } else if (moduleName === 'finance') {
+      setActiveTab('finance_summary');
+    } else if (moduleName === 'hr') {
+      if (canViewTeam) {
+        setActiveTab('team');
+      } else {
+        setActiveTab('evaluations');
+      }
+    } else if (moduleName === 'settings') {
+      if (userRole === 'premium_corporate') {
+        setActiveTab('settings');
+      } else {
+        setActiveTab('definitions');
+      }
+    }
+  };
+
+  const canViewFinance = ['premium_corporate', 'admin', 'system_admin'].includes(userRole);
+
+  const modules = [
+    {
+      id: 'operations',
+      label: 'Operasyon & İşletmeler',
+      icon: <Building size={18} />,
+      tabs: [
+        { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients },
+        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: true },
+      ]
+    },
+    {
+      id: 'compliance',
+      label: 'Yasal Uyum & Takip',
+      icon: <Scale size={18} />,
+      tabs: [
+        { id: 'legislations', label: 'Mevzuat Takip', icon: <Scale size={14} />, show: true },
+        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
+        { id: 'requests', label: 'Mevzuat Talepleri', icon: <Bell size={14} />, show: true },
+      ]
+    },
+    {
+      id: 'documents',
+      label: 'Dokümantasyon',
+      icon: <FileText size={18} />,
+      tabs: [
+        { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports },
+      ]
+    },
+    {
+      id: 'finance',
+      label: 'Finans & Maliyet',
+      icon: <PieChart size={18} />,
+      tabs: [
+        { id: 'finance_summary', label: 'Finansal Özet', icon: <PieChart size={14} />, show: canViewFinance },
+        { id: 'finance_payments', label: 'Müşteri Ödemeleri', icon: <CheckCircle size={14} />, show: canViewFinance },
+        { id: 'finance_expenses', label: 'Gider Yönetimi', icon: <Trash2 size={14} />, show: canViewFinance },
+      ]
+    },
+    {
+      id: 'hr',
+      label: 'İK & Performans',
+      icon: <Users size={18} />,
+      tabs: [
+        { id: 'team', label: 'Ekip Yönetimi', icon: <Users size={14} />, show: canViewTeam },
+        {
+          id: 'evaluations',
+          label: 'Çalışan Değerlendirmeleri',
+          icon: <Star size={14} />,
+          show: ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole)
+        },
+      ]
+    },
+    {
+      id: 'settings',
+      label: 'Sistem & Ayarlar',
+      icon: <SettingsIcon size={18} />,
+      tabs: [
+        { id: 'settings', label: 'Şirket Ayarları', icon: <SettingsIcon size={14} />, show: userRole === 'premium_corporate' },
+        {
+          id: 'definitions',
+          label: 'Tanımlamalar',
+          icon: <SettingsIcon size={14} />,
+          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
+        },
+      ]
+    }
+  ];
 
   return (
     <div className="space-y-6">
@@ -3439,121 +3778,55 @@ export default function ConsultantPanel() {
         </div>
       </div>
 
-      <div className="flex border-b border-gray-200 dark:border-slate-700 overflow-x-auto whitespace-nowrap flex-nowrap scrollbar-thin">
-        {canViewClients && (
-          <button
-            onClick={() => setActiveTab('clients')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-              activeTab === 'clients'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <Building size={16} /> Hizmet Verilen İşletmeler
-          </button>
-        )}
-        {canViewReports && (
-          <button
-            onClick={() => setActiveTab('reports')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-              activeTab === 'reports'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <FileText size={16} /> Raporlar
-          </button>
-        )}
-        {canViewTeam && (
-          <button
-            onClick={() => setActiveTab('team')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-              activeTab === 'team'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <Users size={16} /> Ekip Yönetimi
-          </button>
-        )}
-        {userRole === 'premium_corporate' && (
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-              activeTab === 'settings'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <SettingsIcon size={16} /> Şirket Ayarları
-          </button>
-        )}
-
-        {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
-          <button
-            onClick={() => setActiveTab('definitions')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-              activeTab === 'definitions'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <SettingsIcon size={16} /> Tanımlamalar
-          </button>
-        )}
-        <button
-          onClick={() => setActiveTab('legislations')}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-            activeTab === 'legislations'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Scale size={16} /> Danışman İşlemleri
-        </button>
-        <button
-          onClick={() => setActiveTab('actions')}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-            activeTab === 'actions'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <CheckCircle size={16} /> Aksiyon Takip
-        </button>
-        <button
-          onClick={() => setActiveTab('requests')}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-            activeTab === 'requests'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Bell size={16} /> Gönderilen Mevzuat Talepleri
-        </button>
-        <button
-          onClick={() => setActiveTab('inspections')}
-          className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-            activeTab === 'inspections'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <QrCode size={16} /> Saha QR Denetimleri
-        </button>
-        {['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && (
-          <button
-            onClick={() => setActiveTab('evaluations')}
-            className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition flex-shrink-0 ${
-              activeTab === 'evaluations'
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <Star size={16} /> Değerlendirmeler
-          </button>
-        )}
+      {/* Modüller (Ana Kategoriler) */}
+      <div className="bg-slate-100/80 dark:bg-slate-900/50 p-2 rounded-2xl border border-gray-200 dark:border-slate-800 flex gap-2 overflow-x-auto whitespace-nowrap scrollbar-thin">
+        {modules.filter(m => m.tabs.some(t => t.show)).map((mod) => {
+          const isActive = activeModule === mod.id;
+          return (
+            <button
+              key={mod.id}
+              onClick={() => selectModule(mod.id as any)}
+              className={`px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
+                isActive
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10 scale-[1.02]'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-blue-600 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              {mod.icon}
+              <span>{mod.label}</span>
+            </button>
+          );
+        })}
       </div>
+
+      {/* Alt Sayfalar / Modül Sekmeleri (Yalnızca 1'den fazla gösterilebilir sekme varsa) */}
+      {(() => {
+        const currentMod = modules.find(m => m.id === activeModule);
+        const visibleTabs = currentMod?.tabs.filter(t => t.show) || [];
+        if (visibleTabs.length <= 1) return null;
+
+        return (
+          <div className="flex border-b border-gray-250 dark:border-slate-700 bg-white dark:bg-slate-800 p-1.5 rounded-xl shadow-sm gap-1.5 flex-wrap">
+            {visibleTabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`px-4 py-2 text-xs font-extrabold rounded-lg transition-all duration-200 flex items-center gap-1.5 cursor-pointer border ${
+                    isActive
+                      ? 'bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 border-blue-100 dark:border-blue-900/30'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
 
 
 
@@ -5604,8 +5877,16 @@ export default function ConsultantPanel() {
                                     )}
 
                                     {art.is_mandatory && (
-                                      <div className="text-[10px] text-slate-500 mt-1">
-                                        Geçerlilik Süresi: <span className="font-extrabold text-teal-650 dark:text-teal-400">{art.expiry_date ? new Date(art.expiry_date).toLocaleDateString('tr-TR') : 'Süresiz'}</span>
+                                      <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                                        <span>Geçerlilik Süresi:</span>
+                                        <span className="font-extrabold text-teal-650 dark:text-teal-400">
+                                          {art.expiry_date ? new Date(art.expiry_date).toLocaleDateString('tr-TR') : 'Süresiz'}
+                                        </span>
+                                        {art.expiry_date && art.expiry_date < new Date().toISOString().split('T')[0] && (
+                                          <span className="text-[9px] font-black text-rose-600 bg-rose-50 dark:bg-rose-950/20 px-1.5 py-0.5 rounded border border-rose-200 uppercase animate-pulse">
+                                            Süresi Geçti!
+                                          </span>
+                                        )}
                                       </div>
                                     )}
 
@@ -6856,6 +7137,488 @@ export default function ConsultantPanel() {
 
       {activeTab === 'evaluations' && ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && (
         <EvaluationPanel />
+      )}
+
+      {/* ==========================================
+         FINANCE & COSTS TABS RENDER
+         ========================================== */}
+      {activeTab === 'finance_summary' && canViewFinance && (
+        <div className="space-y-6">
+          {/* Top-level Finance Dashboard Cards */}
+          {(() => {
+            const totalCollected = financePayments
+              .filter(p => p.is_paid)
+              .reduce((sum, p) => sum + Number(p.amount), 0);
+              
+            let totalExpected = 0;
+            clients.forEach(client => {
+              const months = getMonthsSinceServiceStart(client.service_start_date);
+              totalExpected += months.length * Number(client.monthly_fee || 0);
+            });
+            
+            const totalUnpaid = Math.max(0, totalExpected - totalCollected);
+            const totalExpenses = financeExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+            const netProfit = totalCollected - totalExpenses;
+            
+            return (
+              <div className="space-y-6 animate-fadeIn">
+                {/* Key Metrics Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+                  <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Toplam Tahsil Edilen</span>
+                      <span className="text-xl font-black text-emerald-600 dark:text-emerald-450 block mt-1">
+                        {totalCollected.toLocaleString('tr-TR')} TL
+                      </span>
+                      <span className="text-[9px] font-semibold text-slate-400 mt-0.5 block">Ödenen faturalar toplamı</span>
+                    </div>
+                    <div className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-450 p-3 rounded-2xl">
+                      <CheckCircle size={24} />
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Bekleyen Tahsilat</span>
+                      <span className="text-xl font-black text-amber-600 dark:text-amber-400 block mt-1">
+                        {totalUnpaid.toLocaleString('tr-TR')} TL
+                      </span>
+                      <span className="text-[9px] font-semibold text-slate-400 mt-0.5 block">Vadesi gelen ödenmemiş toplam</span>
+                    </div>
+                    <div className="bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 p-3 rounded-2xl">
+                      <Clock size={24} />
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Toplam Giderler</span>
+                      <span className="text-xl font-black text-rose-600 dark:text-rose-455 block mt-1">
+                        {totalExpenses.toLocaleString('tr-TR')} TL
+                      </span>
+                      <span className="text-[9px] font-semibold text-slate-400 mt-0.5 block">Girilen tüm şirket giderleri</span>
+                    </div>
+                    <div className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-450 p-3 rounded-2xl">
+                      <Trash2 size={24} />
+                    </div>
+                  </div>
+
+                  <div className={`bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center justify-between ${
+                    netProfit >= 0 ? 'border-l-4 border-l-emerald-500' : 'border-l-4 border-l-rose-500'
+                  }`}>
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Net Kar / Zarar</span>
+                      <span className={`text-xl font-black block mt-1 ${netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-600 dark:text-rose-400'}`}>
+                        {netProfit.toLocaleString('tr-TR')} TL
+                      </span>
+                      <span className="text-[9px] font-semibold text-slate-400 mt-0.5 block">Tahsil edilen - Giderler</span>
+                    </div>
+                    <div className={`p-3 rounded-2xl ${netProfit >= 0 ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600'}`}>
+                      <PieChart size={24} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Monthly Financial Breakdown */}
+                <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm">
+                  <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 mb-4 flex items-center gap-2">
+                    <PieChart className="text-blue-600" size={18} /> Aylık Finansal Özet Tablosu
+                  </h3>
+                  
+                  {loadingFinance ? (
+                    <div className="flex justify-center py-12">
+                      <Loader className="animate-spin text-blue-600" size={24} />
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-150 dark:border-slate-750 text-slate-400 font-bold uppercase tracking-wider">
+                            <th className="pb-3 font-bold">Dönem (Ay / Yıl)</th>
+                            <th className="pb-3 font-bold">Hak Edilen Gelir</th>
+                            <th className="pb-3 font-bold">Tahsil Edilen (Ödenen)</th>
+                            <th className="pb-3 font-bold">Bekleyen Tahsilat</th>
+                            <th className="pb-3 font-bold">Aylık Giderler</th>
+                            <th className="pb-3 font-bold">Net Durum</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
+                          {(() => {
+                            const monthsList: { year: number, month: number, label: string }[] = [];
+                            const dateCursor = new Date();
+                            for (let i = 0; i < 12; i++) {
+                              monthsList.push({
+                                year: dateCursor.getFullYear(),
+                                month: dateCursor.getMonth() + 1,
+                                label: dateCursor.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })
+                              });
+                              dateCursor.setMonth(dateCursor.getMonth() - 1);
+                            }
+
+                            return monthsList.map(item => {
+                              const itemMonthEnd = new Date(item.year, item.month, 0);
+                              const expectedInMonth = clients
+                                .filter(c => c.service_start_date && new Date(c.service_start_date) <= itemMonthEnd)
+                                .reduce((sum, c) => sum + Number(c.monthly_fee || 0), 0);
+
+                              const collectedInMonth = financePayments
+                                .filter(p => p.year === item.year && p.month === item.month && p.is_paid)
+                                .reduce((sum, p) => sum + Number(p.amount), 0);
+
+                              const unpaidInMonth = Math.max(0, expectedInMonth - collectedInMonth);
+
+                              const expensesInMonth = financeExpenses
+                                .filter(e => {
+                                  const d = new Date(e.expense_date);
+                                  return d.getFullYear() === item.year && (d.getMonth() + 1) === item.month;
+                                })
+                                .reduce((sum, e) => sum + Number(e.amount), 0);
+
+                              const netInMonth = collectedInMonth - expensesInMonth;
+
+                              if (expectedInMonth === 0 && expensesInMonth === 0) return null;
+
+                              return (
+                                <tr key={`${item.year}-${item.month}`} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
+                                  <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">{item.label}</td>
+                                  <td className="py-3.5 text-slate-600">{expectedInMonth.toLocaleString('tr-TR')} TL</td>
+                                  <td className="py-3.5 text-emerald-600 dark:text-emerald-450 font-bold">{collectedInMonth.toLocaleString('tr-TR')} TL</td>
+                                  <td className="py-3.5 text-amber-600 font-bold">{unpaidInMonth.toLocaleString('tr-TR')} TL</td>
+                                  <td className="py-3.5 text-rose-600 font-bold">{expensesInMonth.toLocaleString('tr-TR')} TL</td>
+                                  <td className="py-3.5 font-black">
+                                    <span className={netInMonth >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                                      {netInMonth >= 0 ? '+' : ''}{netInMonth.toLocaleString('tr-TR')} TL
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            });
+                          })()}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {activeTab === 'finance_payments' && canViewFinance && (
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6 animate-fadeIn">
+          <div>
+            <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 flex items-center gap-2">
+              <CheckCircle className="text-blue-600" size={18} /> Müşteri Aylık Ödeme Takibi
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">İşletmelerin aylık sözleşme tutarlarını yönetin ve ödeme geçmişini denetleyin.</p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-slate-150 dark:border-slate-750 text-slate-400 font-bold uppercase tracking-wider">
+                  <th className="pb-3 font-bold">Müşteri / İşletme</th>
+                  <th className="pb-3 font-bold">Hizmet Başlangıcı</th>
+                  <th className="pb-3 font-bold w-48">Aylık Ücret (Matrah)</th>
+                  <th className="pb-3 font-bold text-right">Ödeme Takvimi & Durumu</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
+                {clients.map((client) => {
+                  const monthsList = getMonthsSinceServiceStart(client.service_start_date);
+                  const isEditing = updatingClientFee === client.id;
+                  
+                  return (
+                    <tr key={client.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10 align-top">
+                      <td className="py-4">
+                        <div className="font-bold text-slate-850 dark:text-slate-200 text-xs">{client.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">{client.email || 'Telefon/E-posta girilmemiş'}</div>
+                      </td>
+                      <td className="py-4 text-slate-500 font-bold">
+                        {client.service_start_date ? new Date(client.service_start_date).toLocaleDateString('tr-TR') : '-'}
+                      </td>
+                      <td className="py-4">
+                        {isEditing ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              className="w-24 p-1 text-xs border rounded outline-none"
+                              value={tempClientFeeVal}
+                              onChange={(e) => setTempClientFeeVal(e.target.value)}
+                              placeholder="Tutar"
+                            />
+                            <button
+                              onClick={() => handleUpdateClientFee(client.id, parseFloat(tempClientFeeVal) || 0)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded text-[10px] font-bold"
+                            >
+                              Kaydet
+                            </button>
+                            <button
+                              onClick={() => setUpdatingClientFee(null)}
+                              className="bg-slate-100 dark:bg-slate-750 text-slate-700 dark:text-slate-300 px-2 py-1 rounded text-[10px] font-bold border border-slate-200 dark:border-slate-655"
+                            >
+                              İptal
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-800 dark:text-slate-200 text-xs">
+                              {(Number(client.monthly_fee) || 0).toLocaleString('tr-TR')} TL
+                            </span>
+                            <button
+                              onClick={() => {
+                                setUpdatingClientFee(client.id);
+                                setTempClientFeeVal(String(client.monthly_fee || 0));
+                              }}
+                              className="text-blue-500 hover:text-blue-700 cursor-pointer"
+                              title="Ücreti Düzenle"
+                            >
+                              <Edit2 size={12} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-4 text-right">
+                        {monthsList.length === 0 ? (
+                          <span className="text-slate-400 italic text-[11px]">Hizmet başlangıç tarihi belirtilmemiş.</span>
+                        ) : (
+                          <div className="space-y-1.5 inline-block text-left min-w-64">
+                            {monthsList.map(item => {
+                              const payment = financePayments.find(p => p.client_id === client.id && p.year === item.year && p.month === item.month);
+                              const isPaid = payment?.is_paid || false;
+                              const amount = Number(client.monthly_fee || 0);
+
+                              return (
+                                <div key={`${item.year}-${item.month}`} className="flex items-center justify-between gap-4 p-1.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-150 dark:border-slate-800 text-[10px]">
+                                  <span className="font-bold text-slate-600 dark:text-slate-400">{item.label}</span>
+                                  <div className="flex items-center gap-2">
+                                    {isPaid ? (
+                                      <span className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-450 border border-emerald-100 dark:border-emerald-900/30 px-2 py-0.5 rounded-md font-black text-[9px] uppercase">
+                                        ✓ ÖDENDİ
+                                      </span>
+                                    ) : (
+                                      <span className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-450 border border-rose-100 dark:border-rose-900/30 px-2 py-0.5 rounded-md font-black text-[9px] uppercase">
+                                        ✗ ÖDENMEDİ
+                                      </span>
+                                    )}
+                                    <label className="flex items-center cursor-pointer select-none">
+                                      <input
+                                        type="checkbox"
+                                        checked={isPaid}
+                                        onChange={(e) => handleTogglePaymentStatus(client.id, item.year, item.month, e.target.checked, amount)}
+                                        className="h-3.5 w-3.5 rounded text-blue-600 border-slate-350 dark:border-slate-855"
+                                      />
+                                    </label>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'finance_expenses' && canViewFinance && (
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6 animate-fadeIn">
+          <div className="flex justify-between items-center gap-4 flex-wrap">
+            <div>
+              <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 flex items-center gap-2">
+                <Trash2 className="text-blue-600" size={18} /> Şirket Giderleri Listesi
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">Danışmanlık ofisinin aylık giderlerini girin ve net kâr oranınızı optimize edin.</p>
+            </div>
+            <button
+              onClick={() => setShowAddExpenseModal(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-sm"
+            >
+              <Plus size={14} /> Yeni Gider Ekle
+            </button>
+          </div>
+
+          {loadingFinance ? (
+            <div className="flex justify-center py-12">
+              <Loader className="animate-spin text-blue-600" size={24} />
+            </div>
+          ) : financeExpenses.length === 0 ? (
+            <div className="text-center text-slate-400 italic text-sm py-12">
+              Henüz herhangi bir gider kaydı eklenmemiş. "Yeni Gider Ekle" butonuna basarak başlayabilirsiniz.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-150 dark:border-slate-750 text-slate-400 font-bold uppercase tracking-wider">
+                    <th className="pb-3 font-bold">Gider Açıklaması</th>
+                    <th className="pb-3 font-bold">Kategori</th>
+                    <th className="pb-3 font-bold">Tutar</th>
+                    <th className="pb-3 font-bold">Gider Tarihi</th>
+                    <th className="pb-3 font-bold">Notlar</th>
+                    <th className="pb-3 font-bold text-right">İşlem</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
+                  {financeExpenses.map((exp) => (
+                    <tr key={exp.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
+                      <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">{exp.title}</td>
+                      <td className="py-3.5">
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-black border uppercase ${
+                          exp.category === 'Maaş/Personel'
+                            ? 'bg-blue-50 dark:bg-blue-950/20 text-blue-600 border-blue-100'
+                            : exp.category === 'Ofis/Kira'
+                            ? 'bg-teal-50 dark:bg-teal-950/20 text-teal-600 border-teal-100'
+                            : exp.category === 'Yol/Ulaşım'
+                            ? 'bg-amber-50 dark:bg-amber-955/20 text-amber-600 border-amber-100'
+                            : exp.category === 'Yazılım/Lisans'
+                            ? 'bg-purple-50 dark:bg-purple-950/20 text-purple-600 border-purple-100'
+                            : exp.category === 'Vergi/Harç'
+                            ? 'bg-orange-50 dark:bg-orange-955/20 text-orange-600 border-orange-100'
+                            : 'bg-slate-50 dark:bg-slate-900 text-slate-600 border-slate-200'
+                        }`}>
+                          {exp.category}
+                        </span>
+                      </td>
+                      <td className="py-3.5 text-rose-600 font-bold">
+                        {Number(exp.amount).toLocaleString('tr-TR')} TL
+                      </td>
+                      <td className="py-3.5 text-slate-500 font-bold">
+                        {new Date(exp.expense_date).toLocaleDateString('tr-TR')}
+                      </td>
+                      <td className="py-3.5 text-slate-400 max-w-xs truncate" title={exp.notes}>
+                        {exp.notes || '-'}
+                      </td>
+                      <td className="py-3.5 text-right">
+                        <button
+                          onClick={() => handleDeleteExpense(exp.id)}
+                          className="text-red-500 hover:text-red-700 cursor-pointer transition p-1"
+                          title="Sil"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* --- YENİ: GİDER EKLEME MODALİ --- */}
+      {showAddExpenseModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white">
+              <div>
+                <h3 className="font-bold text-base flex items-center gap-2">
+                  <Trash2 size={18} />
+                  Yeni Gider Kaydı Oluştur
+                </h3>
+              </div>
+              <button 
+                onClick={() => setShowAddExpenseModal(false)}
+                className="p-1 hover:bg-white/10 rounded-full text-white transition"
+              >
+                <XCircle size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Gider Başlığı / Açıklama *</label>
+                <input
+                  type="text"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  placeholder="Örn: Haziran Ofis Kirası"
+                  value={newExpense.title}
+                  onChange={(e) => setNewExpense(prev => ({ ...prev, title: e.target.value }))}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Kategori *</label>
+                  <select
+                    required
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                    value={newExpense.category}
+                    onChange={(e) => setNewExpense(prev => ({ ...prev, category: e.target.value }))}
+                  >
+                    <option value="Ofis/Kira">Ofis / Kira</option>
+                    <option value="Maaş/Personel">Maaş / Personel</option>
+                    <option value="Yol/Ulaşım">Yol / Ulaşım</option>
+                    <option value="Yazılım/Lisans">Yazılım / Lisans</option>
+                    <option value="Vergi/Harç">Vergi / Harç</option>
+                    <option value="Diğer">Diğer</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Tutar (TL) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                    placeholder="Tutar girin"
+                    value={newExpense.amount}
+                    onChange={(e) => setNewExpense(prev => ({ ...prev, amount: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Gider Tarihi *</label>
+                <input
+                  type="date"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newExpense.expense_date}
+                  onChange={(e) => setNewExpense(prev => ({ ...prev, expense_date: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Notlar (Opsiyonel)</label>
+                <textarea
+                  rows={2}
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  placeholder="Ek notlar varsa buraya yazabilirsiniz..."
+                  value={newExpense.notes}
+                  onChange={(e) => setNewExpense(prev => ({ ...prev, notes: e.target.value }))}
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t border-slate-100 dark:border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setShowAddExpenseModal(false)}
+                  disabled={savingExpense}
+                  className="px-4 py-2 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveExpense}
+                  disabled={savingExpense || !newExpense.title.trim() || !newExpense.amount}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-40"
+                >
+                  {savingExpense ? 'Kaydediliyor...' : 'Kaydet'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
 
