@@ -3769,6 +3769,151 @@ export default function ConsultantPanel() {
     }
   ];
 
+  const renderDocumentMatrix = () => {
+    return (
+      <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-6 animate-fadeIn">
+        <div className="flex items-center gap-3 border-b border-gray-100 dark:border-slate-700 pb-4">
+          <div className="p-2.5 bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-xl">
+            <Table size={22} />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold">Zorunlu Belge Matrisi</h2>
+            <p className="text-xs text-gray-400">İşletmelerinizin zorunlu belgelerinin güncel durum tablosu</p>
+          </div>
+        </div>
+
+        {defTabTypes.length === 0 ? (
+          <div className="text-center py-12 text-sm text-gray-400 italic">
+            Henüz tanımlı belge türü bulunmamaktadır. Lütfen önce <strong>"Operasyon & İşletmeler"</strong> altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesinden belge türlerini tanımlayın.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {requiredDocs.length === 0 && (
+              <div className="p-4 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-300 rounded-xl text-xs flex items-start gap-2.5">
+                <span className="text-sm">ℹ️</span>
+                <div>
+                  <span className="font-bold">Henüz zorunlu belge ataması yapılmamıştır.</span> Matristeki tüm hücreler varsayılan olarak "-" (gerekli değil) şeklinde görünmektedir. İşletmeler için hangi belgelerin zorunlu tutulacağını belirlemek amacıyla <strong>"Operasyon & İşletmeler"</strong> modülü altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesine giderek "Zorunlu Belgeler Şablonu"nu düzenleyebilirsiniz.
+                </div>
+              </div>
+            )}
+
+            <div className="overflow-x-auto border border-gray-150 dark:border-slate-700 rounded-xl">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-slate-900 border-b border-gray-150 dark:border-slate-700 text-gray-600 dark:text-gray-400 uppercase font-semibold">
+                    <th className="p-4 font-bold border-r border-gray-150 dark:border-slate-700 sticky left-0 bg-gray-50 dark:bg-slate-900 z-10">İşletme Adı</th>
+                    {defTabTypes.map(type => (
+                      <th key={type.id} className="p-4 text-center min-w-[150px] font-bold">{type.label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-150 dark:divide-slate-700">
+                  {clients.length === 0 ? (
+                    <tr>
+                      <td colSpan={100} className="p-8 text-center text-gray-450 italic">Kayıtlı işletme bulunamadı.</td>
+                    </tr>
+                  ) : (
+                    clients.map(client => {
+                      return (
+                        <tr key={client.id} className="hover:bg-gray-50/50 dark:hover:bg-slate-800/40 transition">
+                          <td className="p-4 font-semibold text-gray-800 dark:text-gray-200 border-r border-gray-150 dark:border-slate-700 sticky left-0 bg-white dark:bg-slate-800 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">{client.name}</td>
+                          {defTabTypes.map(type => {
+                            const reqConf = requiredDocs.find(rd => rd.client_id === client.id && type.rowIds.includes(rd.type_def_id));
+                            if (!reqConf) {
+                              return (
+                                <td key={type.id} className="p-4 text-center text-gray-300 dark:text-slate-600 font-medium">-</td>
+                              );
+                            }
+
+                            if (reqConf.is_exempt) {
+                              return (
+                                <td key={type.id} className="p-4 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedExemptReason(reqConf.exempt_reason || 'Belirtilmedi');
+                                      setSelectedExemptDocType(type.label);
+                                      setSelectedExemptClientName(client.name);
+                                      setShowExemptModal(true);
+                                    }}
+                                    className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border border-blue-200 dark:border-blue-900 rounded-full hover:bg-blue-100 transition cursor-pointer"
+                                    title={`Muafiyet Nedeni: ${reqConf.exempt_reason || 'Belirtilmedi'}`}
+                                  >
+                                    MUAF
+                                  </button>
+                                </td>
+                              );
+                            }
+
+                            // Check if uploaded
+                            const matchingDoc = allDocsForMatrix.find(d => type.rowIds.includes(d.type_def_id) && rawDefs.some(rd => rd.id === d.location_def_id && rd.label && rd.label.trim().toLowerCase() === client.name.trim().toLowerCase()));
+
+                            if (matchingDoc) {
+                              const isIndefinite = matchingDoc.is_indefinite || !matchingDoc.expiry_date;
+                              const expiryDate = matchingDoc.expiry_date;
+                              const today = new Date().toISOString().split('T')[0];
+                              const isExpired = !isIndefinite && expiryDate && expiryDate < today;
+
+                              if (isExpired) {
+                                return (
+                                  <td key={type.id} className="p-4 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleShowDocumentDetail(matchingDoc.id, client)}
+                                      className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200 dark:border-amber-900 rounded-full hover:bg-amber-100 transition cursor-pointer font-black"
+                                    >
+                                      SÜRESİ GEÇTİ
+                                    </button>
+                                  </td>
+                                );
+                              } else {
+                                // Son başvuru tarihine 30 gün kala kontrolü (Aylık raporlar hariç)
+                                const isMonthlyReport = type.label.toLowerCase().includes('aylık') || type.label.toLowerCase().includes('aylik');
+                                const isApproaching = false; // logic matches lower block
+
+                                return (
+                                  <td key={type.id} className="p-4 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleShowDocumentDetail(matchingDoc.id, client)}
+                                      className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-405 border border-emerald-200 dark:border-emerald-900 rounded-full hover:bg-emerald-100 transition cursor-pointer font-black"
+                                    >
+                                      GEÇERLİ
+                                    </button>
+                                  </td>
+                                );
+                              }
+                            }
+
+                            return (
+                              <td key={type.id} className="p-4 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedMissingDocType(type.label);
+                                    setSelectedMissingClientName(client.name);
+                                    setShowMissingModal(true);
+                                  }}
+                                  className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200 dark:border-rose-900 rounded-full animate-pulse hover:bg-rose-100 transition cursor-pointer"
+                                >
+                                  EKSİK
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
@@ -5233,177 +5378,16 @@ export default function ConsultantPanel() {
             </div>
           )}
 
+          {/* Subtab Document Matrix (Only for owners/chiefs) */}
+          {userRole !== 'corporate_staff' && defSubTab === 'matrix' && (
+            renderDocumentMatrix()
+          )}
+
         </div>
       )}
 
       {activeTab === 'document_matrix' && (
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-6 animate-fadeIn">
-          <div className="flex items-center gap-3 border-b border-gray-100 dark:border-slate-700 pb-4">
-            <div className="p-2.5 bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-xl">
-              <Table size={22} />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold">Zorunlu Belge Matrisi</h2>
-              <p className="text-xs text-gray-400">İşletmelerinizin zorunlu belgelerinin güncel durum tablosu</p>
-            </div>
-          </div>
-
-          {defTabTypes.length === 0 ? (
-            <div className="text-center py-12 text-sm text-gray-400 italic">
-              Henüz tanımlı belge türü bulunmamaktadır. Lütfen önce <strong>"Operasyon & İşletmeler"</strong> altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesinden belge türlerini tanımlayın.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {requiredDocs.length === 0 && (
-                <div className="p-4 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-300 rounded-xl text-xs flex items-start gap-2.5">
-                  <span className="text-sm">ℹ️</span>
-                  <div>
-                    <span className="font-bold">Henüz zorunlu belge ataması yapılmamıştır.</span> Matristeki tüm hücreler varsayılan olarak "-" (gerekli değil) şeklinde görünmektedir. İşletmeler için hangi belgelerin zorunlu tutulacağını belirlemek amacıyla <strong>"Operasyon & İşletmeler"</strong> modülü altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesine giderek "Zorunlu Belgeler Şablonu"nu düzenleyebilirsiniz.
-                  </div>
-                </div>
-              )}
-
-              <div className="overflow-x-auto border border-gray-150 dark:border-slate-700 rounded-xl">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-gray-50 dark:bg-slate-900 border-b border-gray-150 dark:border-slate-700 text-gray-600 dark:text-gray-400 uppercase font-semibold">
-                      <th className="p-4 font-bold border-r border-gray-150 dark:border-slate-700 sticky left-0 bg-gray-50 dark:bg-slate-900 z-10">İşletme Adı</th>
-                      {defTabTypes.map(type => (
-                        <th key={type.id} className="p-4 text-center min-w-[150px] font-bold">{type.label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-150 dark:divide-slate-700">
-                    {clients.length === 0 ? (
-                      <tr>
-                        <td colSpan={100} className="p-8 text-center text-gray-450 italic">Kayıtlı işletme bulunamadı.</td>
-                      </tr>
-                    ) : (
-                      clients.map(client => {
-                        return (
-                          <tr key={client.id} className="hover:bg-gray-50/50 dark:hover:bg-slate-800/40 transition">
-                            <td className="p-4 font-semibold text-gray-800 dark:text-gray-200 border-r border-gray-150 dark:border-slate-700 sticky left-0 bg-white dark:bg-slate-800 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">{client.name}</td>
-                            {defTabTypes.map(type => {
-                              const reqConf = requiredDocs.find(rd => rd.client_id === client.id && type.rowIds.includes(rd.type_def_id));
-                              if (!reqConf) {
-                                return (
-                                  <td key={type.id} className="p-4 text-center text-gray-300 dark:text-slate-600 font-medium">-</td>
-                                );
-                              }
-
-                              if (reqConf.is_exempt) {
-                                return (
-                                  <td key={type.id} className="p-4 text-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setSelectedExemptReason(reqConf.exempt_reason || 'Belirtilmedi');
-                                        setSelectedExemptDocType(type.label);
-                                        setSelectedExemptClientName(client.name);
-                                        setShowExemptModal(true);
-                                      }}
-                                      className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border border-blue-200 dark:border-blue-900 rounded-full hover:bg-blue-100 transition cursor-pointer"
-                                      title={`Muafiyet Nedeni: ${reqConf.exempt_reason || 'Belirtilmedi'}`}
-                                    >
-                                      MUAF
-                                    </button>
-                                  </td>
-                                );
-                              }
-
-                              // Check if uploaded
-                              const matchingDoc = allDocsForMatrix.find(d => type.rowIds.includes(d.type_def_id) && rawDefs.some(rd => rd.id === d.location_def_id && rd.label && rd.label.trim().toLowerCase() === client.name.trim().toLowerCase()));
-
-                              if (matchingDoc) {
-                                const isIndefinite = matchingDoc.is_indefinite || !matchingDoc.expiry_date;
-                                const expiryDate = matchingDoc.expiry_date;
-                                const today = new Date().toISOString().split('T')[0];
-                                const isExpired = !isIndefinite && expiryDate && expiryDate < today;
-
-                                if (isExpired) {
-                                  return (
-                                    <td key={type.id} className="p-4 text-center">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleShowDocumentDetail(matchingDoc.id, client)}
-                                        className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200 dark:border-amber-900 rounded-full hover:bg-amber-100 transition cursor-pointer font-black"
-                                      >
-                                        SÜRESİ GEÇTİ
-                                      </button>
-                                    </td>
-                                  );
-                                } else {
-                                  // Son başvuru tarihine 30 gün kala kontrolü (Aylık raporlar hariç)
-                                  const isMonthlyReport = type.label.toLowerCase().includes('aylık') || type.label.toLowerCase().includes('aylik');
-                                  let isApproaching = false;
-                                  if (!isMonthlyReport && matchingDoc.application_deadline) {
-                                    const deadlineDate = new Date(matchingDoc.application_deadline);
-                                    const currentDate = new Date();
-                                    currentDate.setHours(0, 0, 0, 0);
-                                    deadlineDate.setHours(0, 0, 0, 0);
-                                    
-                                    const diffTime = deadlineDate.getTime() - currentDate.getTime();
-                                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                    
-                                    if (diffDays <= 30) {
-                                      isApproaching = true;
-                                    }
-                                  }
-
-                                  if (isApproaching) {
-                                    return (
-                                      <td key={type.id} className="p-4 text-center">
-                                        <button
-                                          type="button"
-                                          onClick={() => handleShowDocumentDetail(matchingDoc.id, client)}
-                                          className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400 border border-orange-200 dark:border-orange-900 rounded-full hover:bg-orange-100 transition cursor-pointer font-black"
-                                        >
-                                          BAŞVURU YAKLAŞIYOR
-                                        </button>
-                                      </td>
-                                    );
-                                  }
-
-                                  return (
-                                    <td key={type.id} className="p-4 text-center">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleShowDocumentDetail(matchingDoc.id, client)}
-                                        className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-405 border border-emerald-200 dark:border-emerald-900 rounded-full hover:bg-emerald-100 transition cursor-pointer font-black"
-                                      >
-                                        GEÇERLİ
-                                      </button>
-                                    </td>
-                                  );
-                                }
-                              }
-
-                              return (
-                                <td key={type.id} className="p-4 text-center">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedMissingDocType(type.label);
-                                      setSelectedMissingClientName(client.name);
-                                      setShowMissingModal(true);
-                                    }}
-                                    className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200 dark:border-rose-900 rounded-full animate-pulse hover:bg-rose-100 transition cursor-pointer"
-                                  >
-                                    EKSİK
-                                  </button>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
+        renderDocumentMatrix()
       )}
 
       {/* LEGISLATIONS TAB */}
