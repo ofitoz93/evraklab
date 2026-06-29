@@ -1428,29 +1428,19 @@ export default function ConsultantPanel() {
 
     setSavingDef(true);
     try {
-      let targetUserIds: string[] = [];
-      if (selectedDefTypeMemberId === 'all') {
-        const { data: orgProfiles } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('organization_id', orgId);
-        targetUserIds = orgProfiles?.map(p => p.id) || [];
-      } else {
-        targetUserIds = [selectedDefTypeMemberId];
-      }
-
-      if (targetUserIds.length === 0) return;
-
-      const inserts = targetUserIds.map(uid => ({
-        user_id: uid,
-        category: 'doc_type',
-        label: newDefTypeLabel.trim(),
-        organization_id: orgId
-      }));
+      // Insert a single org-scoped row using the current user's ID.
+      // organization_id ensures all org members can read it via RLS SELECT policy.
+      // Inserting per-member rows would violate RLS (can only insert with own user_id).
+      const targetUserId = selectedDefTypeMemberId === 'all' ? userId : selectedDefTypeMemberId;
 
       const { error } = await supabase
         .from('user_definitions')
-        .insert(inserts);
+        .insert({
+          user_id: targetUserId,
+          category: 'doc_type',
+          label: newDefTypeLabel.trim(),
+          organization_id: orgId
+        });
 
       if (error) throw error;
       setNewDefTypeLabel('');
@@ -1475,29 +1465,19 @@ export default function ConsultantPanel() {
 
     setSavingDef(true);
     try {
-      let targetUserIds: string[] = [];
-      if (selectedDefMemberId === 'all') {
-        const { data: orgProfiles } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('organization_id', orgId);
-        targetUserIds = orgProfiles?.map(p => p.id) || [];
-      } else {
-        targetUserIds = [selectedDefMemberId];
-      }
-
-      if (targetUserIds.length === 0) return;
-
-      const inserts = targetUserIds.map(uid => ({
-        user_id: uid,
-        category: 'location',
-        label: newDefLocLabel.trim(),
-        organization_id: orgId
-      }));
+      // Insert a single org-scoped row using the current user's ID.
+      // organization_id ensures all org members can read it via RLS SELECT policy.
+      // Inserting per-member rows would violate RLS (can only insert with own user_id).
+      const targetUserId = selectedDefMemberId === 'all' ? userId : selectedDefMemberId;
 
       const { error } = await supabase
         .from('user_definitions')
-        .insert(inserts);
+        .insert({
+          user_id: targetUserId,
+          category: 'location',
+          label: newDefLocLabel.trim(),
+          organization_id: orgId
+        });
 
       if (error) throw error;
       setNewDefLocLabel('');
