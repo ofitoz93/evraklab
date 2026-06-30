@@ -77,12 +77,12 @@ export const WASTE_CODES: WasteCode[] = [
   },
   {
     "code": "01 04 07*",
-    "name": "Metalik olmayan minerallerin fiziki ve kimyasal işlenmesinden k",
-    "desc": ""
+    "name": "Metalik olmayan minerallerin fiziki ve kimyasal işlenmesinden kaynaklanan tehlikeli maddeler içeren atıklar",
+    "desc": "M"
   },
   {
     "code": "13 02 08*",
-    "name": "Diğer motor, şanzıman ve yağlama yağları",
+    "name": "Diğer motor, shanzıman ve yağlama yağları",
     "desc": "A"
   },
   {
@@ -272,8 +272,8 @@ export const WASTE_CODES: WasteCode[] = [
   },
   {
     "code": "16 02 15*",
-    "name": "Iskarta ekipmanlardan çıkart",
-    "desc": ""
+    "name": "Iskarta ekipmanlardan çıkartılmış tehlikeli parçalar",
+    "desc": "A"
   },
   {
     "code": "17 01 01",
@@ -318,35 +318,35 @@ export interface MethodCode {
 }
 
 export const RECOVERY_CODES: MethodCode[] = [
-  { code: 'R1', name: 'R1: Enerji üretimi amacıyla esas olarak yakıt olarak veya başka şekillerde kullanılması' },
-  { code: 'R2', name: 'R2: Solventlerin (çözücülerin) geri kazanımı/ıslahı' },
-  { code: 'R3', name: 'R3: Solvent olarak kullanılmayan organik maddelerin geri kazanımı/ıslahı (kompost ve diğer biyolojik dönüşüm prosesleri dahil)' },
-  { code: 'R4', name: 'R4: Metallerin ve metal bileşiklerinin geri kazanımı/ıslahı' },
-  { code: 'R5', name: 'R5: Diğer anorganik maddelerin geri kazanımı/ıslahı' },
-  { code: 'R6', name: 'R6: Asitlerin veya bazların rejenerasyonu (yeniden üretilmesi)' },
-  { code: 'R7', name: 'R7: Kirliliğin azaltılmasında kullanılan bileşenlerin geri kazanılması' },
-  { code: 'R8', name: 'R8: Katalizör bileşenlerinin geri kazanılması' },
+  { code: 'R1', name: 'R1: Enerji üretimi amacıyla başlıca yakıt olarak veya başka şekillerde kullanma' },
+  { code: 'R2', name: 'R2: Solvent (çözücü) ıslahı/yeniden üretimi' },
+  { code: 'R3', name: 'R3: Solvent olarak kullanılmayan organik maddelerin ıslahı/geri dönüşümü (kompost ve diğer biyolojik dönüşüm prosesleri dahil)' },
+  { code: 'R4', name: 'R4: Metallerin ve metal bileşiklerinin ıslahı/geri dönüşümü' },
+  { code: 'R5', name: 'R5: Diğer inorganik malzemelerin ıslahı/geri dönüşümü' },
+  { code: 'R6', name: 'R6: Asitlerin veya bazların yeniden üretimi' },
+  { code: 'R7', name: 'R7: Kirliliğin azaltılması için kullanılan parçaların (bileşenlerin) geri kazanımı' },
+  { code: 'R8', name: 'R8: Katalizör parçalarının (bileşenlerinin) geri kazanımı' },
   { code: 'R9', name: 'R9: Yağların yeniden rafine edilmesi veya diğer yeniden kullanımları' },
-  { code: 'R10', name: 'R10: Ekolojik iyileştirme veya tarım yararına sonuç verecek şekilde arazi ıslahı' },
-  { code: 'R11', name: 'R11: R1 ila R10 maddelerinin işlemlerinden elde edilecek atıkların kullanılması' },
+  { code: 'R10', name: 'R10: Ekolojik iyileştirme veya tarımcılık yararına sonuç verecek arazi ıslahı' },
+  { code: 'R11', name: 'R11: R1 ila R10 arasındaki işlemlerden elde edilecek atıkların kullanımı' },
   { code: 'R12', name: 'R12: Atıkların R1 ila R11 arasındaki işlemlerden herhangi birine tabi tutulmak üzere değişimi' },
-  { code: 'R13', name: 'R13: R1 ila R12 işlemlerinden herhangi birine tabi tutuluncaya kadar atıkların depolanması (atığın üretildiği alandaki geçici depolama hariç)' }
+  { code: 'R13', name: 'R13: R1 ila R12 arasında belirtilen işlemlerden herhangi birine tabi tutuluncaya kadar atıkların ara depolanması (atığın üretildiği alan içinde geçici depolama, toplama hariç)' }
 ];
 
 export const DISPOSAL_CODES: MethodCode[] = [
-  { code: 'D1', name: 'D1: Toprak altında veya üstünde depolama (örneğin düzenli depolama vb.)' },
-  { code: 'D2', name: 'D2: Arazi ıslahı (örneğin sıvı veya çamur atıkların toprakta biyolojik bozunmaya tabi tutulması vb.)' },
-  { code: 'D3', name: 'D3: Derine enjeksiyon (örneğin pompalanabilir atıkların kuyulara, tuz domlarına veya doğal şaftlara enjeksiyonu vb.)' },
-  { code: 'D4', name: 'D4: Yüzey göletleme (örneğin sıvı veya çamur atıkların havuzlarda, lagünlerde depolanması vb.)' },
-  { code: 'D5', name: 'D5: Özel mühendislik gerektiren düzenli depolama (çevreden ve birbirlerinden izole edilmiş, üzeri örtülmüş sızdırmaz bölmelere yerleştirme vb.)' },
-  { code: 'D6', name: 'D6: Sualtı ortamları hariç olmak üzere su kütlelerine boşaltım' },
-  { code: 'D7', name: 'D7: Deniz/okyanus tabanı dahil sualtı ortamlarına boşaltım' },
-  { code: 'D8', name: 'D8: D1 ila D7 ve D9 ila D12 işlemlerinden herhangi biriyle atılan nihai bileşik veya karışımların oluşmasına neden olan biyolojik işlemler' },
-  { code: 'D9', name: 'D9: D1 ila D8 ve D10 ila D12 işlemlerinden herhangi biriyle atılan nihai bileşik veya karışımların oluşmasına neden olan fiziksel-kimyasal işlemler (örneğin buharlaştırma, kurutma, kalsinasyon vb.)' },
-  { code: 'D10', name: 'D10: Karada yakma' },
-  { code: 'D11', name: 'D11: Denizde yakma' },
-  { code: 'D12', name: 'D12: Nihai depolama (örneğin bir madende konteynerlerin yerleştirilmesi vb.)' },
-  { code: 'D13', name: 'D13: D1 ila D12 işlemlerinden herhangi birine tabi tutulmadan önce harmanlama veya karıştırma' },
-  { code: 'D14', name: 'D14: D1 ila D13 işlemlerinden herhangi birine tabi tutulmadan önce yeniden paketleme' },
-  { code: 'D15', name: 'D15: D1 ila D14 işlemlerinden herhangi birine tabi tutuluncaya kadar depolama (atığın üretildiği alandaki geçici depolama hariç)' }
+  { code: 'D1', name: 'D1: Toprağın altında veya üstünde düzenli depolama (örneğin, düzenli depolama ve benzeri)' },
+  { code: 'D2', name: 'D2: Arazi ıslahı (örneğin, sıvı veya çamur atıkların toprakta biyolojik bozulmaya uğraması ve benzeri)' },
+  { code: 'D3', name: 'D3: Derine enjeksiyon (örneğin, pompalanabilir atıkların kuyulara, tuz kayalarına veya doğal olarak bulunan boşluklara enjeksiyonu ve benzeri)' },
+  { code: 'D4', name: 'D4: Yüzey doldurma (örneğin, sıvı ya da çamur atıkların kovuklara, havuzlara ve lagünlere doldurulması ve benzeri)' },
+  { code: 'D5', name: 'D5: Özel mühendislik gerektiren düzenli depolama (çevreden ve her biri ayrı olarak izole edilmiş ve örtülmüş hücresel depolama ve benzeri)' },
+  { code: 'D6', name: 'D6: Deniz/okyanus hariç bir su kütlesine boşaltım' },
+  { code: 'D7', name: 'D7: Deniz yatakları dahil deniz/okyanuslara boşaltım' },
+  { code: 'D8', name: 'D8: D1 ile D7 ve D9 ile D12 arasında verilen işlemlerden herhangi biri yoluyla atılan nihai bileşiklerin veya karışımların oluşmasına neden olan ve bu ekin başka bir yerinde ifade edilmeyen biyolojik işlemler' },
+  { code: 'D9', name: 'D9: D1 ile D8 ve D10 ile D12 arasında verilen işlemlerden herhangi biri yoluyla atılan nihai bileşiklerin veya karışımların oluşmasına neden olan fiziksel-kimyasal işlemler (örneğin, buharlaştırma, kurutma, kalsinasyon ve benzeri)' },
+  { code: 'D10', name: 'D10: Yakma (Karada)' },
+  { code: 'D11', name: 'D11: Yakma (Deniz üstünde)' },
+  { code: 'D12', name: 'D12: Sürekli depolama (bir madende konteynerlerin yerleştirilmesi ve benzeri)' },
+  { code: 'D13', name: 'D13: D1 ila D12 arasında belirtilen işlemlerden herhangi birine tabi tutulmadan önce harmanlama veya karıştırma' },
+  { code: 'D14', name: 'D14: D1 ila D13 arasında belirtilen işlemlerden herhangi birine tabi tutulmadan önce yeniden ambalajlama' },
+  { code: 'D15', name: 'D15: D1 ila D14 arasında belirtilen işlemlerden herhangi birine tabi tutuluncaya kadar depolama (atığın üretildiği alan içinde geçici depolama, toplama hariç)' }
 ];

@@ -38,6 +38,57 @@ export default function EditDocument() {
   const [appDeadline, setAppDeadline] = useState('');
   const [isIndefinite, setIsIndefinite] = useState(false);
   const [reminderDays, setReminderDays] = useState(0);
+  const [editFile, setEditFile] = useState<File | null>(null);
+  const [orgSettings, setOrgSettings] = useState<any>(null);
+
+const getOrCreateDriveFolder = async (
+  accessToken: string,
+  folderName: string,
+  parentFolderId: string
+): Promise<string> => {
+  const escapedName = folderName.replace(/'/g, "\\'");
+  const query = `name='${escapedName}' and mimeType='application/vnd.google-apps.folder' and '${parentFolderId}' in parents and trashed = false`;
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?` + new URLSearchParams({
+    q: query,
+    fields: 'files(id, name)',
+    spaces: 'drive',
+  }).toString();
+
+  const searchRes = await fetch(searchUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!searchRes.ok) {
+    const errText = await searchRes.text();
+    throw new Error('Google Drive klasör araması başarısız: ' + errText);
+  }
+
+  const searchData = await searchRes.json();
+  if (searchData.files && searchData.files.length > 0) {
+    return searchData.files[0].id;
+  }
+
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentFolderId],
+    }),
+  });
+
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    throw new Error('Google Drive alt klasörü oluşturulamadı: ' + errText);
+  }
+
+  const createData = await createRes.json();
+  return createData.id;
+};
 
   // Modal State'leri
   const [manageModalOpen, setManageModalOpen] = useState(false);
@@ -118,6 +169,13 @@ export default function EditDocument() {
           .select('name')
           .eq('consultant_company_id', currentOrgId);
         setAllOrgClients(allClients || []);
+
+        const { data: orgSettingsData } = await supabase
+          .from('organizations')
+          .select('storage_preference, google_client_id, google_client_secret, google_drive_folder_id, google_drive_refresh_token')
+          .eq('id', currentOrgId)
+          .single();
+        setOrgSettings(orgSettingsData);
       }
     }
 
@@ -484,6 +542,90 @@ export default function EditDocument() {
         }
       }
 
+      let fileUrl = null;
+      let fileExt = null;
+      let fileSize = 0;
+
+      if (editFile) {
+        fileSize = editFile.size;
+        fileExt = editFile.name.split('.').pop();
+        const fileName = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
+        const folder = myOrgId || session.user.id;
+        const filePath = `${folder}/${fileName}`;
+
+        if (docScope === 'corporate' && orgSettings && orgSettings.storage_preference === 'google_drive' && orgSettings.google_drive_refresh_token) {
+          try {
+            const tokenRes = await fetch('/api/google-oauth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'refresh',
+                client_id: orgSettings.google_client_id || '',
+                client_secret: orgSettings.google_client_secret || '',
+                refresh_token: orgSettings.google_drive_refresh_token || '',
+              }),
+            });
+
+            if (!tokenRes.ok) throw new Error('Google access token yenilenemedi.');
+            const result = await tokenRes.json();
+            if (!result.success) throw new Error(result.error || 'Google access token yenilenemedi.');
+            const accessToken = result.data.access_token;
+
+            let clientFolderName = 'Genel';
+            const docLocId = finalLocId || location;
+            if (docLocId) {
+              if (docLocId.startsWith('CLIENT_NAME:')) {
+                clientFolderName = docLocId.replace('CLIENT_NAME:', '').trim();
+              } else {
+                const options = getFilteredLocOptions();
+                const locOpt = options.find((opt: any) => opt.id === docLocId);
+                if (locOpt && locOpt.label) {
+                  clientFolderName = locOpt.label.trim();
+                }
+              }
+            }
+
+            const parentFolderId = orgSettings.google_drive_folder_id || 'root';
+            const targetFolderId = await getOrCreateDriveFolder(accessToken, clientFolderName, parentFolderId);
+
+            const metadata = {
+              name: `${Date.now()}-${editFile.name}`,
+              parents: [targetFolderId],
+            };
+
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            form.append('file', editFile);
+
+            const uploadRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: form,
+            });
+
+            if (!uploadRes.ok) {
+              const errText = await uploadRes.text();
+              throw new Error('Google Drive upload hatası: ' + errText);
+            }
+
+            const uploadData = await uploadRes.json();
+            fileUrl = uploadData.webViewLink || `https://drive.google.com/file/d/${uploadData.id}/view`;
+          } catch (err: any) {
+            throw new Error('Google Drive depolama hatası: ' + err.message);
+          }
+        } else {
+          const { error: uploadError } = await supabase.storage
+            .from('documents')
+            .upload(filePath, editFile);
+          if (uploadError) throw uploadError;
+
+          const { data } = supabase.storage.from('documents').getPublicUrl(filePath);
+          fileUrl = data.publicUrl;
+        }
+      }
+
       const selectedType = typeOptions.find(t => t.id === docType);
       const finalTitle = selectedType ? selectedType.label : title;
 
@@ -499,6 +641,11 @@ export default function EditDocument() {
           application_deadline: isIndefinite ? null : finalDeadline,
           is_indefinite: isIndefinite,
           reminder_days: isPremium ? reminderDays : 0,
+          ...(fileUrl ? {
+            file_url: fileUrl,
+            file_type: fileExt,
+            file_size: fileSize
+          } : {})
         })
         .eq('id', id);
 
@@ -677,6 +824,21 @@ export default function EditDocument() {
               value={desc}
               onChange={(e) => setDesc(e.target.value)}
             ></textarea>
+          </div>
+
+          <div>
+            <label className="font-bold block mb-1">Belgeyi Değiştir / Güncelle (İsteğe Bağlı)</label>
+            <p className="text-xs text-gray-500 mb-2">Mevcut belge dosyasını yeni bir dosya ile değiştirmek istiyorsanız seçin.</p>
+            <input
+              type="file"
+              onChange={(e) => setEditFile(e.target.files?.[0] || null)}
+              className="w-full p-2.5 border rounded bg-slate-50 dark:bg-slate-900 text-xs cursor-pointer"
+            />
+            {editFile && (
+              <p className="text-[10px] text-teal-600 mt-1 font-bold">
+                ✓ Seçilen Yeni Dosya: {editFile.name} ({(editFile.size / 1024 / 1024).toFixed(2)} MB)
+              </p>
+            )}
           </div>
 
           <button className="w-full bg-blue-600 text-white py-3 rounded font-bold flex justify-center items-center gap-2 hover:bg-blue-700">

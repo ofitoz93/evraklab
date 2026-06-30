@@ -76,6 +76,56 @@ export default function AddDocument() {
   const [uploadMode, setUploadMode] = useState<'ai' | 'manual'>('manual');
   const [corporateClients, setCorporateClients] = useState<any[]>([]);
   const [allOrgClients, setAllOrgClients] = useState<any[]>([]);
+  const [orgSettings, setOrgSettings] = useState<any>(null);
+
+const getOrCreateDriveFolder = async (
+  accessToken: string,
+  folderName: string,
+  parentFolderId: string
+): Promise<string> => {
+  const escapedName = folderName.replace(/'/g, "\\'");
+  const query = `name='${escapedName}' and mimeType='application/vnd.google-apps.folder' and '${parentFolderId}' in parents and trashed = false`;
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?` + new URLSearchParams({
+    q: query,
+    fields: 'files(id, name)',
+    spaces: 'drive',
+  }).toString();
+
+  const searchRes = await fetch(searchUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!searchRes.ok) {
+    const errText = await searchRes.text();
+    throw new Error('Google Drive klasör araması başarısız: ' + errText);
+  }
+
+  const searchData = await searchRes.json();
+  if (searchData.files && searchData.files.length > 0) {
+    return searchData.files[0].id;
+  }
+
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentFolderId],
+    }),
+  });
+
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    throw new Error('Google Drive alt klasörü oluşturulamadı: ' + errText);
+  }
+
+  const createData = await createRes.json();
+  return createData.id;
+};
 
   const fetchCorporateClients = async (orgId: string, role: string, userId: string, perms?: any) => {
     try {
@@ -142,6 +192,12 @@ export default function AddDocument() {
         setMyOrgId(profile?.organization_id || null);
         if ((role === 'admin' || role === 'premium_corporate' || profile?.organization_id)) {
           setDocScope('corporate');
+          const { data: orgSettings } = await supabase
+            .from('organizations')
+            .select('storage_preference, google_client_id, google_client_secret, google_drive_folder_id, google_drive_refresh_token')
+            .eq('id', profile.organization_id)
+            .single();
+          setOrgSettings(orgSettings);
         }
 
         // 2. PREMIUM KONTROLÜ (Güvenli Mantık)
@@ -606,13 +662,77 @@ export default function AddDocument() {
           const folder = finalOrgId || session.user.id;
           const filePath = `${folder}/${fileName}`;
 
-          const { error: uploadError } = await supabase.storage
-            .from('documents')
-            .upload(filePath, currentFile);
-          if (uploadError) throw uploadError;
+          if (docScope === 'corporate' && orgSettings && orgSettings.storage_preference === 'google_drive' && orgSettings.google_drive_refresh_token) {
+            try {
+              const tokenRes = await fetch('/api/google-oauth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'refresh',
+                  client_id: orgSettings.google_client_id || '',
+                  client_secret: orgSettings.google_client_secret || '',
+                  refresh_token: orgSettings.google_drive_refresh_token || '',
+                }),
+              });
 
-          const { data } = supabase.storage.from('documents').getPublicUrl(filePath);
-          publicUrl = data.publicUrl;
+              if (!tokenRes.ok) throw new Error('Google access token yenilenemedi.');
+              const result = await tokenRes.json();
+              if (!result.success) throw new Error(result.error || 'Google access token yenilenemedi.');
+              const accessToken = result.data.access_token;
+
+              let clientFolderName = 'Genel';
+              const docLocId = doc.selectedLocId || selectedLocId;
+              if (docLocId) {
+                if (docLocId.startsWith('CLIENT_NAME:')) {
+                  clientFolderName = docLocId.replace('CLIENT_NAME:', '').trim();
+                } else {
+                  const options = getFilteredLocOptions();
+                  const locOpt = options.find((opt: any) => opt.id === docLocId);
+                  if (locOpt && locOpt.label) {
+                    clientFolderName = locOpt.label.trim();
+                  }
+                }
+              }
+
+              const parentFolderId = orgSettings.google_drive_folder_id || 'root';
+              const targetFolderId = await getOrCreateDriveFolder(accessToken, clientFolderName, parentFolderId);
+
+              const metadata = {
+                name: `${Date.now()}-${currentFile.name}`,
+                parents: [targetFolderId],
+              };
+
+              const form = new FormData();
+              form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+              form.append('file', currentFile);
+
+              const uploadRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                },
+                body: form,
+              });
+
+              if (!uploadRes.ok) {
+                const errText = await uploadRes.text();
+                throw new Error('Google Drive upload hatası: ' + errText);
+              }
+
+              const uploadData = await uploadRes.json();
+              publicUrl = uploadData.webViewLink || `https://drive.google.com/file/d/${uploadData.id}/view`;
+            } catch (err: any) {
+              throw new Error('Google Drive depolama hatası: ' + err.message);
+            }
+          } else {
+            const { error: uploadError } = await supabase.storage
+              .from('documents')
+              .upload(filePath, currentFile);
+            if (uploadError) throw uploadError;
+
+            const { data } = supabase.storage.from('documents').getPublicUrl(filePath);
+            publicUrl = data.publicUrl;
+          }
         }
 
         // LOKASYON KONTROLÜ (Ortak)

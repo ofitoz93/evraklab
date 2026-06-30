@@ -54,6 +54,16 @@ import EnvReportView from './EnvReportView';
 import ExternalSignPage from './ExternalSignPage';
 import InspectionPage from './InspectionPage';
 import ClientEvaluationPage from './ClientEvaluationPage';
+import ClientPanel from './ClientPanel';
+import ClientLogin from './ClientLogin';
+
+
+// --- GOOGLE OAUTH POPUP CALLBACK HANDLING ---
+if (window.opener && window.location.search.includes('code=')) {
+  const params = new URLSearchParams(window.location.search);
+  window.opener.postMessage({ type: 'GOOGLE_OAUTH_CODE', code: params.get('code') }, window.location.origin);
+  window.close();
+}
 
 
 // --- THEME CONTEXT ---
@@ -270,13 +280,14 @@ function NavBarContent({
               <FileText size={16} /> Evraklar
             </Link>
 
-            {/* --- ARAÇLAR LİNKİ EKLENDİ --- */}
             <Link
               to="/tools"
               className="hover:text-blue-600 dark:hover:text-blue-400 transition flex items-center gap-1"
             >
               <Wrench size={16} /> Araçlar
             </Link>
+
+
 
 
 
@@ -523,13 +534,14 @@ function NavBarContent({
               <FileText size={20} /> Evraklar
             </Link>
 
-            {/* Mobil Menüye Araçlar Eklendi */}
             <Link
               to="/tools"
               className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
             >
               <Wrench size={20} /> Araçlar
             </Link>
+
+
 
 
 
@@ -757,7 +769,7 @@ function AppContent() {
           // Ad soyad ve Telefon kontrolü
           const noName = !basic.full_name || basic.full_name.trim() === '';
           const noPhone = !basic.phone || basic.phone.trim() === '';
-          if (noName || noPhone) {
+          if ((noName || noPhone) && role !== 'client') {
             setTempName(basic.full_name || '');
             setTempPhone(basic.phone || '');
             setShowNameModal(true);
@@ -775,7 +787,7 @@ function AppContent() {
         // Ad soyad ve Telefon kontrolü
         const noName = !profile.full_name || profile.full_name.trim() === '';
         const noPhone = !profile.phone || profile.phone.trim() === '';
-        if (noName || noPhone) {
+        if ((noName || noPhone) && role !== 'client') {
           setTempName(profile.full_name || '');
           setTempPhone(profile.phone || '');
           setShowNameModal(true);
@@ -873,25 +885,27 @@ function AppContent() {
       </div>
     );
 
-  return (
-    <Router>
-      <div className="min-h-screen font-sans flex flex-col transition-colors duration-300 bg-gray-50 text-gray-900 dark:bg-slate-900 dark:text-slate-100">
-        {session && (
-          <NavBarContent
-            session={session}
-            userRole={userRole}
-            handleLogout={handleLogout}
-            daysLeft={getDaysLeft()}
-            isPremium={isPremium}
-            subEndDate={subEndDate}
-            hasCompany={!!userOrgId}
-            userOrgId={userOrgId}
-            isEnvConsultant={isEnvConsultant}
-            systemLogoUrl={systemLogoUrl}
-          />
-        )}
-        <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
-          <Routes>
+    const isClient = session && userRole === 'client';
+
+    return (
+      <Router>
+        <div className="min-h-screen font-sans flex flex-col transition-colors duration-300 bg-gray-50 text-gray-900 dark:bg-slate-900 dark:text-slate-100">
+          {session && userRole !== 'client' && (
+            <NavBarContent
+              session={session}
+              userRole={userRole}
+              handleLogout={handleLogout}
+              daysLeft={getDaysLeft()}
+              isPremium={isPremium}
+              subEndDate={subEndDate}
+              hasCompany={!!userOrgId}
+              userOrgId={userOrgId}
+              isEnvConsultant={isEnvConsultant}
+              systemLogoUrl={systemLogoUrl}
+            />
+          )}
+          <div className={isClient ? "flex-1" : "flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full"}>
+            <Routes>
             {!session ? (
               <>
                 <Route path="/" element={<Login />} />
@@ -900,7 +914,14 @@ function AppContent() {
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="/inspect/:token" element={<InspectionPage />} />
                 <Route path="/evaluate-client/:token" element={<ClientEvaluationPage />} />
+                <Route path="/client-login" element={<ClientLogin />} />
                 <Route path="*" element={<Navigate to="/" />} />
+              </>
+            ) : userRole === 'client' ? (
+              <>
+                 <Route path="/client-panel" element={<ClientPanel />} />
+                 <Route path="/client-login" element={<ClientLogin />} />
+                 <Route path="*" element={<Navigate to="/client-panel" />} />
               </>
             ) : (
               <>
@@ -952,6 +973,7 @@ function AppContent() {
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
                 <Route path="/inspect/:token" element={<InspectionPage />} />
                 <Route path="/evaluate-client/:token" element={<ClientEvaluationPage />} />
+                <Route path="/client-login" element={<ClientLogin />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             )}
