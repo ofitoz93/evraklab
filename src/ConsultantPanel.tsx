@@ -49,6 +49,7 @@ import { extractTextFromPdf } from './localScanner';
 import { EK1_ARTICLES, EK2_ARTICLES } from './permitArticles';
 import { parseLegislationText } from './parserUtils';
 import EvaluationPanel from './EvaluationPanel';
+import WasteManagement from './WasteManagement';
 
 
 
@@ -122,7 +123,7 @@ const getContractStatus = (startDateStr: string) => {
 };
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
@@ -293,6 +294,28 @@ export default function ConsultantPanel() {
 
       if (subsError) throw subsError;
       setPointSubmissions(subs || []);
+
+      // Bulgular rozetinin genişletmeden önce de doğru görünmesi için tüm
+      // cevapları toplu olarak önceden çekiyoruz.
+      const subIds = (subs || []).map(s => s.id);
+      if (subIds.length > 0) {
+        const { data: allAnswers, error: answersError } = await supabase
+          .from('inspection_answers')
+          .select('*, question:inspection_questions(question_text, question_type, order_index)')
+          .in('submission_id', subIds);
+
+        if (answersError) throw answersError;
+
+        const grouped: Record<string, any[]> = {};
+        (allAnswers || []).forEach((a: any) => {
+          if (!grouped[a.submission_id]) grouped[a.submission_id] = [];
+          grouped[a.submission_id].push(a);
+        });
+        Object.keys(grouped).forEach(subId => {
+          grouped[subId].sort((a, b) => (a.question?.order_index ?? 0) - (b.question?.order_index ?? 0));
+        });
+        setSubmissionAnswers(grouped);
+      }
     } catch (err: any) {
       alert('Gönderim geçmişi yüklenirken hata: ' + err.message);
     } finally {
@@ -314,14 +337,16 @@ export default function ConsultantPanel() {
     try {
       const { data: answers, error: answersError } = await supabase
         .from('inspection_answers')
-        .select('*, question:inspection_questions(question_text, question_type)')
+        .select('*, question:inspection_questions(question_text, question_type, order_index)')
         .eq('submission_id', submissionId);
 
       if (answersError) throw answersError;
 
+      const sorted = (answers || []).sort((a: any, b: any) => (a.question?.order_index ?? 0) - (b.question?.order_index ?? 0));
+
       setSubmissionAnswers(prev => ({
         ...prev,
-        [submissionId]: answers || []
+        [submissionId]: sorted
       }));
       setExpandedSubmissionId(submissionId);
     } catch (err: any) {
@@ -629,6 +654,8 @@ export default function ConsultantPanel() {
   const [newActionClientId, setNewActionClientId] = useState('');
   const [newActionAssigneeId, setNewActionAssigneeId] = useState('');
   const [newActionDueDate, setNewActionDueDate] = useState('');
+  const [newActionEmail, setNewActionEmail] = useState('');
+  const [newActionClientEmails, setNewActionClientEmails] = useState<{ id: string; email: string }[]>([]);
   
   // Aksiyon Tamamlama Formu
   const [actionNotes, setActionNotes] = useState('');
@@ -796,8 +823,8 @@ export default function ConsultantPanel() {
   const [showClientLoginModal, setShowClientLoginModal] = useState(false);
   const [selectedClientForLogin, setSelectedClientForLogin] = useState<any>(null);
   const [clientLoginEmail, setClientLoginEmail] = useState('');
-  const [clientLoginPassword, setClientLoginPassword] = useState('');
-  const [clientProfileExists, setClientProfileExists] = useState(false);
+  const [clientAccounts, setClientAccounts] = useState<any[]>([]);
+  const [showAddSubAccountForm, setShowAddSubAccountForm] = useState(false);
   const [loadingClientLoginInfo, setLoadingClientLoginInfo] = useState(false);
   const [savingClientLogin, setSavingClientLogin] = useState(false);
   const [scriptUrl, setScriptUrl] = useState(() => localStorage.getItem('evraklab_google_script_url') || '');
@@ -2775,6 +2802,53 @@ export default function ConsultantPanel() {
     }
   };
 
+  const fetchClientPortalEmails = async (clientId: string) => {
+    if (!clientId) {
+      setNewActionClientEmails([]);
+      return;
+    }
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, email')
+      .eq('client_id', clientId)
+      .eq('role', 'client');
+    setNewActionClientEmails((data || []).filter(a => a.email));
+  };
+
+  const sendActionNotificationEmail = async (email: string, clientName: string, actionTitle: string, dueDate: string | null, type: 'action_opened' | 'action_completed'): Promise<boolean> => {
+    try {
+      let actualScriptUrl = scriptUrl;
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      if (scriptSetting?.value) actualScriptUrl = scriptSetting.value;
+      if (!actualScriptUrl) {
+        console.warn('Aksiyon bildirim e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return false;
+      }
+
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type,
+          email,
+          clientName,
+          actionTitle,
+          dueDate: dueDate ? new Date(dueDate).toLocaleDateString('tr-TR') : '',
+          loginLink: `${window.location.origin}/login`,
+        }),
+      });
+      return true;
+    } catch (err) {
+      console.error('Aksiyon bildirim e-postası gönderilemedi:', err);
+      return false;
+    }
+  };
+
   const handleCreateAction = async (isArticleAction = false, articleId: string | null = null, clientId: string | null = null) => {
     const title = isArticleAction ? `${newActionTitle}` : newActionTitle.trim();
     const desc = isArticleAction ? reqNotesDesc.trim() : newActionDesc.trim();
@@ -2787,6 +2861,8 @@ export default function ConsultantPanel() {
       return;
     }
     
+    const clientEmail = isArticleAction ? null : (newActionEmail || null);
+
     try {
       const { error } = await supabase
         .from('compliance_actions')
@@ -2798,26 +2874,39 @@ export default function ConsultantPanel() {
           due_date: dDate,
           created_by: userId,
           assigned_to: aId,
+          assigned_client_email: clientEmail,
           status: 'pending'
         });
-        
+
       if (error) throw error;
-      
-      alert('Aksiyon başarıyla oluşturuldu.');
+
+      let emailSent = true;
+      if (clientEmail) {
+        const clientName = clients.find(c => c.id === cId)?.name || '';
+        emailSent = await sendActionNotificationEmail(clientEmail, clientName, title, dDate, 'action_opened');
+      }
+
+      if (clientEmail && !emailSent) {
+        alert('Aksiyon oluşturuldu fakat bildirim e-postası gönderilemedi. "Sistem & Ayarlar" veya Müşteri Girişi ekranındaki Google Apps Script URL ayarını kontrol edin.');
+      } else {
+        alert('Aksiyon başarıyla oluşturuldu.' + (clientEmail ? ' Müşteri panelindeki ilgili e-postaya bildirim gönderildi.' : ''));
+      }
       setShowCreateActionModal(false);
       setShowRequestNotesModal(false);
-      
+
       setNewActionTitle('');
       setNewActionDesc('');
       setNewActionClientId('');
       setNewActionAssigneeId('');
       setNewActionDueDate('');
+      setNewActionEmail('');
+      setNewActionClientEmails([]);
       setReqNotesArticleId('');
       setReqNotesClientId('');
       setReqNotesAssigneeId('');
       setReqNotesDueDate('');
       setReqNotesDesc('');
-      
+
       await fetchComplianceActions();
       
       if (isArticleAction && selectedClientRegulation) {
@@ -2891,7 +2980,17 @@ export default function ConsultantPanel() {
           })
           .eq('id', articleId);
       }
-      
+
+      if (selectedClientAction?.assigned_client_email) {
+        await sendActionNotificationEmail(
+          selectedClientAction.assigned_client_email,
+          selectedClientAction.client?.name || '',
+          selectedClientAction.title,
+          selectedClientAction.due_date,
+          'action_completed'
+        );
+      }
+
       alert('Aksiyon tamamlandı ve şef/yönetici onayına gönderildi!');
       setShowCompleteActionModal(false);
       setActionNotes('');
@@ -3471,35 +3570,22 @@ export default function ConsultantPanel() {
 
   const handleOpenClientLoginModal = async (client: any) => {
     setSelectedClientForLogin(client);
-    setClientLoginEmail(client.email || '');
-    setClientLoginPassword('');
+    setClientLoginEmail('');
+    setShowAddSubAccountForm(false);
     setShowClientLoginModal(true);
     setLoadingClientLoginInfo(true);
-    
-    try {
-      const { data: clientRow } = await supabase
-        .from('consultant_clients')
-        .select('login_token, email')
-        .eq('id', client.id)
-        .single();
 
-      const token = clientRow?.login_token || '';
-      
-      const { data: existingProfile } = await supabase
+    try {
+      // Bir firmaya birden fazla müşteri giriş hesabı (alt hesap) tanımlanabilir;
+      // bu yüzden tek satır yerine o client_id'ye bağlı tüm 'client' profillerini listeliyoruz.
+      const { data: accounts } = await supabase
         .from('profiles')
-        .select('id, email')
+        .select('id, email, login_token, created_at')
         .eq('client_id', client.id)
         .eq('role', 'client')
-        .maybeSingle();
-        
-      if (existingProfile && token) {
-        setClientProfileExists(true);
-        setClientLoginEmail(existingProfile.email || clientRow?.email || '');
-        setClientLoginPassword(token);
-      } else {
-        setClientProfileExists(false);
-        setClientLoginPassword('');
-      }
+        .order('created_at', { ascending: true });
+
+      setClientAccounts(accounts || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -3507,17 +3593,86 @@ export default function ConsultantPanel() {
     }
   };
 
+  const sendClientInviteMail = async (email: string, loginLink: string) => {
+    let actualScriptUrl = scriptUrl;
+    try {
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      if (scriptSetting?.value) {
+        actualScriptUrl = scriptSetting.value;
+        setScriptUrl(scriptSetting.value);
+      }
+    } catch (err) {
+      console.error('Veritabanından Script URL okunamadı:', err);
+    }
+
+    if (!actualScriptUrl) {
+      alert('Müşteri hesabı ve şifre kurulum bağlantısı başarıyla oluşturuldu! Google Apps Script URL henüz tanımlanmadığı için e-posta gönderilemedi. Bağlantıyı kopyalayarak manuel iletebilirsiniz.');
+      return;
+    }
+
+    try {
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          clientName: selectedClientForLogin.name,
+          loginLink,
+        }),
+      });
+      alert('Başarılı! Müşteri giriş hesabı oluşturuldu ve Google Apps Script ile şifre belirleme davet e-postası otomatik olarak gönderildi.');
+    } catch (sendErr: any) {
+      console.error('Mail gönderim hatası:', sendErr);
+      alert('Müşteri hesabı oluşturuldu fakat Google Script maili gönderilemedi: ' + sendErr.message);
+    }
+  };
+
   const handleCreateClientLogin = async () => {
-    if (!clientLoginEmail) {
+    const emailToCreate = clientLoginEmail.trim();
+    if (!emailToCreate) {
       alert('E-posta alanı zorunludur.');
       return;
     }
+    if (clientAccounts.some(a => (a.email || '').toLowerCase() === emailToCreate.toLowerCase())) {
+      alert('Bu e-posta adresi için zaten bir müşteri hesabı tanımlı.');
+      return;
+    }
+
+    // GÜVENLİK KONTROLÜ: Bu e-posta başka bir hesaba (personel/yönetici veya farklı
+    // bir firmanın müşteri hesabı) ait olabilir. Aşağıdaki akış, aynı e-postayla
+    // eski hesabı SİLİP yerine yeni bir müşteri hesabı oluşturuyor — bu yüzden
+    // önceden kontrol etmeden devam etmek, var olan bir hesabı yanlışlıkla yok eder.
     setSavingClientLogin(true);
     try {
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('role, client_id, full_name')
+        .ilike('email', emailToCreate)
+        .maybeSingle();
+
+      if (existingProfile) {
+        if (existingProfile.role !== 'client') {
+          alert(
+            `Bu e-posta adresi (${emailToCreate}) zaten bir personel/yönetici hesabına ait (${existingProfile.full_name || 'isimsiz'}). ` +
+            `Müşteri paneli hesabı oluşturmak için lütfen farklı bir e-posta kullanın; aksi halde o kişinin mevcut giriş hesabı silinir.`
+          );
+          return;
+        }
+        if (existingProfile.client_id !== selectedClientForLogin.id) {
+          alert(`Bu e-posta adresi (${emailToCreate}) zaten başka bir firmanın müşteri hesabına ait. Lütfen farklı bir e-posta kullanın.`);
+          return;
+        }
+      }
+
       const { createClient } = await import('@supabase/supabase-js');
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      
+
       const tempClient = createClient(supabaseUrl, supabaseKey, {
         auth: {
           persistSession: false,
@@ -3526,9 +3681,16 @@ export default function ConsultantPanel() {
         },
       });
 
+      // Bu e-postaya ait yetim (profili olmayan) bir auth kullanıcısı kalmışsa temizle
+      try {
+        await supabase.rpc('delete_client_auth_user', { client_email: emailToCreate });
+      } catch (err) {
+        console.warn('RPC delete_client_auth_user skipped or failed:', err);
+      }
+
       const token = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
       const { data: authData, error: authErr } = await tempClient.auth.signUp({
-        email: clientLoginEmail,
+        email: emailToCreate,
         password: token,
         options: {
           data: {
@@ -3549,60 +3711,31 @@ export default function ConsultantPanel() {
         .upsert({
           id: authData.user.id,
           full_name: selectedClientForLogin.name,
-          email: clientLoginEmail,
+          email: emailToCreate,
           role: 'client',
           client_id: selectedClientForLogin.id,
+          login_token: token,
           updated_at: new Date(),
         });
 
       if (profileErr) throw profileErr;
 
-      await supabase
-        .from('consultant_clients')
-        .update({ login_token: token, email: clientLoginEmail })
-        .eq('id', selectedClientForLogin.id);
-      
-      setClients(prev => prev.map(c => c.id === selectedClientForLogin.id ? { ...c, email: clientLoginEmail } : c));
-      setClientProfileExists(true);
-      setClientLoginPassword(token);
-
-      const loginLink = `${window.location.origin}/login?type=setup-password&email=${encodeURIComponent(clientLoginEmail)}&token=${token}`;
-
-      let actualScriptUrl = scriptUrl;
-      try {
-        const { data: scriptSetting } = await supabase
-          .from('email_settings')
-          .select('value')
-          .eq('key', 'script_url')
-          .maybeSingle();
-        if (scriptSetting?.value) {
-          actualScriptUrl = scriptSetting.value;
-          setScriptUrl(scriptSetting.value);
-        }
-      } catch (err) {
-        console.error('Veritabanından Script URL okunamadı:', err);
+      // consultant_clients.email sadece görüntüleme amaçlı; ilk hesap oluşturulurken
+      // henüz boşsa dolduruyoruz, sonraki alt hesaplarda üzerine yazmıyoruz.
+      if (!selectedClientForLogin.email) {
+        await supabase
+          .from('consultant_clients')
+          .update({ email: emailToCreate })
+          .eq('id', selectedClientForLogin.id);
+        setClients(prev => prev.map(c => c.id === selectedClientForLogin.id ? { ...c, email: emailToCreate } : c));
       }
 
-      if (actualScriptUrl) {
-        try {
-          await fetch(actualScriptUrl, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email: clientLoginEmail,
-              clientName: selectedClientForLogin.name,
-              loginLink: loginLink
-            })
-          });
-          alert('Başarılı! Müşteri giriş hesabı oluşturuldu ve Google Apps Script ile şifre belirleme davet e-postası otomatik olarak gönderildi.');
-        } catch (sendErr: any) {
-          console.error('Mail gönderim hatası:', sendErr);
-          alert('Müşteri hesabı oluşturuldu fakat Google Script maili gönderilemedi: ' + sendErr.message);
-        }
-      } else {
-        alert('Müşteri hesabı ve şifre kurulum bağlantısı başarıyla oluşturuldu! Google Apps Script URL henüz tanımlanmadığı için e-posta gönderilemedi. Bağlantıyı kopyalayarak manuel iletebilirsiniz.');
-      }
+      setClientAccounts(prev => [...prev, { id: authData.user!.id, email: emailToCreate, login_token: token }]);
+      setClientLoginEmail('');
+      setShowAddSubAccountForm(false);
+
+      const loginLink = `${window.location.origin}/login?type=setup-password&email=${encodeURIComponent(emailToCreate)}&token=${token}`;
+      await sendClientInviteMail(emailToCreate, loginLink);
     } catch (err: any) {
       alert('Hesap oluşturulurken hata: ' + err.message);
     } finally {
@@ -3610,26 +3743,41 @@ export default function ConsultantPanel() {
     }
   };
 
-  const handleDeleteClientLogin = async () => {
-    if (!window.confirm('Bu müşterinin giriş yetkisini kaldırmak istediğinize emin misiniz?')) return;
+  const handleRegenerateAccountToken = async (account: any) => {
     setSavingClientLogin(true);
     try {
-      const { error } = await supabase
+      const token = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+
+      const { error: updateErr } = await supabase
+        .from('profiles')
+        .update({ login_token: token })
+        .eq('id', account.id);
+
+      if (updateErr) throw updateErr;
+
+      setClientAccounts(prev => prev.map(a => a.id === account.id ? { ...a, login_token: token } : a));
+      alert('Yeni şifre kurulum bağlantısı başarıyla oluşturuldu!');
+    } catch (err: any) {
+      alert('Bağlantı oluşturulurken hata: ' + err.message);
+    } finally {
+      setSavingClientLogin(false);
+    }
+  };
+
+  const handleDeleteClientAccount = async (account: any) => {
+    if (!window.confirm(`${account.email} hesabının giriş yetkisini kaldırmak istediğinize emin misiniz?`)) return;
+    setSavingClientLogin(true);
+    try {
+      await supabase.rpc('delete_client_auth_user', { client_email: account.email });
+
+      // Yetim kalmaması için profil satırını da doğrudan temizle (RPC cascade etmezse diye)
+      await supabase
         .from('profiles')
         .delete()
-        .eq('client_id', selectedClientForLogin.id);
+        .eq('id', account.id);
 
-      if (error) throw error;
-
-      await supabase
-        .from('consultant_clients')
-        .update({ login_token: null })
-        .eq('id', selectedClientForLogin.id);
-
-      setClients(prev => prev.map(c => c.id === selectedClientForLogin.id ? { ...c, login_token: null } : c));
-
+      setClientAccounts(prev => prev.filter(a => a.id !== account.id));
       alert('Giriş yetkisi kaldırıldı.');
-      setShowClientLoginModal(false);
     } catch (err: any) {
       alert('Hata: ' + err.message);
     } finally {
@@ -3905,7 +4053,7 @@ export default function ConsultantPanel() {
   };
 
   const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'documents' | 'finance' | 'hr' | 'settings' => {
-    if (['clients', 'inspections', 'definitions'].includes(tab)) return 'operations';
+    if (['clients', 'inspections', 'definitions', 'waste'].includes(tab)) return 'operations';
     if (['legislations', 'actions', 'requests'].includes(tab)) return 'compliance';
     if (['reports', 'document_matrix'].includes(tab)) return 'documents';
     if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
@@ -3954,6 +4102,7 @@ export default function ConsultantPanel() {
           show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
         },
         { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: true },
+        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: true },
       ]
     },
     {
@@ -7065,6 +7214,13 @@ export default function ConsultantPanel() {
                           </div>
                         )}
 
+                        {/* Assigned client-portal email indicator */}
+                        {act.assigned_client_email && (
+                          <div className="text-[10px] bg-teal-50 dark:bg-teal-950/20 text-teal-700 dark:text-teal-400 border border-teal-200 dark:border-teal-900/40 px-2 py-1 rounded w-fit font-bold">
+                            📧 Müşteri Panelinde Görünür: {act.assigned_client_email}
+                          </div>
+                        )}
+
                         {/* Correction Comment */}
                         {act.status === 'correction_requested' && act.manager_comment && (
                           <div className="bg-rose-50/50 dark:bg-rose-950/10 p-2.5 rounded-lg border border-rose-100 dark:border-rose-900/30 text-xs text-rose-800 dark:text-rose-350">
@@ -7167,6 +7323,13 @@ export default function ConsultantPanel() {
               })()}
             </div>
           )}
+        </div>
+      )}
+
+      {/* --- ATIK YÖNETİMİ TAB PANELİ --- */}
+      {activeTab === 'waste' && (
+        <div className="animate-fadeIn">
+          <WasteManagement />
         </div>
       )}
 
@@ -8158,15 +8321,35 @@ export default function ConsultantPanel() {
                   <Clock size={20} />
                   Denetim Gönderim Geçmişi
                 </h3>
-                <p className="text-xs opacity-90">{selectedInspectionPoint.form?.client?.name} — {selectedInspectionPoint.name}</p>
+                <p className="text-xs opacity-90">
+                  {selectedInspectionPoint.form?.client?.name} — {selectedInspectionPoint.name}
+                  {selectedInspectionPoint.location_description && ` (${selectedInspectionPoint.location_description})`}
+                </p>
               </div>
-              <button 
+              <button
                 onClick={() => setShowSubmissionsModal(false)}
                 className="p-1 hover:bg-white/10 rounded-full text-white transition"
               >
                 <XCircle size={22} />
               </button>
             </div>
+
+            {!loadingSubmissions && pointSubmissions.length > 0 && (() => {
+              const totalFindings = pointSubmissions.reduce((sum, sub) => {
+                const answers = submissionAnswers[sub.id] || [];
+                return sum + answers.filter(a => (a.question?.question_type === 'yes_no' || a.question?.question_type === 'compliant') && a.answer_bool === false).length;
+              }, 0);
+              return (
+                <div className="px-6 py-3 bg-slate-50 dark:bg-slate-900/40 border-b border-gray-100 dark:border-slate-700 flex gap-6 text-xs">
+                  <span className="font-bold text-slate-600 dark:text-slate-300">{pointSubmissions.length} Toplam Form Gönderimi</span>
+                  {totalFindings > 0 ? (
+                    <span className="font-black text-red-600 dark:text-red-400">⚠️ {totalFindings} Toplam Uyumsuz Bulgu</span>
+                  ) : (
+                    <span className="font-black text-emerald-600 dark:text-emerald-400">✅ Tüm Gönderimler Uyumlu</span>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
               {loadingSubmissions ? (
@@ -8666,6 +8849,8 @@ export default function ConsultantPanel() {
                   value={newActionClientId}
                   onChange={(e) => {
                     setNewActionClientId(e.target.value);
+                    setNewActionEmail('');
+                    fetchClientPortalEmails(e.target.value);
                   }}
                 >
                   <option value="">-- Müşteri Seçin --</option>
@@ -8673,6 +8858,25 @@ export default function ConsultantPanel() {
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Müşteri Panelinde Bildirilecek E-posta</label>
+                <select
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newActionEmail}
+                  onChange={(e) => setNewActionEmail(e.target.value)}
+                  disabled={!newActionClientId}
+                >
+                  <option value="">-- Genel (Tüm Yetkililer Görsün) --</option>
+                  {newActionClientEmails.map((a) => (
+                    <option key={a.id} value={a.email}>{a.email}</option>
+                  ))}
+                </select>
+                {newActionClientId && newActionClientEmails.length === 0 && (
+                  <p className="text-[10px] text-amber-600 mt-1">Bu firma için tanımlı müşteri giriş hesabı bulunamadı. "Müşteri Girişi" ile önce bir hesap oluşturabilirsiniz.</p>
+                )}
+                <p className="text-[10px] text-gray-400 mt-1">Bir e-posta seçerseniz, aksiyon o kişiye özel gösterilir ve açıldığında/tamamlandığında kendisine bildirim e-postası gönderilir.</p>
               </div>
 
               <div>
@@ -11106,7 +11310,7 @@ export default function ConsultantPanel() {
       {/* MÜŞTERİ PANELİ GİRİŞ HESABI YÖNETİM MODALİ */}
       {showClientLoginModal && selectedClientForLogin && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 shadow-2xl animate-scaleIn text-gray-800 dark:text-gray-100">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-lg p-6 border border-slate-100 dark:border-slate-700 shadow-2xl animate-scaleIn text-gray-800 dark:text-gray-100 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-start border-b border-gray-150 dark:border-slate-700 pb-3 mb-4">
               <h3 className="text-base font-bold text-slate-855 dark:text-slate-100 flex items-center gap-2">
                 <User className="text-teal-650" size={18} /> Müşteri Paneli Giriş Yetkisi
@@ -11117,7 +11321,7 @@ export default function ConsultantPanel() {
                   setShowClientLoginModal(false);
                   setSelectedClientForLogin(null);
                   setClientLoginEmail('');
-                  setClientLoginPassword('');
+                  setShowAddSubAccountForm(false);
                 }}
                 className="text-slate-400 hover:text-slate-655 dark:hover:text-slate-200 transition cursor-pointer"
               >
@@ -11132,145 +11336,160 @@ export default function ConsultantPanel() {
             ) : (
               <div className="space-y-4">
                 <div className="bg-teal-50 dark:bg-teal-950/20 border border-teal-200 dark:border-teal-900/30 p-3.5 rounded-xl text-xs text-teal-850 dark:text-teal-400 leading-relaxed">
-                  İşletme sahibi bu hesabı kullanarak EvrakLab sistemine giriş yapabilir ve sadece kendi firması olan <b>{selectedClientForLogin.name}</b> verilerini görüntüleyebilir.
+                  İşletme yetkilileri bu hesapları kullanarak EvrakLab sistemine giriş yapabilir ve sadece kendi firması olan <b>{selectedClientForLogin.name}</b> verilerini görüntüleyebilir. Aynı firma için birden fazla yetkiliye ayrı giriş hesabı tanımlayabilirsiniz.
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-655 dark:text-slate-400 mb-1 uppercase">Müşteri Kullanıcı Adı (E-posta)</label>
-                  <input
-                    type="email"
-                    required
-                    disabled={clientProfileExists}
-                    value={clientLoginEmail}
-                    onChange={(e) => setClientLoginEmail(e.target.value)}
-                    placeholder="ornek@firma.com"
-                    className="w-full border rounded-lg p-2.5 bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-1 focus:ring-teal-500 text-slate-850 dark:text-white disabled:opacity-60"
-                  />
-                </div>
+                {clientAccounts.length > 0 && (
+                  <div className="space-y-3">
+                    <label className="block text-xs font-bold text-slate-655 dark:text-slate-400 uppercase">
+                      Tanımlı Giriş Hesapları ({clientAccounts.length})
+                    </label>
+                    {clientAccounts.map((account) => {
+                      const hasToken = !!account.login_token;
+                      const loginLink = window.location.origin + '/login?type=setup-password&email=' + encodeURIComponent(account.email) + '&token=' + account.login_token;
+                      return (
+                        <div key={account.id} className="border border-gray-200 dark:border-slate-700 rounded-xl p-3.5 space-y-3">
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="font-bold text-sm text-slate-850 dark:text-white break-all">{account.email}</span>
+                            <button
+                              type="button"
+                              disabled={savingClientLogin}
+                              onClick={() => handleDeleteClientAccount(account)}
+                              title="Hesabı Sil"
+                              className="text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 p-1.5 rounded-lg transition disabled:opacity-50 shrink-0"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
 
-                {!clientProfileExists ? (
-                  <div className="bg-blue-50 dark:bg-blue-955/20 border border-blue-200 dark:border-blue-900/30 p-3 rounded-xl text-xs text-blue-800 dark:text-blue-300 leading-relaxed">
-                    ⚙️ E-posta adresi yazıp <b>"Giriş Hesabı & Şifre Kurulumu Başlat"</b> butonuna basın. Sistem müşteri için özel bir şifre belirleme linki üretecektir.
-                  </div>
-                ) : (() => {
-                  const loginLink = `${window.location.origin}/login?type=setup-password&email=${encodeURIComponent(clientLoginEmail)}&token=${clientLoginPassword}`;
-                  return (
-                    <div className="space-y-3.5">
-                      <div className="bg-amber-50 dark:bg-amber-955/20 border border-amber-200 dark:border-amber-900/30 p-3 rounded-xl text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-                        🟢 Bu müşteri için giriş hesabı aktiftir. Müşterinin kendi şifresini belirlemesini sağlayacak davet bağlantısı aşağıdadır.
-                      </div>
-                      
-                      <div>
-                        <label className="block text-xs font-bold text-slate-655 dark:text-slate-400 mb-1 uppercase">Şifre Kurulum Bağlantısı</label>
-                        <textarea
-                          readOnly
-                          value={loginLink}
-                          rows={3}
-                          onClick={(e) => (e.target as HTMLTextAreaElement).select()}
-                          className="w-full border rounded-lg p-2 bg-slate-50 dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-xs font-mono font-semibold outline-none focus:ring-1 focus:ring-teal-500 text-slate-700 dark:text-slate-350"
-                        />
-                      </div>
-
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(loginLink);
-                            alert('Kurulum bağlantısı panoya kopyalandı!');
-                          }}
-                          className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-250 text-xs font-bold py-2 px-3 rounded-lg transition"
-                        >
-                          📋 Bağlantıyı Kopyala
-                        </button>
-                        
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const subject = encodeURIComponent(`EvrakLab Müşteri Portalı Şifre Belirleme Bağlantısı - ${selectedClientForLogin.name}`);
-                            const body = encodeURIComponent(`Merhaba,\n\nEvrakLab sistemindeki müşteri panelinizin şifresini belirlemek için lütfen aşağıdaki şifre kurulum bağlantısını kullanın:\n\n${loginLink}\n\nŞifrenizi oluşturduktan sonra ana sayfadaki "Müşteri Girişi" sekmesinden e-posta adresiniz ve belirlediğiniz şifre ile giriş yapabilirsiniz.\n\nİyi çalışmalar dileriz.`);
-                            window.open(`mailto:${clientLoginEmail}?subject=${subject}&body=${body}`);
-                          }}
-                          className="flex-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/20 dark:hover:bg-teal-950/40 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-900/30 text-xs font-bold py-2 px-3 rounded-lg transition"
-                        >
-                          📧 Mail ile Gönder
-                        </button>
-                      </div>
-
-                      <div className="border-t border-dashed border-gray-200 dark:border-slate-700 pt-3.5 space-y-2">
-                        <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 uppercase">Google Apps Script URL Ayarı</label>
-                        <p className="text-[10px] text-gray-500">
-                          Hesap oluşturulduğunda e-postanın otomatik gönderilmesi için Google Script Web App URL adresini tanımlayın ve kaydedin:
-                        </p>
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            placeholder="https://script.google.com/macros/s/.../exec"
-                            value={scriptUrl}
-                            onChange={(e) => setScriptUrl(e.target.value)}
-                            className="flex-1 border rounded-lg p-2 bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-slate-800 dark:text-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (!scriptUrl) return;
-                              localStorage.setItem('evraklab_google_script_url', scriptUrl);
-                              try {
-                                await supabase
-                                  .from('email_settings')
-                                  .upsert({ key: 'script_url', value: scriptUrl });
-                                alert('Script URL sisteme başarıyla kaydedildi!');
-                              } catch (err: any) {
-                                alert('Veritabanına kaydedilirken hata oluştu fakat tarayıcıya kaydedildi: ' + err.message);
-                              }
-                            }}
-                            className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold py-2 px-3 rounded-lg transition"
-                          >
-                            Kaydet
-                          </button>
+                          {!hasToken ? (
+                            <div className="space-y-2.5">
+                              <div className="bg-emerald-50 dark:bg-emerald-955/20 border border-emerald-200 dark:border-emerald-900/30 p-3 rounded-xl text-xs text-emerald-800 dark:text-emerald-300 leading-relaxed font-semibold">
+                                🟢 Bu hesap aktiftir ve şifresi kullanıcı tarafından belirlenmiştir.
+                              </div>
+                              <button
+                                type="button"
+                                disabled={savingClientLogin}
+                                onClick={() => handleRegenerateAccountToken(account)}
+                                className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded-xl text-xs transition cursor-pointer shadow-md hover:shadow-lg flex items-center justify-center gap-1.5 disabled:opacity-50"
+                              >
+                                🔑 Yeni Şifre Kurulum Bağlantısı Oluştur
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="space-y-2.5">
+                              <div className="bg-amber-50 dark:bg-amber-955/20 border border-amber-200 dark:border-amber-900/30 p-3 rounded-xl text-xs text-amber-800 dark:text-amber-300 leading-relaxed font-semibold">
+                                🟠 Şifre belirleme bağlantısı bekleniyor.
+                              </div>
+                              <textarea
+                                readOnly
+                                value={loginLink}
+                                rows={2}
+                                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                                className="w-full border rounded-lg p-2 bg-slate-50 dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-xs font-mono font-semibold outline-none focus:ring-1 focus:ring-teal-500 text-slate-700 dark:text-slate-300"
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(loginLink);
+                                    alert('Kurulum bağlantısı panoya kopyalandı!');
+                                  }}
+                                  className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-xs font-bold py-2 px-3 rounded-lg transition border border-slate-200 dark:border-slate-700 shadow-sm"
+                                >
+                                  📋 Bağlantıyı Kopyala
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const subject = encodeURIComponent('EvrakLab Müşteri Portalı Şifre Belirleme Bağlantısı - ' + selectedClientForLogin.name);
+                                    const body = encodeURIComponent('Merhaba,\n\nEvrakLab sistemindeki müşteri panelinizin şifresini belirlemek için lütfen aşağıdaki şifre kurulum bağlantısını kullanın:\n\n' + loginLink + '\n\nŞifrenizi oluşturduktan sonra ana sayfadaki "Müşteri Girişi" sekmesinden e-posta adresiniz ve belirlediğiniz şifre ile giriş yapabilirsiniz.\n\nİyi çalışmalar dileriz.');
+                                    window.open('mailto:' + account.email + '?subject=' + subject + '&body=' + body);
+                                  }}
+                                  className="flex-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/20 dark:hover:bg-teal-955/40 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-900/30 text-xs font-bold py-2 px-3 rounded-lg transition"
+                                >
+                                  📧 Mail ile Gönder
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    </div>
-                  );
-                })()}
+                      );
+                    })}
+                  </div>
+                )}
 
-                <div className="flex flex-wrap gap-2 pt-3 border-t border-gray-150 dark:border-slate-700 justify-between items-center">
-                  {clientProfileExists ? (
-                    <button
-                      type="button"
-                      disabled={savingClientLogin}
-                      onClick={handleDeleteClientLogin}
-                      className="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
-                    >
-                      Giriş Yetkisini Kaldır (Hesabı Sil)
-                    </button>
-                  ) : (
-                    <div />
-                  )}
-                  
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowClientLoginModal(false);
-                        setSelectedClientForLogin(null);
-                        setClientLoginEmail('');
-                        setClientLoginPassword('');
-                      }}
-                      className="px-4 py-2 border rounded-lg text-slate-650 dark:text-slate-350 text-xs font-bold transition hover:bg-slate-50 dark:hover:bg-slate-700"
-                    >
-                      Kapat
-                    </button>
-                    {!clientProfileExists && (
+                {clientAccounts.length === 0 || showAddSubAccountForm ? (
+                  <div className={clientAccounts.length > 0 ? 'border-t border-dashed border-gray-200 dark:border-slate-700 pt-4 space-y-3' : 'space-y-3'}>
+                    {clientAccounts.length > 0 && (
+                      <label className="block text-xs font-bold text-slate-655 dark:text-slate-400 uppercase">Yeni Alt Müşteri Hesabı Ekle</label>
+                    )}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-655 dark:text-slate-400 mb-1 uppercase">Müşteri Kullanıcı Adı (E-posta)</label>
+                      <input
+                        type="email"
+                        required
+                        value={clientLoginEmail}
+                        onChange={(e) => setClientLoginEmail(e.target.value)}
+                        placeholder="ornek@firma.com"
+                        className="w-full border rounded-lg p-2.5 bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-1 focus:ring-teal-500 text-slate-850 dark:text-white"
+                      />
+                    </div>
+                    <div className="bg-blue-50 dark:bg-blue-955/20 border border-blue-200 dark:border-blue-900/30 p-3 rounded-xl text-xs text-blue-800 dark:text-blue-300 leading-relaxed">
+                      ⚙️ E-posta adresi yazıp <b>"Giriş Hesabı & Şifre Kurulumu Başlat"</b> butonuna basın. Sistem müşteri için özel bir davet linki üretecektir.
+                    </div>
+                    <div className="flex gap-2">
+                      {clientAccounts.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowAddSubAccountForm(false);
+                            setClientLoginEmail('');
+                          }}
+                          className="flex-1 px-4 py-2 border rounded-lg text-slate-650 dark:text-slate-350 text-xs font-bold transition hover:bg-slate-50 dark:hover:bg-slate-700"
+                        >
+                          Vazgeç
+                        </button>
+                      )}
                       <button
                         type="button"
                         disabled={savingClientLogin}
                         onClick={handleCreateClientLogin}
-                        className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                        className="flex-1 bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
                       >
-                        {savingClientLogin ? 'Gönderiliyor...' : 'Giriş Hesabı & Şifre Kurulumu Başlat'}
+                        {savingClientLogin ? 'Gönderiliyor...' : (clientAccounts.length > 0 ? 'Alt Hesabı Oluştur ve Davet Gönder' : 'Giriş Hesabı & Şifre Kurulumu Başlat')}
                       </button>
-                    )}
+                    </div>
                   </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddSubAccountForm(true)}
+                    className="w-full border border-dashed border-teal-300 dark:border-teal-800 text-teal-650 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-950/20 font-bold py-2.5 px-4 rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+                  >
+                    <Plus size={14} /> Yeni Alt Müşteri Hesabı Ekle
+                  </button>
+                )}
+
+                <div className="border-t border-dashed border-gray-200 dark:border-slate-700 pt-3.5">
+                  <p className="text-[10px] text-gray-500 leading-relaxed">
+                    ℹ️ Davet e-postalarının otomatik gönderilebilmesi için Google Apps Script Web App URL adresinin sistemde tanımlı olması gerekir. Bu ayar artık <b>Admin Paneli → E-Posta Ayarları</b> sayfasından merkezi olarak yönetilmektedir.
+                  </p>
+                </div>
+
+                <div className="flex justify-end pt-3 border-t border-gray-150 dark:border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowClientLoginModal(false);
+                      setSelectedClientForLogin(null);
+                      setClientLoginEmail('');
+                      setShowAddSubAccountForm(false);
+                    }}
+                    className="px-4 py-2 border rounded-lg text-slate-650 dark:text-slate-350 text-xs font-bold transition hover:bg-slate-50 dark:hover:bg-slate-700"
+                  >
+                    Kapat
+                  </button>
                 </div>
               </div>
             )}

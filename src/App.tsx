@@ -38,7 +38,7 @@ import Documents from './Documents';
 import AddDocument from './AddDocument';
 import DocumentDetail from './DocumentDetail';
 import EditDocument from './EditDocument';
-import CompanyPanel from './CompanyPanel';
+
 import Pricing from './Pricing';
 import AdminPanel from './AdminPanel';
 import Settings from './Settings';
@@ -231,10 +231,9 @@ function NavBarContent({
   };
   const isCorporateUser = ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(userRole);
   const canViewTeam =
-    isPremium ||
     userRole === 'admin' ||
     isCorporateUser ||
-    (userRole === 'normal' && !!subEndDate);
+    isEnvConsultant;
   const canExtend =
     userRole === 'premium_individual' || userRole === 'premium_corporate';
   const isStaff =
@@ -286,6 +285,8 @@ function NavBarContent({
             >
               <Wrench size={16} /> Araçlar
             </Link>
+
+
 
 
 
@@ -540,6 +541,8 @@ function NavBarContent({
             >
               <Wrench size={20} /> Araçlar
             </Link>
+
+
 
 
 
@@ -887,10 +890,24 @@ function AppContent() {
 
     const isClient = session && userRole === 'client';
 
+    // --- MÜŞTERI İÇİN TAMAMEN İZOLE EDİLMİŞ LAYOUT ---
+    if (isClient) {
+      return (
+        <Router>
+          <div className="min-h-screen font-sans flex flex-col bg-[#0f172a] text-slate-100">
+            <Routes>
+              <Route path="/client-panel" element={<ClientPanel />} />
+              <Route path="*" element={<Navigate to="/client-panel" />} />
+            </Routes>
+          </div>
+        </Router>
+      );
+    }
+
     return (
       <Router>
         <div className="min-h-screen font-sans flex flex-col transition-colors duration-300 bg-gray-50 text-gray-900 dark:bg-slate-900 dark:text-slate-100">
-          {session && userRole !== 'client' && (
+          {session && (
             <NavBarContent
               session={session}
               userRole={userRole}
@@ -904,11 +921,12 @@ function AppContent() {
               systemLogoUrl={systemLogoUrl}
             />
           )}
-          <div className={isClient ? "flex-1" : "flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full"}>
+          <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
             <Routes>
             {!session ? (
               <>
                 <Route path="/" element={<Login />} />
+                <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/consultant/reports/:id" element={<EnvReportView />} />
                 <Route path="/sign-report/:token" element={<ExternalSignPage />} />
@@ -917,12 +935,6 @@ function AppContent() {
                 <Route path="/client-login" element={<ClientLogin />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
-            ) : userRole === 'client' ? (
-              <>
-                 <Route path="/client-panel" element={<ClientPanel />} />
-                 <Route path="/client-login" element={<ClientLogin />} />
-                 <Route path="*" element={<Navigate to="/client-panel" />} />
-              </>
             ) : (
               <>
                 <Route path="/" element={<Dashboard />} />
@@ -930,7 +942,7 @@ function AppContent() {
                 <Route path="/documents/add" element={<AddDocument />} />
                 <Route path="/documents/:id" element={<DocumentDetail />} />
                 <Route path="/documents/edit/:id" element={<EditDocument />} />
-                <Route path="/company" element={<CompanyPanel />} />
+
                 <Route path="/chat" element={<TeamChat />} />
                 <Route path="/pricing" element={<Pricing />} />
                 <Route path="/settings" element={<Settings session={session} />} />
@@ -974,6 +986,7 @@ function AppContent() {
                 <Route path="/inspect/:token" element={<InspectionPage />} />
                 <Route path="/evaluate-client/:token" element={<ClientEvaluationPage />} />
                 <Route path="/client-login" element={<ClientLogin />} />
+                <Route path="/login" element={<Login />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             )}

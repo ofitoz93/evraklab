@@ -70,3 +70,52 @@ BEGIN
   WHERE email = p_email;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 6. RPC function to securely update password and confirm email using temp token
+CREATE OR REPLACE FUNCTION public.setup_client_password(
+  client_email text,
+  temp_token text,
+  new_password text
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER -- runs with bypass security definer privileges
+AS $$
+DECLARE
+  v_client_id uuid;
+  v_user_id uuid;
+BEGIN
+  -- A. Verify the token in consultant_clients
+  SELECT id INTO v_client_id
+  FROM public.consultant_clients
+  WHERE login_token = temp_token;
+
+  IF v_client_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  -- B. Verify the profile belongs to the client and has 'client' role
+  SELECT id INTO v_user_id
+  FROM public.profiles
+  WHERE email = client_email AND role = 'client' AND client_id = v_client_id;
+
+  IF v_user_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  -- C. Update the password and confirm email in auth.users
+  UPDATE auth.users
+  SET 
+    encrypted_password = extensions.crypt(new_password, extensions.gen_salt('bf', 10)),
+    email_confirmed_at = COALESCE(email_confirmed_at, now()),
+    updated_at = now()
+  WHERE id = v_user_id;
+
+  -- D. Clear the login token so it cannot be used again
+  UPDATE public.consultant_clients
+  SET login_token = null
+  WHERE id = v_client_id;
+
+  RETURN true;
+END;
+$$;

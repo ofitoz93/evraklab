@@ -35,11 +35,15 @@ import {
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
 
+import GOOGLE_SCRIPT_CODE from '../google_script_mail_template.js?raw';
+import WasteManagement from './WasteManagement';
+
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste'
   >('tickets');
 
+  const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
   const [legSubTab, setLegSubTab] = useState<'pool' | 'requests'>('pool');
 
   // --- MEVZUAT HAVUZU (LEGISLATIONS) STATE'LERİ ---
@@ -1200,6 +1204,17 @@ export default function AdminPanel() {
                 <span>Şirketler</span>
               </button>
               <button
+                onClick={() => setActiveTab('waste')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'waste'
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <Trash2 size={18} />
+                <span>Atık Yönetimi</span>
+              </button>
+              <button
                 onClick={() => setActiveTab('tickets')}
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-bold transition ${
                   activeTab === 'tickets'
@@ -1300,6 +1315,13 @@ export default function AdminPanel() {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
+          </div>
+        )}
+
+        {/* WASTE TAB */}
+        {activeTab === 'waste' && (
+          <div className="animate-fadeIn">
+            <WasteManagement />
           </div>
         )}
 
@@ -1932,7 +1954,34 @@ export default function AdminPanel() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Alt Sekme Menüsü */}
+            <div className="flex border-b border-gray-200 bg-white p-1.5 rounded-lg shadow-sm gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setEmailSubTab('general')}
+                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                  emailSubTab === 'general'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:text-gray-400'
+                }`}
+              >
+                Genel E-Posta Bildirim Ayarları
+              </button>
+              <button
+                type="button"
+                onClick={() => setEmailSubTab('client_script')}
+                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                  emailSubTab === 'client_script'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:text-gray-400'
+                }`}
+              >
+                Müşteri Giriş Portalı Mail Scripti
+              </button>
+            </div>
+
+            {emailSubTab === 'general' ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {/* Form Ayarları */}
               <div className="md:col-span-1 bg-gray-50/50 p-6 rounded-2xl border border-gray-150 space-y-6 h-fit">
                 <h3 className="font-bold text-gray-800 text-base border-b pb-2">Sağlayıcı Yapılandırması</h3>
@@ -2131,6 +2180,60 @@ export default function AdminPanel() {
                 </div>
               </div>
             </div>
+            ) : (
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-150 dark:border-slate-700 space-y-6 animate-fadeIn text-left text-gray-800 dark:text-gray-100 shadow-sm">
+                <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 p-6 rounded-xl flex flex-col justify-between items-start gap-2">
+                  <h3 className="text-base font-bold text-indigo-900 dark:text-indigo-400 flex items-center gap-1.5">
+                    📋 Müşteri Portalı Otomatik Şifre Davet Scripti
+                  </h3>
+                  <p className="text-xs text-indigo-750 dark:text-indigo-300 leading-relaxed font-semibold">
+                    Müşteri panelini kullanan firmalarınız için davet e-postası ve şifre belirleme bağlantısının otomatik gönderilmesi için aşağıdaki Google Apps Script kodunu kullanın.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="text-xs text-gray-600 dark:text-slate-400 leading-relaxed space-y-2.5">
+                    <p className="font-bold text-gray-800 dark:text-white text-sm">🛠️ Adım Adım Kurulum Kılavuzu:</p>
+                    <ol className="list-decimal pl-5 space-y-2 font-medium">
+                      <li>Aşağıdaki kod penceresine tıklayarak kodu seçin veya <strong>"Google Script Kodunu Kopyala"</strong> butonunu kullanarak panoya kopyalayın.</li>
+                      <li><a href="https://script.google.com/" target="_blank" rel="noreferrer" className="underline font-extrabold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800">Google Apps Script</a> konsolunu açıp yeni bir proje oluşturun ve bu kodu içine yapıştırın. Projeyi kaydedin.</li>
+                      <li>Projeyi canlı hale getirmek için sağ üstteki <strong>"Dağıtın" (Deploy) &gt; "Yeni Dağıtım" (New Deployment)</strong> seçeneklerine tıklayın. Tür olarak <strong>"Web Uygulaması" (Web App)</strong> seçin.</li>
+                      <li>
+                        <strong>Aşağıdaki Güvenlik ve Yayınlama Ayarlarını Birebir Uygulayın:</strong><br />
+                        <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-gray-200 dark:border-slate-800 font-semibold text-slate-800 dark:text-slate-300 mt-1.5 space-y-1">
+                          • Yürütme Biçimi (Execute as): <strong>"Ben" (Sizin Google Hesabınız)</strong><br />
+                          • Erişim Yetkisi (Who has access): <strong>"Herkes" (Anyone)</strong>
+                        </div>
+                      </li>
+                      <li>Dağıtımı tamamladıktan sonra oluşturulan <strong>"Web Uygulaması URL" (Web App URL)</strong> adresini kopyalayarak, bu sayfadaki ilk sekmede (Genel Ayarlar) yer alan <strong>Google Script URL'si</strong> alanına kaydedin.</li>
+                    </ol>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+                      Google Apps Script Kodu (Kopyalamak için içine tıklayın)
+                    </label>
+                    <textarea
+                      readOnly
+                      rows={15}
+                      onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                      className="w-full p-3 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900 font-mono text-[11px] text-gray-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition"
+                      value={GOOGLE_SCRIPT_CODE}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(GOOGLE_SCRIPT_CODE);
+                        alert('Google Apps Script kodu başarıyla panoya kopyalandı!');
+                      }}
+                      className="bg-indigo-600 hover:bg-indigo-750 text-white font-bold py-3 px-4 rounded-xl text-xs transition flex items-center justify-center gap-1.5 w-full shadow-md hover:shadow-lg mt-2 cursor-pointer"
+                    >
+                      📋 Google Script Kodunu Kopyala
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

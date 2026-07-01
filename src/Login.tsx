@@ -71,8 +71,12 @@ export default function Login() {
     }
 
     const searchParams = new URLSearchParams(window.location.search);
-    const emailParam = searchParams.get('email');
-    const tokenParam = searchParams.get('token');
+    const rawEmail = searchParams.get('email') || '';
+    const rawToken = searchParams.get('token') || '';
+
+    // Clean any quotes that might be introduced by mail clients or copy-paste
+    const emailParam = rawEmail.replace(/['"]/g, '').trim();
+    const tokenParam = rawToken.replace(/['"]/g, '').trim();
 
     if (!emailParam || !tokenParam) {
       alert('Kurulum bilgileri eksik veya geçersiz.');
@@ -84,23 +88,33 @@ export default function Login() {
       // 1. Sign out any current session
       await supabase.auth.signOut();
 
-      // 2. Login with temp token (current password)
-      const { error: loginErr } = await supabase.auth.signInWithPassword({
+      // 2. Sign in with the temporary token (this is the initial password from signUp)
+      const { error: signInErr } = await supabase.auth.signInWithPassword({
         email: emailParam.trim(),
         password: tokenParam.trim(),
       });
 
-      if (loginErr) throw loginErr;
+      if (signInErr) {
+        // Token may have already been used — try signing in with the new password directly
+        throw new Error('Geçersiz kurulum bağlantısı. Bu bağlantı zaten kullanılmış veya süresi dolmuş olabilir.');
+      }
 
-      // 3. Update to chosen password
+      // 3. Update the password to the user's chosen password
       const { error: updateErr } = await supabase.auth.updateUser({
         password: newPassword,
       });
 
       if (updateErr) throw updateErr;
 
-      // 4. Invalidate setup token via RPC function
-      await supabase.rpc('clear_client_login_token', { p_email: emailParam });
+      // 4. Clear this account's login_token so the setup link can't be reused
+      //    (stored per-profile so other accounts of the same company aren't affected)
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (currentSession) {
+        await supabase
+          .from('profiles')
+          .update({ login_token: null })
+          .eq('id', currentSession.user.id);
+      }
 
       alert('Şifreniz başarıyla kuruldu! Müşteri panelinize yönlendiriliyorsunuz...');
       setIsSetupPassword(false);
