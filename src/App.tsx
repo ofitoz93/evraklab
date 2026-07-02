@@ -110,6 +110,7 @@ function NavBarContent({
   userOrgId,
   isEnvConsultant,
   systemLogoUrl,
+  userClientId,
 }: any) {
   const location = useLocation();
   const [unreadCount, setUnreadCount] = useState(0);
@@ -338,6 +339,15 @@ function NavBarContent({
                 className="text-red-500 hover:text-red-400 transition font-bold"
               >
                 Admin
+              </Link>
+            )}
+            {userClientId && (
+              <Link
+                to="/client-panel"
+                className="hover:text-teal-600 dark:hover:text-teal-400 transition flex items-center gap-1 font-bold text-teal-600"
+                title="Bu hesap ayrıca bir müşteri firmasının paneline de erişebiliyor"
+              >
+                <Building size={16} /> Müşteri Panelim
               </Link>
             )}
           </div>
@@ -623,6 +633,15 @@ function NavBarContent({
               </Link>
             )}
 
+            {userClientId && (
+              <Link
+                to="/client-panel"
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-teal-600 dark:text-teal-400 font-bold"
+              >
+                <Building size={20} /> Müşteri Panelim
+              </Link>
+            )}
+
             <Link
               to="/settings"
               className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300 font-medium"
@@ -643,6 +662,30 @@ function NavBarContent({
   );
 }
 
+// Bir personel/yönetici hesabının aynı zamanda bağlı bulunduğu bir müşteri
+// panelini de görüntüleyebilmesi durumunda (/client-panel rotası), o sayfayı
+// normal uygulama navbar'ı ve dolgu (padding) olmadan, kendi tam ekran koyu
+// temasıyla göstermek için sarmalayıcı bileşen.
+function AppShell({ children, navBarProps }: { children: React.ReactNode; navBarProps: any }) {
+  const location = useLocation();
+  const isClientPanelRoute = location.pathname === '/client-panel';
+
+  if (isClientPanelRoute) {
+    return (
+      <div className="min-h-screen font-sans flex flex-col bg-[#0f172a] text-slate-100">
+        {children}
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen font-sans flex flex-col transition-colors duration-300 bg-gray-50 text-gray-900 dark:bg-slate-900 dark:text-slate-100">
+      {navBarProps.session && <NavBarContent {...navBarProps} />}
+      <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">{children}</div>
+    </div>
+  );
+}
+
 function AppContent() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -650,6 +693,7 @@ function AppContent() {
   const [subEndDate, setSubEndDate] = useState<string | null>(null);
   const [isPremium, setIsPremium] = useState(false);
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
+  const [userClientId, setUserClientId] = useState<string | null>(null);
   const [isEnvConsultant, setIsEnvConsultant] = useState(false);
   const [extraPermissions, setExtraPermissions] = useState<any>({});
   const [systemLogoUrl, setSystemLogoUrl] = useState<string | null>(null);
@@ -706,7 +750,7 @@ function AppContent() {
       // Profili doğrudan çek (join kullanmadan - veritabanında FK tanımlanmamış)
       let { data: profile, error } = await supabase
         .from('profiles')
-        .select('full_name, phone, role, organization_id, subscription_end_date, extra_permissions')
+        .select('full_name, phone, role, organization_id, client_id, subscription_end_date, extra_permissions')
         .eq('id', userId)
         .single();
 
@@ -736,7 +780,7 @@ function AppContent() {
         console.warn('Profil çekilemedi, temel sorgu deneniyor:', error.message);
         let { data: basic, error: e2 } = await supabase
           .from('profiles')
-          .select('full_name, phone, role, organization_id, subscription_end_date, extra_permissions')
+          .select('full_name, phone, role, organization_id, client_id, subscription_end_date, extra_permissions')
           .eq('id', userId)
           .single();
         
@@ -760,6 +804,7 @@ function AppContent() {
         if (basic) {
           setUserRole(basic.role || 'normal');
           setUserOrgId(basic.organization_id);
+          setUserClientId(basic.role !== 'client' ? basic.client_id || null : null);
           setExtraPermissions(basic.extra_permissions || {});
           const role = basic.role || 'normal';
           const now = new Date();
@@ -785,6 +830,7 @@ function AppContent() {
         const role = profile.role || 'normal';
         setUserRole(role);
         setUserOrgId(profile.organization_id);
+        setUserClientId(role !== 'client' ? (profile as any).client_id || null : null);
         setExtraPermissions(profile.extra_permissions || {});
 
         // Ad soyad ve Telefon kontrolü
@@ -906,22 +952,21 @@ function AppContent() {
 
     return (
       <Router>
-        <div className="min-h-screen font-sans flex flex-col transition-colors duration-300 bg-gray-50 text-gray-900 dark:bg-slate-900 dark:text-slate-100">
-          {session && (
-            <NavBarContent
-              session={session}
-              userRole={userRole}
-              handleLogout={handleLogout}
-              daysLeft={getDaysLeft()}
-              isPremium={isPremium}
-              subEndDate={subEndDate}
-              hasCompany={!!userOrgId}
-              userOrgId={userOrgId}
-              isEnvConsultant={isEnvConsultant}
-              systemLogoUrl={systemLogoUrl}
-            />
-          )}
-          <div className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
+        <AppShell
+          navBarProps={{
+            session,
+            userRole,
+            handleLogout,
+            daysLeft: getDaysLeft(),
+            isPremium,
+            subEndDate,
+            hasCompany: !!userOrgId,
+            userOrgId,
+            isEnvConsultant,
+            systemLogoUrl,
+            userClientId,
+          }}
+        >
             <Routes>
             {!session ? (
               <>
@@ -950,6 +995,10 @@ function AppContent() {
                 <Route path="/support" element={<Support />} />
                 <Route path="/help" element={<HelpPage />} />
                 <Route path="/tools" element={<Tools />} />
+                <Route
+                  path="/client-panel"
+                  element={userClientId ? <ClientPanel /> : <Navigate to="/" />}
+                />
 
                 <Route
                   path="/consultant"
@@ -990,9 +1039,8 @@ function AppContent() {
                 <Route path="*" element={<Navigate to="/" />} />
               </>
             )}
-          </Routes>
-        </div>
-      </div>
+            </Routes>
+        </AppShell>
 
       {/* Profil Tamamlama Modalı (Ad Soyad ve Telefon Zorunlu) */}
       {showNameModal && (

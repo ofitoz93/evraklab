@@ -51,7 +51,7 @@ import { parseLegislationText } from './parserUtils';
 import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
 
-
+const TR_MONTH_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
 
 interface Client {
   id: string;
@@ -552,6 +552,9 @@ export default function ConsultantPanel() {
   const [savingExpense, setSavingExpense] = useState(false);
   const [updatingClientFee, setUpdatingClientFee] = useState<string | null>(null);
   const [tempClientFeeVal, setTempClientFeeVal] = useState('');
+  const [togglingPaymentKey, setTogglingPaymentKey] = useState<string | null>(null);
+  const [collapsedPaymentYears, setCollapsedPaymentYears] = useState<Record<string, boolean>>({});
+  const [expandedPaymentClients, setExpandedPaymentClients] = useState<Record<string, boolean>>({});
 
   // --- ZİYARET PLANLAMA / ÇALIŞMA TAKVİMİ STATE'LERİ ---
   const [visitSchedules, setVisitSchedules] = useState<VisitSchedule[]>([]);
@@ -3577,12 +3580,12 @@ export default function ConsultantPanel() {
 
     try {
       // Bir firmaya birden fazla müşteri giriş hesabı (alt hesap) tanımlanabilir;
-      // bu yüzden tek satır yerine o client_id'ye bağlı tüm 'client' profillerini listeliyoruz.
+      // ayrıca bir personel/yönetici hesabı da bu firmanın müşteri panelini
+      // görüntüleme yetkisiyle bağlanmış olabilir (role != 'client' ama client_id dolu).
       const { data: accounts } = await supabase
         .from('profiles')
-        .select('id, email, login_token, created_at')
+        .select('id, email, login_token, created_at, role, full_name')
         .eq('client_id', client.id)
-        .eq('role', 'client')
         .order('created_at', { ascending: true });
 
       setClientAccounts(accounts || []);
@@ -3644,23 +3647,45 @@ export default function ConsultantPanel() {
     }
 
     // GÜVENLİK KONTROLÜ: Bu e-posta başka bir hesaba (personel/yönetici veya farklı
-    // bir firmanın müşteri hesabı) ait olabilir. Aşağıdaki akış, aynı e-postayla
-    // eski hesabı SİLİP yerine yeni bir müşteri hesabı oluşturuyor — bu yüzden
-    // önceden kontrol etmeden devam etmek, var olan bir hesabı yanlışlıkla yok eder.
+    // bir firmanın müşteri hesabı) ait olabilir. Aşağıdaki akış (yeni hesap), aynı
+    // e-postayla eski hesabı SİLİP yerine yeni bir müşteri hesabı oluşturur — bu
+    // yüzden önceden kontrol etmeden devam etmek, var olan bir hesabı yok eder.
     setSavingClientLogin(true);
     try {
       const { data: existingProfile } = await supabase
         .from('profiles')
-        .select('role, client_id, full_name')
+        .select('id, role, client_id, full_name')
         .ilike('email', emailToCreate)
         .maybeSingle();
 
       if (existingProfile) {
         if (existingProfile.role !== 'client') {
-          alert(
-            `Bu e-posta adresi (${emailToCreate}) zaten bir personel/yönetici hesabına ait (${existingProfile.full_name || 'isimsiz'}). ` +
-            `Müşteri paneli hesabı oluşturmak için lütfen farklı bir e-posta kullanın; aksi halde o kişinin mevcut giriş hesabı silinir.`
+          // Bu e-posta zaten sistemde kayıtlı bir personel/yönetici hesabına ait.
+          // Yeni bir hesap açmak yerine, mevcut hesaba bu firmanın müşteri paneli
+          // görüntüleme yetkisini ekleyebiliriz — şifresi/girişi değişmez.
+          const confirmLink = window.confirm(
+            `Bu e-posta adresi (${emailToCreate}) sistemde zaten "${existingProfile.full_name || 'isimsiz'}" adlı bir personel/yönetici hesabına ait.\n\n` +
+            `Yeni bir hesap OLUŞTURULMAYACAK. Bunun yerine bu kişinin MEVCUT hesabına, "${selectedClientForLogin.name}" firmasının müşteri paneli görüntüleme yetkisi eklensin mi?\n\n` +
+            `Kişi kendi mevcut şifresiyle sisteme giriş yapmaya devam edecek; sadece navbar'da "Müşteri Panelim" bağlantısıyla bu firmanın görünümüne de erişebilecek.`
           );
+          if (!confirmLink) return;
+
+          const { error: linkErr } = await supabase
+            .from('profiles')
+            .update({ client_id: selectedClientForLogin.id })
+            .eq('id', existingProfile.id);
+          if (linkErr) throw linkErr;
+
+          setClientAccounts(prev => [...prev, {
+            id: existingProfile.id,
+            email: emailToCreate,
+            login_token: null,
+            role: existingProfile.role,
+            full_name: existingProfile.full_name,
+          }]);
+          setClientLoginEmail('');
+          setShowAddSubAccountForm(false);
+          alert(`Bağlandı! "${existingProfile.full_name || emailToCreate}", artık kendi mevcut şifresiyle giriş yaptıktan sonra "${selectedClientForLogin.name}" müşteri panelini de görüntüleyebilecek.`);
           return;
         }
         if (existingProfile.client_id !== selectedClientForLogin.id) {
@@ -3765,6 +3790,30 @@ export default function ConsultantPanel() {
   };
 
   const handleDeleteClientAccount = async (account: any) => {
+    const isLinkedStaffAccount = account.role && account.role !== 'client';
+
+    if (isLinkedStaffAccount) {
+      // Bu bir personel/yönetici hesabı, sadece bu firmaya olan müşteri paneli
+      // bağlantısını kaldırıyoruz — hesabın kendisine (giriş, şifre) dokunulmaz.
+      if (!window.confirm(`"${account.full_name || account.email}" adlı personel hesabının bu firmanın müşteri paneline erişimini kaldırmak istediğinize emin misiniz? (Kendi personel hesabı silinmeyecek.)`)) return;
+      setSavingClientLogin(true);
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ client_id: null })
+          .eq('id', account.id);
+        if (error) throw error;
+
+        setClientAccounts(prev => prev.filter(a => a.id !== account.id));
+        alert('Müşteri paneli bağlantısı kaldırıldı. Personel hesabı normal şekilde çalışmaya devam ediyor.');
+      } catch (err: any) {
+        alert('Hata: ' + err.message);
+      } finally {
+        setSavingClientLogin(false);
+      }
+      return;
+    }
+
     if (!window.confirm(`${account.email} hesabının giriş yetkisini kaldırmak istediğinize emin misiniz?`)) return;
     setSavingClientLogin(true);
     try {
@@ -3927,6 +3976,8 @@ export default function ConsultantPanel() {
   };
 
   const handleTogglePaymentStatus = async (clientId: string, year: number, month: number, isPaid: boolean, amount: number) => {
+    const key = `${clientId}-${year}-${month}`;
+    setTogglingPaymentKey(key);
     try {
       if (isPaid) {
         const existing = financePayments.find(p => p.client_id === clientId && p.year === year && p.month === month);
@@ -3963,6 +4014,8 @@ export default function ConsultantPanel() {
       await fetchFinanceData();
     } catch (err: any) {
       alert('Ödeme durumu güncellenirken hata: ' + err.message);
+    } finally {
+      setTogglingPaymentKey(null);
     }
   };
 
@@ -7751,12 +7804,46 @@ export default function ConsultantPanel() {
                 {clients.map((client) => {
                   const monthsList = getMonthsSinceServiceStart(client.service_start_date);
                   const isEditing = updatingClientFee === client.id;
-                  
+                  const amount = Number(client.monthly_fee || 0);
+
+                  const isMonthPaid = (year: number, month: number) =>
+                    financePayments.find(p => p.client_id === client.id && p.year === year && p.month === month)?.is_paid || false;
+
+                  const paidCount = monthsList.filter(item => isMonthPaid(item.year, item.month)).length;
+                  const unpaidCount = monthsList.length - paidCount;
+                  const paidPct = monthsList.length > 0 ? Math.round((paidCount / monthsList.length) * 100) : 0;
+
+                  const monthsByYear = new Map<number, typeof monthsList>();
+                  monthsList.forEach(item => {
+                    if (!monthsByYear.has(item.year)) monthsByYear.set(item.year, []);
+                    monthsByYear.get(item.year)!.push(item);
+                  });
+                  const paymentYears = Array.from(monthsByYear.keys()).sort((a, b) => b - a);
+                  const currentYear = new Date().getFullYear();
+
+                  const isExpanded = !!expandedPaymentClients[client.id];
+
                   return (
                     <tr key={client.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10 align-top">
                       <td className="py-4">
-                        <div className="font-bold text-slate-850 dark:text-slate-200 text-xs">{client.name}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">{client.email || 'Telefon/E-posta girilmemiş'}</div>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedPaymentClients(prev => ({ ...prev, [client.id]: !isExpanded }))}
+                          className="flex items-center gap-1.5 text-left group"
+                          title={isExpanded ? 'Ödeme takvimini gizle' : 'Ödeme takvimini görmek için tıklayın'}
+                        >
+                          {isExpanded ? (
+                            <ChevronDown size={13} className="text-slate-400 shrink-0" />
+                          ) : (
+                            <ChevronRight size={13} className="text-slate-400 shrink-0" />
+                          )}
+                          <div>
+                            <div className="font-bold text-slate-850 dark:text-slate-200 text-xs group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                              {client.name}
+                            </div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">{client.email || 'Telefon/E-posta girilmemiş'}</div>
+                          </div>
+                        </button>
                       </td>
                       <td className="py-4 text-slate-500 font-bold">
                         {client.service_start_date ? new Date(client.service_start_date).toLocaleDateString('tr-TR') : '-'}
@@ -7806,37 +7893,94 @@ export default function ConsultantPanel() {
                         {monthsList.length === 0 ? (
                           <span className="text-slate-400 italic text-[11px]">Hizmet başlangıç tarihi belirtilmemiş.</span>
                         ) : (
-                          <div className="space-y-1.5 inline-block text-left min-w-64">
-                            {monthsList.map(item => {
-                              const payment = financePayments.find(p => p.client_id === client.id && p.year === item.year && p.month === item.month);
-                              const isPaid = payment?.is_paid || false;
-                              const amount = Number(client.monthly_fee || 0);
-
-                              return (
-                                <div key={`${item.year}-${item.month}`} className="flex items-center justify-between gap-4 p-1.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-150 dark:border-slate-800 text-[10px]">
-                                  <span className="font-bold text-slate-600 dark:text-slate-400">{item.label}</span>
-                                  <div className="flex items-center gap-2">
-                                    {isPaid ? (
-                                      <span className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-450 border border-emerald-100 dark:border-emerald-900/30 px-2 py-0.5 rounded-md font-black text-[9px] uppercase">
-                                        ✓ ÖDENDİ
-                                      </span>
-                                    ) : (
-                                      <span className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-450 border border-rose-100 dark:border-rose-900/30 px-2 py-0.5 rounded-md font-black text-[9px] uppercase">
-                                        ✗ ÖDENMEDİ
-                                      </span>
-                                    )}
-                                    <label className="flex items-center cursor-pointer select-none">
-                                      <input
-                                        type="checkbox"
-                                        checked={isPaid}
-                                        onChange={(e) => handleTogglePaymentStatus(client.id, item.year, item.month, e.target.checked, amount)}
-                                        className="h-3.5 w-3.5 rounded text-blue-600 border-slate-350 dark:border-slate-855"
-                                      />
-                                    </label>
-                                  </div>
+                          <div className="inline-block text-left min-w-72 max-w-sm">
+                            {/* Özet: ödenen ay oranı ve bekleyen tutar (firma adına tıklayınca detay açılır) */}
+                            <button
+                              type="button"
+                              onClick={() => setExpandedPaymentClients(prev => ({ ...prev, [client.id]: !isExpanded }))}
+                              className={`w-full flex items-center justify-between gap-3 pb-2 ${isExpanded ? 'mb-2 border-b border-slate-100 dark:border-slate-800' : ''}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="w-16 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full ${paidPct === 100 ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                                    style={{ width: `${paidPct}%` }}
+                                  />
                                 </div>
-                              );
-                            })}
+                                <span className="text-[11px] font-black text-slate-700 dark:text-slate-200">
+                                  {paidCount}/{monthsList.length} ödendi
+                                </span>
+                              </div>
+                              {unpaidCount > 0 && (
+                                <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">
+                                  {(unpaidCount * amount).toLocaleString('tr-TR')} TL bekliyor
+                                </span>
+                              )}
+                            </button>
+
+                            {!isExpanded && (
+                              <span className="text-[10px] text-slate-400 italic">Detaylar için firma adına tıklayın</span>
+                            )}
+
+                            {/* Yıllara göre gruplanmış, tıklanabilir ay etiketleri */}
+                            {isExpanded && (
+                            <div className="space-y-2">
+                              {paymentYears.map(year => {
+                                const yearMonths = monthsByYear.get(year)!;
+                                const yearPaid = yearMonths.filter(item => isMonthPaid(item.year, item.month)).length;
+                                const collapseKey = `${client.id}-${year}`;
+                                const collapsed = collapsedPaymentYears[collapseKey] ?? (year !== currentYear);
+
+                                return (
+                                  <div key={year}>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCollapsedPaymentYears(prev => ({ ...prev, [collapseKey]: !collapsed }))}
+                                      className="flex items-center gap-1.5 text-[10px] font-black text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                    >
+                                      {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                                      {year}
+                                      <span className="text-slate-350 dark:text-slate-600 font-bold">({yearPaid}/{yearMonths.length})</span>
+                                    </button>
+
+                                    {!collapsed && (
+                                      <div className="flex flex-wrap gap-1.5 mt-1.5 justify-end">
+                                        {yearMonths.map(item => {
+                                          const isPaid = isMonthPaid(item.year, item.month);
+                                          const toggleKey = `${client.id}-${item.year}-${item.month}`;
+                                          const isToggling = togglingPaymentKey === toggleKey;
+
+                                          return (
+                                            <button
+                                              key={toggleKey}
+                                              type="button"
+                                              disabled={isToggling}
+                                              onClick={() => handleTogglePaymentStatus(client.id, item.year, item.month, !isPaid, amount)}
+                                              title={`${item.label} — ${isPaid ? 'Ödendi. Geri almak için tıklayın.' : 'Ödenmedi. Ödendi olarak işaretlemek için tıklayın.'}`}
+                                              className={`flex items-center gap-1 pl-1.5 pr-2 py-1 rounded-lg border text-[10px] font-bold transition-colors ${
+                                                isPaid
+                                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/20 dark:border-emerald-900/40 dark:text-emerald-400'
+                                                  : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 dark:bg-rose-950/20 dark:border-rose-900/40 dark:text-rose-400'
+                                              } ${isToggling ? 'opacity-50 cursor-wait' : 'cursor-pointer'}`}
+                                            >
+                                              {isToggling ? (
+                                                <RefreshCw size={10} className="animate-spin" />
+                                              ) : isPaid ? (
+                                                <Check size={10} />
+                                              ) : (
+                                                <XCircle size={10} />
+                                              )}
+                                              {TR_MONTH_SHORT[item.month - 1]} {String(item.year).slice(2)}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            )}
                           </div>
                         )}
                       </td>
@@ -11345,6 +11489,32 @@ export default function ConsultantPanel() {
                       Tanımlı Giriş Hesapları ({clientAccounts.length})
                     </label>
                     {clientAccounts.map((account) => {
+                      const isLinkedStaffAccount = account.role && account.role !== 'client';
+                      if (isLinkedStaffAccount) {
+                        return (
+                          <div key={account.id} className="border border-teal-200 dark:border-teal-900/40 bg-teal-50/50 dark:bg-teal-950/10 rounded-xl p-3.5 space-y-2">
+                            <div className="flex justify-between items-center gap-2">
+                              <div>
+                                <span className="font-bold text-sm text-slate-850 dark:text-white">{account.full_name || account.email}</span>
+                                <div className="text-[10px] text-slate-500 break-all">{account.email}</div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={savingClientLogin}
+                                onClick={() => handleDeleteClientAccount(account)}
+                                title="Müşteri Paneli Bağlantısını Kaldır"
+                                className="text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 p-1.5 rounded-lg transition disabled:opacity-50 shrink-0"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                            <div className="text-[11px] text-teal-700 dark:text-teal-400 font-semibold bg-white dark:bg-slate-900 border border-teal-200 dark:border-teal-900/30 rounded-lg px-2.5 py-2">
+                              👤 Bu, sistemde kayıtlı bir personel/yönetici hesabı ({roleLabels[account.role] || account.role}). Kendi mevcut şifresiyle giriş yapar ve navbar'daki "Müşteri Panelim" bağlantısıyla bu firmanın panelini de görüntüleyebilir.
+                            </div>
+                          </div>
+                        );
+                      }
+
                       const hasToken = !!account.login_token;
                       const loginLink = window.location.origin + '/login?type=setup-password&email=' + encodeURIComponent(account.email) + '&token=' + account.login_token;
                       return (

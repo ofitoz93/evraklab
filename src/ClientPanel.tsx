@@ -25,7 +25,9 @@ import {
   PlusCircle,
   X,
   Sparkles,
-  PartyPopper
+  PartyPopper,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
 import { EK1_ARTICLES, EK2_ARTICLES } from './permitArticles';
@@ -108,6 +110,19 @@ export default function ClientPanel() {
   // Welcome banner (shown once per account on first login)
   const [showWelcome, setShowWelcome] = useState(false);
 
+  // Açık/Koyu tema tercihi (tarayıcıda hatırlanır)
+  const [theme, setTheme] = useState<'light' | 'dark'>(
+    () => (localStorage.getItem('evraklab_client_theme') as 'light' | 'dark') || 'dark'
+  );
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('evraklab_client_theme', next);
+      return next;
+    });
+  };
+  const isDark = theme === 'dark';
+
   // Waste Management: companies (transporter/destination) + add-record / add-company modals
   const [wasteCompanies, setWasteCompanies] = useState<any[]>([]);
   const [showAddWasteModal, setShowAddWasteModal] = useState(false);
@@ -160,7 +175,9 @@ export default function ClientPanel() {
         throw new Error('Profil yüklenemedi.');
       }
 
-      if (prof.role !== 'client' || !prof.client_id) {
+      // Normal (client olmayan) hesaplar da, kendilerine bağlanmış bir client_id
+      // varsa bu panele erişebilir (bkz. Müşteri Girişi > "mevcut hesaba bağla").
+      if (!prof.client_id) {
         alert('Bu panele sadece müşteri hesapları erişebilir.');
         navigate('/');
         return;
@@ -860,26 +877,26 @@ export default function ClientPanel() {
 
   const renderMatrixView = () => {
     return (
-      <div className="bg-slate-900/20 border border-slate-850 rounded-2xl overflow-hidden animate-fadeIn text-xs">
-        <div className="p-4 border-b border-slate-800 bg-slate-950/20 flex items-center gap-3">
-          <div className="p-2 bg-rose-500/10 text-rose-400 rounded-xl">
+      <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden animate-fadeIn text-xs">
+        <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex items-center gap-3">
+          <div className="p-2 bg-rose-500/10 text-rose-700 dark:text-rose-400 rounded-xl">
             <Table size={20} />
           </div>
           <div>
-            <h3 className="text-xs font-bold text-white uppercase tracking-wider">Zorunlu Belge Durum Matrisi</h3>
-            <p className="text-[10px] text-slate-400">İşletmenizin yasal zorunlu belge durum özeti</p>
+            <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Zorunlu Belge Durum Matrisi</h3>
+            <p className="text-[10px] text-gray-500 dark:text-slate-400">İşletmenizin yasal zorunlu belge durum özeti</p>
           </div>
         </div>
 
         {loadingMatrix ? (
-          <div className="py-20 text-center text-xs text-slate-500">Yükleniyor...</div>
+          <div className="py-20 text-center text-xs text-gray-400 dark:text-slate-500">Yükleniyor...</div>
         ) : defTabTypes.length === 0 ? (
-          <div className="py-20 text-center text-slate-500 text-xs font-medium">Tanımlı zorunlu belge şablonu bulunamadı.</div>
+          <div className="py-20 text-center text-gray-400 dark:text-slate-500 text-xs font-medium">Tanımlı zorunlu belge şablonu bulunamadı.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
-                <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                   <th className="p-4">Belge / Tanım Grubu</th>
                   <th className="p-4 text-center">Durum</th>
                   <th className="p-4">Geçerlilik Tarihi</th>
@@ -892,10 +909,10 @@ export default function ClientPanel() {
                   
                   if (!reqConf) {
                     return (
-                      <tr key={type.id} className="border-b border-slate-850 text-slate-500">
+                      <tr key={type.id} className="border-b border-gray-200 dark:border-slate-800 text-gray-400 dark:text-slate-500">
                         <td className="p-4 font-semibold">{type.label}</td>
                         <td className="p-4 text-center">
-                          <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-slate-800 text-slate-400">GEREKLİ DEĞİL</span>
+                          <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400">GEREKLİ DEĞİL</span>
                         </td>
                         <td className="p-4">-</td>
                         <td className="p-4 text-right">-</td>
@@ -905,14 +922,14 @@ export default function ClientPanel() {
 
                   if (reqConf.is_exempt) {
                     return (
-                      <tr key={type.id} className="border-b border-slate-850 text-slate-400">
+                      <tr key={type.id} className="border-b border-gray-200 dark:border-slate-800 text-gray-500 dark:text-slate-400">
                         <td className="p-4 font-semibold">{type.label}</td>
                         <td className="p-4 text-center">
-                          <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-950 text-blue-400 border border-blue-900/35" title={reqConf.exempt_reason}>
+                          <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/35" title={reqConf.exempt_reason}>
                             MUAF
                           </span>
                         </td>
-                        <td className="p-4 text-slate-500 italic">Muafiyet Nedeni: {reqConf.exempt_reason || 'Belirtilmedi'}</td>
+                        <td className="p-4 text-gray-400 dark:text-slate-500 italic">Muafiyet Nedeni: {reqConf.exempt_reason || 'Belirtilmedi'}</td>
                         <td className="p-4 text-right">-</td>
                       </tr>
                     );
@@ -928,32 +945,32 @@ export default function ClientPanel() {
 
                     if (isExpired) {
                       return (
-                        <tr key={type.id} className="border-b border-slate-850 text-amber-500">
+                        <tr key={type.id} className="border-b border-gray-200 dark:border-slate-800 text-amber-500">
                           <td className="p-4 font-bold">{type.label}</td>
                           <td className="p-4 text-center">
-                            <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-950 text-amber-400 border border-amber-900/35">SÜRESİ GEÇTİ</span>
+                            <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/35">SÜRESİ GEÇTİ</span>
                           </td>
                           <td className="p-4 font-semibold text-rose-500">{new Date(expiryDate).toLocaleDateString('tr-TR')}</td>
                           <td className="p-4 text-right">
                             {matchingDoc.file_url && (
-                              <a href={matchingDoc.file_url} target="_blank" rel="noreferrer" className="text-teal-450 hover:text-teal-350 font-semibold underline">Belgeyi Gör ↗</a>
+                              <a href={matchingDoc.file_url} target="_blank" rel="noreferrer" className="text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-semibold underline">Belgeyi Gör ↗</a>
                             )}
                           </td>
                         </tr>
                       );
                     } else {
                       return (
-                        <tr key={type.id} className="border-b border-slate-850 text-emerald-400">
+                        <tr key={type.id} className="border-b border-gray-200 dark:border-slate-800 text-emerald-700 dark:text-emerald-400">
                           <td className="p-4 font-bold">{type.label}</td>
                           <td className="p-4 text-center">
-                            <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-950 text-emerald-450 border border-emerald-900/35">GEÇERLİ</span>
+                            <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/35">GEÇERLİ</span>
                           </td>
-                          <td className="p-4 text-slate-300">
-                            {isIndefinite ? <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-bold">Süresiz</span> : new Date(expiryDate).toLocaleDateString('tr-TR')}
+                          <td className="p-4 text-gray-600 dark:text-slate-300">
+                            {isIndefinite ? <span className="text-[10px] bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400 px-2 py-0.5 rounded font-bold">Süresiz</span> : new Date(expiryDate).toLocaleDateString('tr-TR')}
                           </td>
                           <td className="p-4 text-right">
                             {matchingDoc.file_url && (
-                              <a href={matchingDoc.file_url} target="_blank" rel="noreferrer" className="text-teal-450 hover:text-teal-350 font-semibold underline">Belgeyi Gör ↗</a>
+                              <a href={matchingDoc.file_url} target="_blank" rel="noreferrer" className="text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-semibold underline">Belgeyi Gör ↗</a>
                             )}
                           </td>
                         </tr>
@@ -962,10 +979,10 @@ export default function ClientPanel() {
                   }
 
                   return (
-                    <tr key={type.id} className="border-b border-slate-850 text-rose-450">
+                    <tr key={type.id} className="border-b border-gray-200 dark:border-slate-800 text-rose-600 dark:text-rose-400">
                       <td className="p-4 font-bold">{type.label}</td>
                       <td className="p-4 text-center">
-                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-950 text-rose-400 border border-rose-900/35 animate-pulse">EKSİK BELGE</span>
+                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/35 animate-pulse">EKSİK BELGE</span>
                       </td>
                       <td className="p-4">-</td>
                       <td className="p-4 text-right">-</td>
@@ -983,26 +1000,26 @@ export default function ClientPanel() {
   const renderInspectionsView = () => {
     return (
       <div className="space-y-6 animate-fadeIn text-xs">
-        <div className="bg-slate-900/20 border border-slate-855 rounded-2xl overflow-hidden">
-          <div className="p-4 border-b border-slate-800 bg-slate-950/20 flex items-center gap-3">
-            <div className="p-2 bg-teal-500/10 text-teal-400 rounded-xl">
+        <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex items-center gap-3">
+            <div className="p-2 bg-teal-500/10 text-teal-600 dark:text-teal-400 rounded-xl">
               <QrCode size={20} />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider">Saha QR Denetim Kayıtları</h3>
-              <p className="text-[10px] text-slate-400">Tesisinizde QR noktaları üzerinden gerçekleştirilmiş denetim geçmişi</p>
+              <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Saha QR Denetim Kayıtları</h3>
+              <p className="text-[10px] text-gray-500 dark:text-slate-400">Tesisinizde QR noktaları üzerinden gerçekleştirilmiş denetim geçmişi</p>
             </div>
           </div>
 
           {loadingInspections ? (
-            <div className="py-20 text-center text-xs text-slate-500">Denetim verileri yükleniyor...</div>
+            <div className="py-20 text-center text-xs text-gray-400 dark:text-slate-500">Denetim verileri yükleniyor...</div>
           ) : inspectionSubmissions.length === 0 ? (
-            <div className="py-20 text-center text-slate-500 text-xs font-medium">Tesisinize ait doldurulmuş saha denetim formu bulunamadı.</div>
+            <div className="py-20 text-center text-gray-400 dark:text-slate-500 text-xs font-medium">Tesisinize ait doldurulmuş saha denetim formu bulunamadı.</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                  <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                     <th className="p-4">Denetim Noktası</th>
                     <th className="p-4">Kullanılan Form</th>
                     <th className="p-4">Denetim Tarihi</th>
@@ -1016,23 +1033,23 @@ export default function ClientPanel() {
                     const submitterName = [sub.submitted_by_name, sub.submitted_by_surname].filter(Boolean).join(' ').trim();
                     const findings = submissionFindingsCount[sub.id] || 0;
                     return (
-                      <tr key={sub.id} className="border-b border-slate-850 hover:bg-slate-900/30 transition text-slate-350">
-                        <td className="p-4 font-bold text-slate-200">
+                      <tr key={sub.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition text-gray-600 dark:text-slate-300">
+                        <td className="p-4 font-bold text-gray-800 dark:text-slate-200">
                           {sub.point?.name || 'Belirtilmedi'}
                           {sub.point?.location_description && (
-                            <div className="text-[10px] text-slate-500 font-normal">{sub.point.location_description}</div>
+                            <div className="text-[10px] text-gray-400 dark:text-slate-500 font-normal">{sub.point.location_description}</div>
                           )}
                         </td>
                         <td className="p-4">{sub.point?.form?.title || 'Genel Form'}</td>
-                        <td className="p-4 text-teal-400">{new Date(sub.submitted_at).toLocaleString('tr-TR')}</td>
-                        <td className="p-4 font-semibold text-slate-300">{submitterName || 'Anonim Saha Personeli'}</td>
+                        <td className="p-4 text-teal-600 dark:text-teal-400">{new Date(sub.submitted_at).toLocaleString('tr-TR')}</td>
+                        <td className="p-4 font-semibold text-gray-600 dark:text-slate-300">{submitterName || 'Anonim Saha Personeli'}</td>
                         <td className="p-4 text-center">
                           {findings > 0 ? (
-                            <span className="bg-rose-950/40 text-rose-400 border border-rose-900/40 text-[10px] font-black px-2 py-0.5 rounded-full">
+                            <span className="bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 text-[10px] font-black px-2 py-0.5 rounded-full">
                               ⚠️ {findings} Uyumsuz
                             </span>
                           ) : (
-                            <span className="bg-emerald-950/40 text-emerald-400 border border-emerald-900/40 text-[10px] font-black px-2 py-0.5 rounded-full">
+                            <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/40 text-[10px] font-black px-2 py-0.5 rounded-full">
                               ✅ Uyumlu
                             </span>
                           )}
@@ -1043,7 +1060,7 @@ export default function ClientPanel() {
                               setSelectedSubmissionForDetail(sub);
                               handleViewSubmissionAnswers(sub.id);
                             }}
-                            className="inline-flex items-center gap-1 text-teal-400 hover:text-teal-300 font-bold hover:underline"
+                            className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold hover:underline"
                           >
                             Cevapları Gör <Eye size={12} />
                           </button>
@@ -1063,26 +1080,26 @@ export default function ClientPanel() {
   const renderLegislationsView = () => {
     return (
       <div className="space-y-6 animate-fadeIn text-xs">
-        <div className="bg-slate-900/20 border border-slate-855 rounded-2xl overflow-hidden">
-          <div className="p-4 border-b border-slate-800 bg-slate-950/20 flex items-center gap-3">
-            <div className="p-2 bg-blue-500/10 text-blue-400 rounded-xl">
+        <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex items-center gap-3">
+            <div className="p-2 bg-blue-500/10 text-blue-700 dark:text-blue-400 rounded-xl">
               <Scale size={20} />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider">Uyumlu Olduğunuz Mevzuatlar</h3>
-              <p className="text-[10px] text-slate-400">Danışmanınız tarafından firmanıza tanımlanmış yasal mevzuat listesi</p>
+              <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Uyumlu Olduğunuz Mevzuatlar</h3>
+              <p className="text-[10px] text-gray-500 dark:text-slate-400">Danışmanınız tarafından firmanıza tanımlanmış yasal mevzuat listesi</p>
             </div>
           </div>
 
           {loadingLegs ? (
-            <div className="py-20 text-center text-xs text-slate-500">Mevzuatlar yükleniyor...</div>
+            <div className="py-20 text-center text-xs text-gray-400 dark:text-slate-500">Mevzuatlar yükleniyor...</div>
           ) : clientRegulations.length === 0 ? (
-            <div className="py-20 text-center text-slate-500 text-xs font-medium">Tesisinize atanmış aktif bir mevzuat kaydı bulunmuyor.</div>
+            <div className="py-20 text-center text-gray-400 dark:text-slate-500 text-xs font-medium">Tesisinize atanmış aktif bir mevzuat kaydı bulunmuyor.</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                  <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                     <th className="p-4">Mevzuat Adı</th>
                     <th className="p-4">Kategori</th>
                     <th className="p-4">Resmi Gazete No / Tarih</th>
@@ -1091,16 +1108,16 @@ export default function ClientPanel() {
                 </thead>
                 <tbody>
                   {clientRegulations.map(reg => (
-                    <tr key={reg.id} className="border-b border-slate-850 hover:bg-slate-900/30 transition text-slate-350">
-                      <td className="p-4 font-bold text-slate-200">{reg.title}</td>
-                      <td className="p-4 uppercase font-semibold text-slate-400">{reg.category || 'Kanun/Yönetmelik'}</td>
-                      <td className="p-4 text-slate-400">
+                    <tr key={reg.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition text-gray-600 dark:text-slate-300">
+                      <td className="p-4 font-bold text-gray-800 dark:text-slate-200">{reg.title}</td>
+                      <td className="p-4 uppercase font-semibold text-gray-500 dark:text-slate-400">{reg.category || 'Kanun/Yönetmelik'}</td>
+                      <td className="p-4 text-gray-500 dark:text-slate-400">
                         {reg.rg_no ? `RG: ${reg.rg_no}` : ''} {reg.rg_date ? `(${new Date(reg.rg_date).toLocaleDateString('tr-TR')})` : ''}
                       </td>
                       <td className="p-4 text-right">
                         <button
                           onClick={() => handleViewRegulationArticles(reg)}
-                          className="inline-flex items-center gap-1 text-teal-400 hover:text-teal-300 font-bold hover:underline"
+                          className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold hover:underline"
                         >
                           Maddeleri Gör <BookOpen size={12} />
                         </button>
@@ -1118,10 +1135,12 @@ export default function ClientPanel() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
-        <div className="text-center space-y-4">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-teal-500 mx-auto"></div>
-          <p className="text-sm font-semibold tracking-wider text-slate-400">Veriler Güvenle Çekiliyor...</p>
+      <div className={isDark ? 'dark' : ''}>
+        <div className="min-h-screen bg-gray-50 dark:bg-slate-900 flex items-center justify-center text-gray-900 dark:text-white">
+          <div className="text-center space-y-4">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-teal-500 mx-auto"></div>
+            <p className="text-sm font-semibold tracking-wider text-gray-500 dark:text-slate-400">Veriler Güvenle Çekiliyor...</p>
+          </div>
         </div>
       </div>
     );
@@ -1132,37 +1151,47 @@ export default function ClientPanel() {
   const expiredDocs = documents.filter(d => d.expiry_date && new Date(d.expiry_date) < new Date()).length;
 
   return (
-    <div className="min-h-screen bg-[#0f172a] text-slate-100 flex flex-col font-sans">
-      
+    <div className={isDark ? 'dark' : ''}>
+    <div className="min-h-screen bg-gray-50 dark:bg-[#0f172a] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
+
       {/* HEADER NAVBAR */}
-      <header className="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-40 px-6 py-4 flex justify-between items-center">
+      <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-0 z-40 px-6 py-4 flex justify-between items-center">
         <div className="flex items-center gap-3">
           {clientDetails?.logo_url ? (
-            <img src={clientDetails.logo_url} alt="Logo" className="w-10 h-10 rounded-xl border border-slate-700 object-contain bg-slate-950 p-1" />
+            <img src={clientDetails.logo_url} alt="Logo" className="w-10 h-10 rounded-xl border border-gray-200 dark:border-slate-700 object-contain bg-white dark:bg-slate-950 p-1" />
           ) : (
-            <div className="w-10 h-10 rounded-xl bg-teal-650 flex items-center justify-center text-white font-bold shadow-lg shadow-teal-500/20">
+            <div className="w-10 h-10 rounded-xl bg-teal-600 flex items-center justify-center text-white font-bold shadow-lg shadow-teal-500/20">
               <Building size={20} />
             </div>
           )}
           <div>
-            <h1 className="font-extrabold text-base md:text-lg tracking-tight text-white flex items-center gap-1.5">
+            <h1 className="font-extrabold text-base md:text-lg tracking-tight text-gray-900 dark:text-white flex items-center gap-1.5">
               {clientDetails?.name}
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-teal-900 bg-teal-950/40 text-teal-400 uppercase tracking-wider">MÜŞTERİ PANELİ</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-teal-200 dark:border-teal-900 bg-teal-50 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400 uppercase tracking-wider">MÜŞTERİ PANELİ</span>
             </h1>
-            <p className="text-[10px] text-slate-450 font-bold">Hizmet Sağlayıcı: <span className="text-teal-400">{clientDetails?.consultant_company?.name || 'Danışmanlık Firması'}</span></p>
+            <p className="text-[10px] text-gray-500 dark:text-slate-400 font-bold">Hizmet Sağlayıcı: <span className="text-teal-600 dark:text-teal-400">{clientDetails?.consultant_company?.name || 'Danışmanlık Firması'}</span></p>
           </div>
         </div>
 
-        <button 
-          onClick={handleLogout}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-950/20 transition border border-rose-900/30 hover:border-rose-900/60"
-        >
-          <LogOut size={14} /> Çıkış Yap
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleTheme}
+            title={isDark ? 'Açık Temaya Geç' : 'Koyu Temaya Geç'}
+            className="flex items-center justify-center w-9 h-9 rounded-xl text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition border border-gray-200 dark:border-slate-700"
+          >
+            {isDark ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition border border-rose-200 dark:border-rose-900/30 hover:border-rose-300 dark:hover:border-rose-900/60"
+          >
+            <LogOut size={14} /> Çıkış Yap
+          </button>
+        </div>
       </header>
 
       {/* TAB NAVIGATION */}
-      <nav className="bg-slate-900/60 border-b border-slate-800 px-4 sticky top-[73px] z-30 overflow-x-auto">
+      <nav className="bg-white/60 dark:bg-slate-900/60 border-b border-gray-200 dark:border-slate-800 px-4 sticky top-[73px] z-30 overflow-x-auto">
         <div className="max-w-7xl mx-auto flex gap-1 py-2">
           {NAV_TABS.map((tab) => (
             <button
@@ -1171,7 +1200,7 @@ export default function ClientPanel() {
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                 activeTab === tab.id
                   ? 'bg-teal-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-slate-400 hover:text-white hover:bg-gray-200 dark:hover:bg-slate-800'
               }`}
             >
               {tab.icon} {tab.label}
@@ -1189,10 +1218,10 @@ export default function ClientPanel() {
             
             {/* Warning if expired docs exist */}
             {expiredDocs > 0 && (
-              <div className="bg-rose-950/20 border border-rose-900/40 p-4 rounded-2xl flex items-start gap-3">
+              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 p-4 rounded-2xl flex items-start gap-3">
                 <AlertTriangle className="text-rose-500 shrink-0 mt-0.5" size={18} />
                 <div>
-                  <h5 className="text-xs font-extrabold text-rose-400 uppercase tracking-wider">Dikkat Edilmesi Gereken Evraklar Mevcut</h5>
+                  <h5 className="text-xs font-extrabold text-rose-700 dark:text-rose-400 uppercase tracking-wider">Dikkat Edilmesi Gereken Evraklar Mevcut</h5>
                   <p className="text-xs text-rose-300 mt-1">Süresi geçmiş {expiredDocs} adet belgeniz bulunmaktadır. Lütfen güncel belgelerinizi hazırlayıp çevre şefinize iletin.</p>
                 </div>
               </div>
@@ -1201,42 +1230,42 @@ export default function ClientPanel() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
               {/* Firm Information */}
-              <div className="bg-slate-900/30 border border-slate-800 p-6 rounded-2xl space-y-4">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider pb-3 border-b border-slate-800 flex items-center gap-2">
-                  <Shield size={16} className="text-teal-500" /> Firma Bilgileri
+              <div className="bg-white dark:bg-slate-900/30 border border-gray-200 dark:border-slate-800 p-6 rounded-2xl space-y-4">
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider pb-3 border-b border-gray-200 dark:border-slate-800 flex items-center gap-2">
+                  <Shield size={16} className="text-teal-600 dark:text-teal-500" /> Firma Bilgileri
                 </h3>
                 <div className="grid grid-cols-2 gap-4 text-xs">
                   <div>
-                    <span className="text-slate-500 block mb-1">Firma Ünvanı</span>
-                    <span className="font-bold text-slate-200">{clientDetails?.name}</span>
+                    <span className="text-gray-400 dark:text-slate-500 block mb-1">Firma Ünvanı</span>
+                    <span className="font-bold text-gray-800 dark:text-slate-200">{clientDetails?.name}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500 block mb-1">Vergi Numarası</span>
-                    <span className="font-bold text-slate-200">{clientDetails?.tax_no || 'Belirtilmedi'}</span>
+                    <span className="text-gray-400 dark:text-slate-500 block mb-1">Vergi Numarası</span>
+                    <span className="font-bold text-gray-800 dark:text-slate-200">{clientDetails?.tax_no || 'Belirtilmedi'}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500 block mb-1">Telefon</span>
-                    <span className="font-bold text-slate-200">{clientDetails?.phone || 'Belirtilmedi'}</span>
+                    <span className="text-gray-400 dark:text-slate-500 block mb-1">Telefon</span>
+                    <span className="font-bold text-gray-800 dark:text-slate-200">{clientDetails?.phone || 'Belirtilmedi'}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500 block mb-1">E-posta</span>
-                    <span className="font-bold text-slate-200">{clientDetails?.email || 'Belirtilmedi'}</span>
+                    <span className="text-gray-400 dark:text-slate-500 block mb-1">E-posta</span>
+                    <span className="font-bold text-gray-800 dark:text-slate-200">{clientDetails?.email || 'Belirtilmedi'}</span>
                   </div>
                   {clientDetails?.kep_address && (
                     <div>
-                      <span className="text-slate-500 block mb-1">KEP Adresi</span>
-                      <span className="font-bold text-slate-200">{clientDetails.kep_address}</span>
+                      <span className="text-gray-400 dark:text-slate-500 block mb-1">KEP Adresi</span>
+                      <span className="font-bold text-gray-800 dark:text-slate-200">{clientDetails.kep_address}</span>
                     </div>
                   )}
                   <div className={clientDetails?.kep_address ? '' : 'col-span-2'}>
-                    <span className="text-slate-500 block mb-1">Tesis Konumu</span>
-                    <span className="font-bold text-slate-200">{clientDetails?.address || 'Belirtilmedi'}</span>
+                    <span className="text-gray-400 dark:text-slate-500 block mb-1">Tesis Konumu</span>
+                    <span className="font-bold text-gray-800 dark:text-slate-200">{clientDetails?.address || 'Belirtilmedi'}</span>
                     {clientDetails?.latitude && clientDetails?.longitude && (
                       <a
                         href={`https://www.google.com/maps?q=${clientDetails.latitude},${clientDetails.longitude}`}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-teal-400 hover:text-teal-300 font-bold mt-1"
+                        className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold mt-1"
                       >
                         <MapPin size={11} /> Haritada Gör
                       </a>
@@ -1246,32 +1275,32 @@ export default function ClientPanel() {
               </div>
 
               {/* Service / Permit Status */}
-              <div className="bg-slate-900/30 border border-slate-800 p-6 rounded-2xl space-y-4">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider pb-3 border-b border-slate-800 flex items-center gap-2">
-                  <Layers size={16} className="text-teal-500" /> Hizmet ve İzin Durumu
+              <div className="bg-white dark:bg-slate-900/30 border border-gray-200 dark:border-slate-800 p-6 rounded-2xl space-y-4">
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider pb-3 border-b border-gray-200 dark:border-slate-800 flex items-center gap-2">
+                  <Layers size={16} className="text-teal-600 dark:text-teal-500" /> Hizmet ve İzin Durumu
                 </h3>
 
                 {clientDetails?.service_start_date ? (() => {
                   const status = getContractStatus(clientDetails.service_start_date);
                   return (
-                    <div className="p-3 bg-slate-950/40 rounded-xl border border-slate-800 space-y-2">
+                    <div className="p-3 bg-gray-50 dark:bg-slate-950/40 rounded-xl border border-gray-200 dark:border-slate-800 space-y-2">
                       <div className="flex justify-between items-center">
-                        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Hizmet Süresi (1 Yıl)</span>
+                        <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider">Hizmet Süresi (1 Yıl)</span>
                         {status.isExpired ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-rose-950/40 text-rose-400 border-rose-900/40 uppercase">Süresi Doldu</span>
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/40 uppercase">Süresi Doldu</span>
                         ) : status.isWarning ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-amber-950/40 text-amber-400 border-amber-900/40 uppercase animate-pulse">Son {status.daysLeft} Gün</span>
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/40 uppercase animate-pulse">Son {status.daysLeft} Gün</span>
                         ) : (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-emerald-950/40 text-emerald-400 border-emerald-900/40 uppercase">{status.daysLeft} Gün Kaldı</span>
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/40 uppercase">{status.daysLeft} Gün Kaldı</span>
                         )}
                       </div>
-                      <div className="flex justify-between text-[11px] text-slate-400">
-                        <span>Başlangıç: <b className="text-slate-200">{new Date(clientDetails.service_start_date).toLocaleDateString('tr-TR')}</b></span>
-                        <span>Bitiş: <b className="text-slate-200">{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
+                      <div className="flex justify-between text-[11px] text-gray-500 dark:text-slate-400">
+                        <span>Başlangıç: <b className="text-gray-800 dark:text-slate-200">{new Date(clientDetails.service_start_date).toLocaleDateString('tr-TR')}</b></span>
+                        <span>Bitiş: <b className="text-gray-800 dark:text-slate-200">{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
                       </div>
                       {clientDetails?.contract_file_url && (
-                        <div className="pt-1.5 border-t border-dashed border-slate-800 flex justify-end">
-                          <a href={clientDetails.contract_file_url} target="_blank" rel="noreferrer" className="text-[11px] text-teal-400 hover:text-teal-300 font-bold flex items-center gap-1">
+                        <div className="pt-1.5 border-t border-dashed border-gray-200 dark:border-slate-800 flex justify-end">
+                          <a href={clientDetails.contract_file_url} target="_blank" rel="noreferrer" className="text-[11px] text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold flex items-center gap-1">
                             Sözleşme Nüshası ↗
                           </a>
                         </div>
@@ -1279,17 +1308,17 @@ export default function ClientPanel() {
                     </div>
                   );
                 })() : (
-                  <p className="text-xs text-slate-500 py-2">Hizmet başlangıç tarihi henüz tanımlanmamış.</p>
+                  <p className="text-xs text-gray-400 dark:text-slate-500 py-2">Hizmet başlangıç tarihi henüz tanımlanmamış.</p>
                 )}
 
                 <div>
-                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1.5">İzin Kapsamı</span>
+                  <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider block mb-1.5">İzin Kapsamı</span>
                   {clientDetails?.permit_stage === 'ek1' ? (
-                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-950/40 text-rose-400 border-rose-900/40 uppercase">EK-1 Kapsamında</span>
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/40 uppercase">EK-1 Kapsamında</span>
                   ) : clientDetails?.permit_stage === 'ek2' ? (
-                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-amber-950/40 text-amber-400 border-amber-900/40 uppercase">EK-2 Kapsamında</span>
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/40 uppercase">EK-2 Kapsamında</span>
                   ) : (
-                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-slate-800 text-slate-400 border-slate-700 uppercase">Kapsam Dışı</span>
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400 border-gray-200 dark:border-slate-700 uppercase">Kapsam Dışı</span>
                   )}
 
                   {clientDetails?.permit_stage && clientDetails.permit_stage !== 'out_of_scope' && (() => {
@@ -1305,9 +1334,9 @@ export default function ClientPanel() {
                         {articlesArray.map((code) => {
                           const art = source.find(a => a.code === code);
                           return (
-                            <div key={code} className="text-[11px] bg-slate-950/40 border border-slate-800 rounded-lg px-2.5 py-1.5 flex gap-2">
-                              <span className="font-mono font-bold text-blue-400 shrink-0">{code}</span>
-                              <span className="text-slate-400">{art?.title || 'Madde tanımı bulunamadı'}</span>
+                            <div key={code} className="text-[11px] bg-gray-50 dark:bg-slate-950/40 border border-gray-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 flex gap-2">
+                              <span className="font-mono font-bold text-blue-700 dark:text-blue-400 shrink-0">{code}</span>
+                              <span className="text-gray-500 dark:text-slate-400">{art?.title || 'Madde tanımı bulunamadı'}</span>
                             </div>
                           );
                         })}
@@ -1318,21 +1347,21 @@ export default function ClientPanel() {
               </div>
 
               {/* Next Visits */}
-              <div className="bg-slate-900/30 border border-slate-800 p-6 rounded-2xl space-y-4 md:col-span-2">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider pb-3 border-b border-slate-800 flex items-center gap-2">
-                  <Calendar size={16} className="text-teal-500" /> Yaklaşan Ziyaretler
+              <div className="bg-white dark:bg-slate-900/30 border border-gray-200 dark:border-slate-800 p-6 rounded-2xl space-y-4 md:col-span-2">
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider pb-3 border-b border-gray-200 dark:border-slate-800 flex items-center gap-2">
+                  <Calendar size={16} className="text-teal-600 dark:text-teal-500" /> Yaklaşan Ziyaretler
                 </h3>
                 {visits.length === 0 ? (
-                  <p className="text-xs text-slate-500 py-6 text-center">Planlanmış yakın bir ziyaret bulunmamaktadır.</p>
+                  <p className="text-xs text-gray-400 dark:text-slate-500 py-6 text-center">Planlanmış yakın bir ziyaret bulunmamaktadır.</p>
                 ) : (
                   <div className="space-y-3">
                     {visits.slice(0, 3).map((v) => (
-                      <div key={v.id} className="flex justify-between items-center p-3 bg-slate-950/40 border border-slate-800/80 rounded-xl">
+                      <div key={v.id} className="flex justify-between items-center p-3 bg-gray-50 dark:bg-slate-950/40 border border-gray-200 dark:border-slate-800/80 rounded-xl">
                         <div>
-                          <span className="text-xs font-bold text-slate-200 block">{v.purpose || 'Çevre Denetimi & Ziyaret'}</span>
-                          <span className="text-[10px] text-slate-500">{v.duration_hours || 2} saat planlandı</span>
+                          <span className="text-xs font-bold text-gray-800 dark:text-slate-200 block">{v.purpose || 'Çevre Denetimi & Ziyaret'}</span>
+                          <span className="text-[10px] text-gray-400 dark:text-slate-500">{v.duration_hours || 2} saat planlandı</span>
                         </div>
-                        <span className="text-xs font-extrabold text-teal-400 bg-teal-950/40 px-2.5 py-1 rounded-lg border border-teal-900/40">
+                        <span className="text-xs font-extrabold text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40 px-2.5 py-1 rounded-lg border border-teal-200 dark:border-teal-900/40">
                           {new Date(v.visit_date).toLocaleDateString('tr-TR')}
                         </span>
                       </div>
@@ -1347,22 +1376,22 @@ export default function ClientPanel() {
 
         {/* TAB 2: CLIENT DOCUMENTS */}
         {activeTab === 'docs' && (
-          <div className="bg-slate-900/20 border border-slate-850 rounded-2xl overflow-hidden">
-            <div className="p-4 border-b border-slate-800 bg-slate-950/20 flex justify-between items-center">
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider">Sistemde Kayıtlı Belgeleriniz</h3>
-              <span className="text-xs font-medium px-2 py-0.5 bg-slate-800 rounded text-slate-400">{documents.length} Adet</span>
+          <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+            <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex justify-between items-center">
+              <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Sistemde Kayıtlı Belgeleriniz</h3>
+              <span className="text-xs font-medium px-2 py-0.5 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">{documents.length} Adet</span>
             </div>
 
             {documents.length === 0 ? (
               <div className="py-20 text-center space-y-3">
-                <FileText size={40} className="text-slate-600 mx-auto" />
-                <p className="text-sm text-slate-500 font-medium">Bu firma için yüklenmiş aktif belge bulunmamaktadır.</p>
+                <FileText size={40} className="text-gray-300 dark:text-slate-600 mx-auto" />
+                <p className="text-sm text-gray-400 dark:text-slate-500 font-medium">Bu firma için yüklenmiş aktif belge bulunmamaktadır.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                    <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                       <th className="p-4">Belge Adı</th>
                       <th className="p-4">Belge Türü</th>
                       <th className="p-4">Yayın Tarihi</th>
@@ -1375,32 +1404,32 @@ export default function ClientPanel() {
                     {documents.map((doc) => {
                       const isExpired = doc.expiry_date && new Date(doc.expiry_date) < new Date();
                       return (
-                        <tr key={doc.id} className="border-b border-slate-850 hover:bg-slate-900/30 transition">
-                          <td className="p-4 font-bold text-slate-200">{doc.title}</td>
-                          <td className="p-4 text-slate-400">{doc.type_def?.label || 'Belirtilmedi'}</td>
-                          <td className="p-4 text-slate-400">{new Date(doc.acquisition_date).toLocaleDateString('tr-TR')}</td>
+                        <tr key={doc.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition">
+                          <td className="p-4 font-bold text-gray-800 dark:text-slate-200">{doc.title}</td>
+                          <td className="p-4 text-gray-500 dark:text-slate-400">{doc.type_def?.label || 'Belirtilmedi'}</td>
+                          <td className="p-4 text-gray-500 dark:text-slate-400">{new Date(doc.acquisition_date).toLocaleDateString('tr-TR')}</td>
                           <td className="p-4">
                             {doc.is_indefinite ? (
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-400">Süresiz</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400">Süresiz</span>
                             ) : (
                               <span className={`font-bold ${isExpired ? 'text-rose-500' : 'text-slate-300'}`}>
                                 {new Date(doc.expiry_date).toLocaleDateString('tr-TR')}
                               </span>
                             )}
                           </td>
-                          <td className="p-4 text-slate-500">{formatFileSize(doc.file_size)}</td>
+                          <td className="p-4 text-gray-400 dark:text-slate-500">{formatFileSize(doc.file_size)}</td>
                           <td className="p-4 text-right">
                             {doc.file_url ? (
                               <a 
                                 href={doc.file_url} 
                                 target="_blank" 
                                 rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-teal-450 hover:text-teal-300 font-bold"
+                                className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold"
                               >
                                 Görüntüle <ExternalLink size={12} />
                               </a>
                             ) : (
-                              <span className="text-slate-600">Dosya Yok</span>
+                              <span className="text-gray-400 dark:text-slate-600">Dosya Yok</span>
                             )}
                           </td>
                         </tr>
@@ -1416,15 +1445,15 @@ export default function ClientPanel() {
         {/* TAB 3: COMPLIANCE ACTIONS */}
         {activeTab === 'actions' && (
           <div className="space-y-4">
-            <div className="bg-slate-900/20 border border-slate-850 rounded-2xl p-4 flex justify-between items-center bg-slate-950/20">
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider">Aksiyon Planı ve Denetim Bulguları</h3>
-              <span className="text-xs font-medium px-2 py-0.5 bg-slate-800 rounded text-slate-400">{actions.length} Aksiyon</span>
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl p-4 flex justify-between items-center bg-gray-50 dark:bg-slate-950/20">
+              <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Aksiyon Planı ve Denetim Bulguları</h3>
+              <span className="text-xs font-medium px-2 py-0.5 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">{actions.length} Aksiyon</span>
             </div>
 
             {actions.length === 0 ? (
-              <div className="bg-slate-900/20 border border-slate-850 rounded-2xl py-20 text-center space-y-3">
-                <CheckCircle size={40} className="text-slate-600 mx-auto" />
-                <p className="text-sm text-slate-500 font-medium">Planlanmış veya bekleyen bir aksiyon bulunmamaktadır.</p>
+              <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl py-20 text-center space-y-3">
+                <CheckCircle size={40} className="text-gray-300 dark:text-slate-600 mx-auto" />
+                <p className="text-sm text-gray-400 dark:text-slate-500 font-medium">Planlanmış veya bekleyen bir aksiyon bulunmamaktadır.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1437,45 +1466,45 @@ export default function ClientPanel() {
                   return (
                     <div
                       key={act.id}
-                      className={`p-5 rounded-2xl border transition ${act.status === 'approved' ? 'bg-slate-950/20 border-slate-900' : 'bg-slate-900/30 border-slate-800 hover:border-slate-750'}`}
+                      className={`p-5 rounded-2xl border transition ${act.status === 'approved' ? 'bg-gray-50 dark:bg-slate-950/20 border-gray-200 dark:border-slate-900' : 'bg-white dark:bg-slate-900/30 border-gray-200 dark:border-slate-800'}`}
                     >
                       <div className="flex justify-between items-start gap-4">
-                        <span className="text-xs font-bold text-slate-200">{act.title || 'Aksiyon'}</span>
+                        <span className="text-xs font-bold text-gray-800 dark:text-slate-200">{act.title || 'Aksiyon'}</span>
                         {act.status === 'approved' ? (
-                          <span className="text-[10px] font-black bg-emerald-950/40 text-emerald-450 border border-emerald-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Tamamlandı</span>
+                          <span className="text-[10px] font-black bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Tamamlandı</span>
                         ) : act.status === 'completed' ? (
-                          <span className="text-[10px] font-black bg-blue-950/40 text-blue-400 border border-blue-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Onay Bekliyor</span>
+                          <span className="text-[10px] font-black bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Onay Bekliyor</span>
                         ) : act.status === 'correction_requested' ? (
-                          <span className="text-[10px] font-black bg-rose-950/40 text-rose-450 border border-rose-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Düzeltme İstendi</span>
+                          <span className="text-[10px] font-black bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Düzeltme İstendi</span>
                         ) : isOverdue ? (
-                          <span className="text-[10px] font-black bg-rose-950/40 text-rose-450 border border-rose-900/40 px-2.5 py-0.5 rounded-full uppercase animate-pulse shrink-0">Gecikmiş</span>
+                          <span className="text-[10px] font-black bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 px-2.5 py-0.5 rounded-full uppercase animate-pulse shrink-0">Gecikmiş</span>
                         ) : (
-                          <span className="text-[10px] font-black bg-amber-950/40 text-amber-450 border border-amber-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Bekliyor</span>
+                          <span className="text-[10px] font-black bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/40 px-2.5 py-0.5 rounded-full uppercase shrink-0">Bekliyor</span>
                         )}
                       </div>
 
-                      <p className="text-xs text-slate-500 mt-2 line-clamp-3"><span className="font-semibold text-slate-400">Açıklama:</span> {act.description || 'Belirtilmedi'}</p>
+                      <p className="text-xs text-gray-400 dark:text-slate-500 mt-2 line-clamp-3"><span className="font-semibold text-gray-500 dark:text-slate-400">Açıklama:</span> {act.description || 'Belirtilmedi'}</p>
 
                       {act.status === 'correction_requested' && act.manager_comment && (
-                        <div className="mt-2 bg-rose-950/20 border border-rose-900/30 rounded-lg p-2.5 text-xs text-rose-300">
+                        <div className="mt-2 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/30 rounded-lg p-2.5 text-xs text-rose-300">
                           <span className="font-bold text-[9px] uppercase tracking-wide block mb-0.5">Düzeltme Gerekçesi</span>
                           <p className="italic">{act.manager_comment}</p>
                         </div>
                       )}
 
                       {act.notes && (act.status === 'completed' || act.status === 'approved') && (
-                        <div className="mt-2 bg-slate-950/40 border border-slate-800 rounded-lg p-2.5 text-xs">
-                          <span className="font-bold text-[9px] uppercase tracking-wide text-slate-500 block mb-0.5">Gönderilen Açıklama</span>
-                          <p className="text-slate-300 whitespace-pre-wrap">{act.notes}</p>
+                        <div className="mt-2 bg-gray-50 dark:bg-slate-950/40 border border-gray-200 dark:border-slate-800 rounded-lg p-2.5 text-xs">
+                          <span className="font-bold text-[9px] uppercase tracking-wide text-gray-400 dark:text-slate-500 block mb-0.5">Gönderilen Açıklama</span>
+                          <p className="text-gray-600 dark:text-slate-300 whitespace-pre-wrap">{act.notes}</p>
                           {act.evidence_url && (
-                            <a href={act.evidence_url} target="_blank" rel="noreferrer" className="inline-block mt-1.5 text-teal-400 hover:text-teal-300 font-bold">
+                            <a href={act.evidence_url} target="_blank" rel="noreferrer" className="inline-block mt-1.5 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold">
                               📎 Yüklenen Belgeyi Gör ↗
                             </a>
                           )}
                         </div>
                       )}
 
-                      <div className="mt-4 pt-3 border-t border-dashed border-slate-800 flex justify-between items-center text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                      <div className="mt-4 pt-3 border-t border-dashed border-gray-200 dark:border-slate-800 flex justify-between items-center text-[10px] text-gray-500 dark:text-slate-400 font-bold uppercase tracking-wider">
                         <span>Hedef Tarih</span>
                         <span className={isOverdue ? 'text-rose-500 font-extrabold' : 'text-slate-300'}>
                           {act.due_date ? new Date(act.due_date).toLocaleDateString('tr-TR') : 'Süresiz'}
@@ -1484,18 +1513,18 @@ export default function ClientPanel() {
 
                       {canRespond && (
                         isEditing ? (
-                          <div className="mt-3 pt-3 border-t border-dashed border-slate-800 space-y-2.5">
+                          <div className="mt-3 pt-3 border-t border-dashed border-gray-200 dark:border-slate-800 space-y-2.5">
                             <textarea
                               rows={2}
                               placeholder="Yapılan işi kısaca açıklayın..."
                               value={actionNoteInput}
                               onChange={(e) => setActionNoteInput(e.target.value)}
-                              className="w-full border rounded-lg p-2 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white"
+                              className="w-full border rounded-lg p-2 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white"
                             />
                             <input
                               type="file"
                               onChange={(e) => setActionFileInput(e.target.files?.[0] || null)}
-                              className="w-full text-[11px] text-slate-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-800 file:text-slate-200"
+                              className="w-full text-[11px] text-gray-500 dark:text-slate-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-800 file:text-slate-200"
                             />
                             <div className="flex gap-2">
                               <button
@@ -1505,7 +1534,7 @@ export default function ClientPanel() {
                                   setActionNoteInput('');
                                   setActionFileInput(null);
                                 }}
-                                className="flex-1 px-3 py-2 border border-slate-700 rounded-lg text-slate-300 text-xs font-bold hover:bg-slate-800 transition"
+                                className="flex-1 px-3 py-2 border border-gray-200 dark:border-slate-700 rounded-lg text-gray-600 dark:text-slate-300 text-xs font-bold hover:bg-gray-200 dark:hover:bg-slate-800 transition"
                               >
                                 Vazgeç
                               </button>
@@ -1527,7 +1556,7 @@ export default function ClientPanel() {
                               setActionNoteInput('');
                               setActionFileInput(null);
                             }}
-                            className="mt-3 w-full border border-dashed border-teal-800 text-teal-400 hover:bg-teal-950/20 font-bold py-2 rounded-lg text-xs transition"
+                            className="mt-3 w-full border border-dashed border-teal-300 dark:border-teal-800 text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-950/20 font-bold py-2 rounded-lg text-xs transition"
                           >
                             📎 Kanıt Dosyası Yükle & Tamamlandı İşaretle
                           </button>
@@ -1544,10 +1573,10 @@ export default function ClientPanel() {
         {/* TAB 4: WASTE DISPATCHES */}
         {activeTab === 'waste' && (
           <div className="space-y-4">
-            <div className="bg-slate-900/20 border border-slate-850 rounded-2xl p-4 flex flex-wrap justify-between items-center gap-3">
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl p-4 flex flex-wrap justify-between items-center gap-3">
               <div>
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Atık Gönderim Sevkiyat Tarihçesi</h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">{wastes.length} kayıtlı sevkiyat</p>
+                <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Atık Gönderim Sevkiyat Tarihçesi</h3>
+                <p className="text-[10px] text-gray-500 dark:text-slate-400 mt-0.5">{wastes.length} kayıtlı sevkiyat</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -1573,7 +1602,7 @@ export default function ClientPanel() {
                     setNewCompanyAddress('');
                     setShowAddCompanyModal(true);
                   }}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 transition"
+                  className="bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-800 dark:text-slate-200 border border-gray-200 dark:border-slate-700 px-3.5 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 transition"
                 >
                   <PlusCircle size={14} className="text-teal-400" /> Firma Ekle
                 </button>
@@ -1588,17 +1617,17 @@ export default function ClientPanel() {
             </div>
 
             {/* FILTER BAR */}
-            <div className="bg-slate-900/20 border border-slate-850 rounded-2xl p-4 flex flex-wrap gap-4 items-center justify-between">
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl p-4 flex flex-wrap gap-4 items-center justify-between">
               <div className="flex flex-wrap gap-3 items-center">
                 <input
                   type="text"
                   placeholder="Atık kodu veya açıklama ara..."
                   value={wasteSearchQuery}
                   onChange={(e) => setWasteSearchQuery(e.target.value)}
-                  className="border rounded-xl p-2 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white w-52"
+                  className="border rounded-xl p-2 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white w-52"
                 />
 
-                <div className="flex gap-1.5 bg-slate-800/60 p-1 rounded-xl">
+                <div className="flex gap-1.5 bg-gray-100 dark:bg-slate-800/60 p-1 rounded-xl">
                   {(['all', 'recovery', 'disposal'] as const).map((t) => (
                     <button
                       key={t}
@@ -1612,7 +1641,7 @@ export default function ClientPanel() {
                   ))}
                 </div>
 
-                <div className="flex gap-1.5 bg-slate-800/60 p-1 rounded-xl">
+                <div className="flex gap-1.5 bg-gray-100 dark:bg-slate-800/60 p-1 rounded-xl">
                   {(['all', 'monthly', 'yearly'] as const).map((p) => (
                     <button
                       key={p}
@@ -1631,7 +1660,7 @@ export default function ClientPanel() {
                     type="month"
                     value={wasteFilterMonth}
                     onChange={(e) => setWasteFilterMonth(e.target.value)}
-                    className="border rounded-xl p-2 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white"
+                    className="border rounded-xl p-2 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white"
                   />
                 )}
                 {wasteFilterPeriod === 'yearly' && (
@@ -1639,26 +1668,26 @@ export default function ClientPanel() {
                     type="number"
                     value={wasteFilterYear}
                     onChange={(e) => setWasteFilterYear(e.target.value)}
-                    className="border rounded-xl p-2 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white w-24"
+                    className="border rounded-xl p-2 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white w-24"
                   />
                 )}
               </div>
-              <span className="text-[10px] font-medium px-2 py-1 bg-slate-800 rounded text-slate-400">
+              <span className="text-[10px] font-medium px-2 py-1 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">
                 {getFilteredWastes().length} / {wastes.length} kayıt gösteriliyor
               </span>
             </div>
 
-            <div className="bg-slate-900/20 border border-slate-850 rounded-2xl overflow-hidden">
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
             {getFilteredWastes().length === 0 ? (
               <div className="py-20 text-center space-y-3">
-                <Trash2 size={40} className="text-slate-600 mx-auto" />
-                <p className="text-sm text-slate-500 font-medium">Filtrenize uyan bir atık gönderimi bulunmamaktadır.</p>
+                <Trash2 size={40} className="text-gray-300 dark:text-slate-600 mx-auto" />
+                <p className="text-sm text-gray-400 dark:text-slate-500 font-medium">Filtrenize uyan bir atık gönderimi bulunmamaktadır.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                    <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                       <th className="p-4">Atık Kodu</th>
                       <th className="p-4">Miktar (kg)</th>
                       <th className="p-4">Taşıyıcı Firma</th>
@@ -1670,39 +1699,39 @@ export default function ClientPanel() {
                   </thead>
                   <tbody>
                     {getFilteredWastes().map((w) => (
-                      <tr key={w.id} className="border-b border-slate-800 hover:bg-slate-900/30 transition text-slate-300">
+                      <tr key={w.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition text-gray-600 dark:text-slate-300">
                         <td className="p-4">
                           <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
                             w.waste_code?.includes('*')
-                              ? 'bg-rose-900/50 text-rose-300 border border-rose-800/50'
-                              : 'bg-green-900/50 text-green-300 border border-green-800/50'
+                              ? 'bg-rose-50 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/50'
+                              : 'bg-emerald-50 dark:bg-green-900/50 text-emerald-700 dark:text-green-300 border border-emerald-200 dark:border-green-800/50'
                           }`}>
                             {w.waste_code || '-'}
                           </span>
                         </td>
-                        <td className="p-4 font-bold text-white">
+                        <td className="p-4 font-bold text-gray-900 dark:text-white">
                           {w.quantity_kg ? Number(w.quantity_kg).toLocaleString('tr-TR') + ' kg' : '-'}
                         </td>
-                        <td className="p-4 text-xs font-semibold text-slate-300">
+                        <td className="p-4 text-xs font-semibold text-gray-600 dark:text-slate-300">
                           {w.transporter_company?.name || w.transporter || '-'}
                         </td>
-                        <td className="p-4 text-xs font-semibold text-slate-300">
+                        <td className="p-4 text-xs font-semibold text-gray-600 dark:text-slate-300">
                           {w.destination_company?.name || w.destination || '-'}
                         </td>
                         <td className="p-4">
                           <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
                             w.disposal_type === 'recovery'
-                              ? 'bg-green-950/40 text-green-400 border border-green-900/30'
-                              : 'bg-rose-950/40 text-rose-400 border border-rose-900/30'
+                              ? 'bg-emerald-50 dark:bg-green-950/40 text-emerald-700 dark:text-green-400 border border-emerald-200 dark:border-green-900/30'
+                              : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/30'
                           }`}>
                             {w.disposal_type === 'recovery' ? 'Geri Kazanım' : 'Bertaraf'}
                             {w.disposal_code ? ' (' + w.disposal_code + ')' : ''}
                           </span>
                         </td>
-                        <td className="p-4 text-slate-400">
+                        <td className="p-4 text-gray-500 dark:text-slate-400">
                           {w.exit_date ? new Date(w.exit_date).toLocaleDateString('tr-TR') : '-'}
                         </td>
-                        <td className="p-4 text-xs text-slate-400 italic max-w-xs truncate" title={w.description}>
+                        <td className="p-4 text-xs text-gray-500 dark:text-slate-400 italic max-w-xs truncate" title={w.description}>
                           {w.description || '-'}
                         </td>
                       </tr>
@@ -1720,19 +1749,19 @@ export default function ClientPanel() {
           <div className="space-y-6">
             
             {/* Visit Schedules */}
-            <div className="bg-slate-900/20 border border-slate-850 rounded-2xl overflow-hidden">
-              <div className="p-4 border-b border-slate-800 bg-slate-950/20 flex justify-between items-center">
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Danışman Ziyaret Planları</h3>
-                <span className="text-xs font-medium px-2 py-0.5 bg-slate-800 rounded text-slate-400">{visits.length} Toplam</span>
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+              <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex justify-between items-center">
+                <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Danışman Ziyaret Planları</h3>
+                <span className="text-xs font-medium px-2 py-0.5 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">{visits.length} Toplam</span>
               </div>
 
               {visits.length === 0 ? (
-                <div className="py-12 text-center text-slate-500 text-xs font-medium">Planlanmış veya gerçekleşmiş ziyaret kaydı bulunmuyor.</div>
+                <div className="py-12 text-center text-gray-400 dark:text-slate-500 text-xs font-medium">Planlanmış veya gerçekleşmiş ziyaret kaydı bulunmuyor.</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
-                      <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                      <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                         <th className="p-4">Ziyaret Tarihi</th>
                         <th className="p-4">Ziyaret Amacı / Açıklama</th>
                         <th className="p-4">Süre (Saat)</th>
@@ -1740,9 +1769,9 @@ export default function ClientPanel() {
                     </thead>
                     <tbody>
                       {visits.map((v) => (
-                        <tr key={v.id} className="border-b border-slate-850 hover:bg-slate-900/30 transition text-slate-350">
-                          <td className="p-4 font-bold text-teal-400">{new Date(v.visit_date).toLocaleDateString('tr-TR')}</td>
-                          <td className="p-4 font-semibold text-slate-200">{v.purpose || '-'}</td>
+                        <tr key={v.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition text-gray-600 dark:text-slate-300">
+                          <td className="p-4 font-bold text-teal-600 dark:text-teal-400">{new Date(v.visit_date).toLocaleDateString('tr-TR')}</td>
+                          <td className="p-4 font-semibold text-gray-800 dark:text-slate-200">{v.purpose || '-'}</td>
                           <td className="p-4">{v.duration_hours || '-'} Saat</td>
                         </tr>
                       ))}
@@ -1753,19 +1782,19 @@ export default function ClientPanel() {
             </div>
 
             {/* Environmental Reports */}
-            <div className="bg-slate-900/20 border border-slate-850 rounded-2xl overflow-hidden">
-              <div className="p-4 border-b border-slate-800 bg-slate-950/20 flex justify-between items-center">
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Yayınlanmış Çevre Raporları</h3>
-                <span className="text-xs font-medium px-2 py-0.5 bg-slate-800 rounded text-slate-400">{reports.length} Rapor</span>
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+              <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex justify-between items-center">
+                <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Yayınlanmış Çevre Raporları</h3>
+                <span className="text-xs font-medium px-2 py-0.5 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">{reports.length} Rapor</span>
               </div>
 
               {reports.length === 0 ? (
-                <div className="py-12 text-center text-slate-500 text-xs font-medium">Yüklenmiş veya imzalanmış çevre raporu bulunmuyor.</div>
+                <div className="py-12 text-center text-gray-400 dark:text-slate-500 text-xs font-medium">Yüklenmiş veya imzalanmış çevre raporu bulunmuyor.</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
-                      <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-bold">
+                      <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
                         <th className="p-4">Rapor Başlığı</th>
                         <th className="p-4">Dönem</th>
                         <th className="p-4">Islak İmzalı Rapor</th>
@@ -1775,8 +1804,10 @@ export default function ClientPanel() {
                     </thead>
                     <tbody>
                       {reports.map((r) => (
-                        <tr key={r.id} className="border-b border-slate-850 hover:bg-slate-900/30 transition text-slate-350">
-                          <td className="p-4 font-bold text-slate-200">{r.title || 'Çevre Raporu'}</td>
+                        <tr key={r.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition text-gray-600 dark:text-slate-300">
+                          <td className="p-4 font-bold text-gray-800 dark:text-slate-200">
+                            {r.report_type === 'monthly' ? 'Aylık Değerlendirme' : r.report_type === 'yearly' ? 'Yıllık İç Tetkik' : (r.title || 'Çevre Raporu')}
+                          </td>
                           <td className="p-4">{r.period || '-'}</td>
                           <td className="p-4">
                             {r.wet_signature_url ? (
@@ -1789,7 +1820,7 @@ export default function ClientPanel() {
                                 Islak İmzalı Raporu Gör ↗
                               </a>
                             ) : (
-                              <span className="text-slate-500">Henüz Yüklenmedi</span>
+                              <span className="text-gray-400 dark:text-slate-500">Henüz Yüklenmedi</span>
                             )}
                           </td>
                           <td className="p-4">{new Date(r.created_at).toLocaleDateString('tr-TR')}</td>
@@ -1799,12 +1830,12 @@ export default function ClientPanel() {
                                 href={r.file_url} 
                                 target="_blank" 
                                 rel="noreferrer"
-                                className="text-teal-450 hover:text-teal-300 font-bold inline-flex items-center gap-1"
+                                className="text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold inline-flex items-center gap-1"
                               >
                                 İndir <Download size={12} />
                               </a>
                             ) : (
-                              <span className="text-slate-600">Yok</span>
+                              <span className="text-gray-400 dark:text-slate-600">Yok</span>
                             )}
                           </td>
                         </tr>
@@ -1846,19 +1877,19 @@ export default function ClientPanel() {
 
         return (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-scaleIn flex flex-col max-h-[90vh]">
-              <div className="flex justify-between items-start border-b border-slate-800 pb-3.5 mb-4">
+            <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 text-gray-900 dark:text-slate-100 rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-scaleIn flex flex-col max-h-[90vh]">
+              <div className="flex justify-between items-start border-b border-gray-200 dark:border-slate-800 pb-3.5 mb-4">
                 <div>
-                  <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                  <h3 className="text-sm font-extrabold text-gray-900 dark:text-white flex items-center gap-2">
                     <QrCode className="text-teal-400" size={16} /> Denetim Detayları
                   </h3>
-                  <p className="text-[10px] text-slate-400 mt-1">
+                  <p className="text-[10px] text-gray-500 dark:text-slate-400 mt-1">
                     Nokta: <b>{selectedSubmissionForDetail.point?.name}</b>
                     {selectedSubmissionForDetail.point?.location_description && <> ({selectedSubmissionForDetail.point.location_description})</>}
                     {' '}| Form: <b>{selectedSubmissionForDetail.point?.form?.title || 'Genel Form'}</b>
                   </p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    Dolduran: <b className="text-slate-300">{submitterName || 'Anonim Saha Personeli'}</b>
+                  <p className="text-[10px] text-gray-500 dark:text-slate-400 mt-0.5">
+                    Dolduran: <b className="text-gray-600 dark:text-slate-300">{submitterName || 'Anonim Saha Personeli'}</b>
                     {' '}| Tarih: {new Date(selectedSubmissionForDetail.submitted_at).toLocaleString('tr-TR')}
                   </p>
                 </div>
@@ -1867,7 +1898,7 @@ export default function ClientPanel() {
                     setSelectedSubmissionForDetail(null);
                     setExpandedSubmissionId(null);
                   }}
-                  className="text-slate-400 hover:text-white transition font-bold shrink-0"
+                  className="text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white transition font-bold shrink-0"
                 >
                   Kapat
                 </button>
@@ -1876,11 +1907,11 @@ export default function ClientPanel() {
               {answers && (
                 <div className="mb-4">
                   {findingsCount > 0 ? (
-                    <span className="bg-rose-950/40 text-rose-400 border border-rose-900/40 text-[10px] font-black px-2.5 py-1 rounded-full">
+                    <span className="bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 text-[10px] font-black px-2.5 py-1 rounded-full">
                       ⚠️ {findingsCount} Uyumsuz Madde Tespit Edildi
                     </span>
                   ) : (
-                    <span className="bg-emerald-950/40 text-emerald-400 border border-emerald-900/40 text-[10px] font-black px-2.5 py-1 rounded-full">
+                    <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/40 text-[10px] font-black px-2.5 py-1 rounded-full">
                       ✅ Tam Uyumlu
                     </span>
                   )}
@@ -1889,43 +1920,43 @@ export default function ClientPanel() {
 
               <div className="flex-1 overflow-y-auto space-y-3 pr-1">
                 {selectedSubmissionForDetail.general_notes && (
-                  <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 text-xs text-amber-300">
+                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-xl p-3 text-xs text-amber-300">
                     <span className="font-extrabold uppercase text-[9px] tracking-wide block mb-1">Saha Tespitleri / Genel Notlar</span>
                     <p className="leading-relaxed whitespace-pre-wrap">{selectedSubmissionForDetail.general_notes}</p>
                   </div>
                 )}
 
                 {!answers ? (
-                  <div className="py-10 text-center text-xs text-slate-500">Cevaplar yükleniyor...</div>
+                  <div className="py-10 text-center text-xs text-gray-400 dark:text-slate-500">Cevaplar yükleniyor...</div>
                 ) : answers.length === 0 ? (
-                  <div className="py-10 text-center text-xs text-slate-500">Kayıtlı soru-cevap bulunamadı.</div>
+                  <div className="py-10 text-center text-xs text-gray-400 dark:text-slate-500">Kayıtlı soru-cevap bulunamadı.</div>
                 ) : (
                   answers.map((ans: any, idx: number) => (
-                    <div key={ans.id} className="p-3 bg-slate-950/40 border border-slate-855 rounded-xl flex justify-between items-start gap-3">
-                      <div className="text-xs font-bold text-slate-200 flex gap-2">
-                        <span className="text-[10px] font-bold text-slate-500 w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center shrink-0">{idx + 1}</span>
+                    <div key={ans.id} className="p-3 bg-gray-50 dark:bg-slate-950/40 border border-gray-200 dark:border-slate-800 rounded-xl flex justify-between items-start gap-3">
+                      <div className="text-xs font-bold text-gray-800 dark:text-slate-200 flex gap-2">
+                        <span className="text-[10px] font-bold text-gray-400 dark:text-slate-500 w-5 h-5 rounded-full bg-gray-100 dark:bg-slate-800 flex items-center justify-center shrink-0">{idx + 1}</span>
                         <span>{ans.question?.question_text}</span>
                       </div>
                       <div className="shrink-0 font-bold text-xs">
                         {ans.question?.question_type === 'yes_no' && (
                           ans.answer_bool ? (
-                            <span className="text-emerald-400 bg-emerald-950/30 px-2.5 py-1 rounded-lg border border-emerald-900/40">EVET</span>
+                            <span className="text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-900/40">EVET</span>
                           ) : (
-                            <span className="text-rose-400 bg-rose-950/30 px-2.5 py-1 rounded-lg border border-rose-900/40">HAYIR</span>
+                            <span className="text-rose-400 bg-rose-50 dark:bg-rose-950/30 px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/40">HAYIR</span>
                           )
                         )}
                         {ans.question?.question_type === 'compliant' && (
                           ans.answer_bool ? (
-                            <span className="text-emerald-400 bg-emerald-950/30 px-2.5 py-1 rounded-lg border border-emerald-900/40">UYGUN</span>
+                            <span className="text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-900/40">UYGUN</span>
                           ) : (
-                            <span className="text-amber-400 bg-amber-950/30 px-2.5 py-1 rounded-lg border border-amber-900/40">UYGUN DEĞİL</span>
+                            <span className="text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-900/40">UYGUN DEĞİL</span>
                           )
                         )}
                         {ans.question?.question_type === 'text' && (
-                          <span className="text-slate-300 font-medium">{ans.answer_text || <span className="italic text-slate-500">Boş bırakılmış</span>}</span>
+                          <span className="text-gray-600 dark:text-slate-300 font-medium">{ans.answer_text || <span className="italic text-gray-400 dark:text-slate-500">Boş bırakılmış</span>}</span>
                         )}
                         {ans.question?.question_type === 'rating' && (
-                          <span className="text-blue-400 bg-blue-950/30 px-2.5 py-1 rounded-lg border border-blue-900/40">⭐ {ans.answer_text} / 5</span>
+                          <span className="text-blue-400 bg-blue-50 dark:bg-blue-950/30 px-2.5 py-1 rounded-lg border border-blue-200 dark:border-blue-900/40">⭐ {ans.answer_text} / 5</span>
                         )}
                       </div>
                     </div>
@@ -1940,13 +1971,13 @@ export default function ClientPanel() {
       {/* MEVZUAT MADDELERİ DETAY MODALI */}
       {showLegArticlesModal && selectedRegulation && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl w-full max-w-2xl p-6 shadow-2xl animate-scaleIn flex flex-col max-h-[90vh]">
-            <div className="flex justify-between items-start border-b border-slate-800 pb-3.5 mb-4">
+          <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 text-gray-900 dark:text-slate-100 rounded-2xl w-full max-w-2xl p-6 shadow-2xl animate-scaleIn flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-start border-b border-gray-200 dark:border-slate-800 pb-3.5 mb-4">
               <div>
-                <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                <h3 className="text-sm font-extrabold text-gray-900 dark:text-white flex items-center gap-2">
                   <Scale className="text-blue-400" size={16} /> Mevzuat Maddeleri ve Uyum Takibi
                 </h3>
-                <p className="text-[10px] text-slate-400 mt-1">
+                <p className="text-[10px] text-gray-500 dark:text-slate-400 mt-1">
                   Mevzuat: <b>{selectedRegulation.title}</b>
                 </p>
               </div>
@@ -1956,7 +1987,7 @@ export default function ClientPanel() {
                   setSelectedRegulation(null);
                   setRegulationArticles([]);
                 }}
-                className="text-slate-400 hover:text-white transition font-bold"
+                className="text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white transition font-bold"
               >
                 Kapat
               </button>
@@ -1964,29 +1995,29 @@ export default function ClientPanel() {
 
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">
               {loadingLegs ? (
-                <div className="py-10 text-center text-xs text-slate-500">Maddeler yükleniyor...</div>
+                <div className="py-10 text-center text-xs text-gray-400 dark:text-slate-500">Maddeler yükleniyor...</div>
               ) : regulationArticles.length === 0 ? (
-                <div className="py-10 text-center text-xs text-slate-500">Bu mevzuata ait eklenmiş madde bulunmamaktadır.</div>
+                <div className="py-10 text-center text-xs text-gray-400 dark:text-slate-500">Bu mevzuata ait eklenmiş madde bulunmamaktadır.</div>
               ) : (
                 regulationArticles.map((art) => (
-                  <div key={art.id} className="p-4 bg-slate-950/40 border border-slate-855 rounded-xl space-y-2">
+                  <div key={art.id} className="p-4 bg-gray-50 dark:bg-slate-950/40 border border-gray-200 dark:border-slate-800 rounded-xl space-y-2">
                     <div className="flex justify-between items-start gap-3">
-                      <span className="text-xs font-black text-teal-400 uppercase tracking-wide">Madde {art.article_no}</span>
+                      <span className="text-xs font-black text-teal-600 dark:text-teal-400 uppercase tracking-wide">Madde {art.article_no}</span>
                       <span className={`text-[9px] font-black px-2.5 py-0.5 rounded-full uppercase border ${
-                        art.compliance_status === 'compliant' ? 'bg-emerald-950/40 text-emerald-450 border-emerald-900/30' :
-                        art.compliance_status === 'partial' ? 'bg-amber-950/40 text-amber-450 border-amber-900/30' :
-                        art.compliance_status === 'non_compliant' ? 'bg-rose-950/40 text-rose-450 border-rose-900/30 animate-pulse' :
-                        'bg-slate-800 text-slate-400 border-slate-700/50'
+                        art.compliance_status === 'compliant' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/30' :
+                        art.compliance_status === 'partial' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-900/30' :
+                        art.compliance_status === 'non_compliant' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/30 animate-pulse' :
+                        'bg-slate-800 text-gray-500 dark:text-slate-400 border-gray-200 dark:border-slate-700/50'
                       }`}>
                         {art.compliance_status === 'compliant' ? 'Uyumlu' :
                          art.compliance_status === 'partial' ? 'Kısmi Uyumlu' :
                          art.compliance_status === 'non_compliant' ? 'Uyumsuz' : 'Değerlendirilmedi'}
                       </span>
                     </div>
-                    {art.title && <div className="text-xs font-bold text-slate-200">{art.title}</div>}
-                    <p className="text-xs text-slate-400 leading-relaxed font-medium whitespace-pre-line bg-slate-950/20 p-2.5 rounded-lg border border-slate-900">{art.content}</p>
+                    {art.title && <div className="text-xs font-bold text-gray-800 dark:text-slate-200">{art.title}</div>}
+                    <p className="text-xs text-gray-500 dark:text-slate-400 leading-relaxed font-medium whitespace-pre-line bg-gray-50 dark:bg-slate-950/20 p-2.5 rounded-lg border border-gray-200 dark:border-slate-900">{art.content}</p>
                     {art.compliance_notes && (
-                      <div className="text-[11px] text-slate-500 italic bg-slate-950/10 p-2 rounded-lg border border-dashed border-slate-850">
+                      <div className="text-[11px] text-gray-400 dark:text-slate-500 italic bg-gray-50 dark:bg-slate-950/10 p-2 rounded-lg border border-dashed border-gray-200 dark:border-slate-800">
                         💡 <b>Not / Uyum Detayı:</b> {art.compliance_notes}
                       </div>
                     )}
@@ -2001,19 +2032,19 @@ export default function ClientPanel() {
       {/* HOŞGELDİNİZ BANNER (İlk giriş) */}
       {showWelcome && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-teal-900/40 text-slate-100 rounded-2xl w-full max-w-md p-8 shadow-2xl animate-scaleIn text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-teal-950/40 border border-teal-900/40 flex items-center justify-center mx-auto text-teal-400">
+          <div className="bg-white dark:bg-slate-900 border border-teal-900/40 text-gray-900 dark:text-slate-100 rounded-2xl w-full max-w-md p-8 shadow-2xl animate-scaleIn text-center space-y-4">
+            <div className="w-16 h-16 rounded-full bg-teal-950/40 border border-teal-900/40 flex items-center justify-center mx-auto text-teal-600 dark:text-teal-400">
               <PartyPopper size={32} />
             </div>
             <div>
-              <h3 className="text-lg font-extrabold text-white flex items-center justify-center gap-2">
+              <h3 className="text-lg font-extrabold text-gray-900 dark:text-white flex items-center justify-center gap-2">
                 Hoşgeldiniz{clientDetails?.name ? ',' : ''} <Sparkles className="text-teal-400" size={18} />
               </h3>
               {clientDetails?.name && (
-                <p className="text-sm font-bold text-teal-400 mt-1">{clientDetails.name}</p>
+                <p className="text-sm font-bold text-teal-600 dark:text-teal-400 mt-1">{clientDetails.name}</p>
               )}
             </div>
-            <p className="text-xs text-slate-400 leading-relaxed">
+            <p className="text-xs text-gray-500 dark:text-slate-400 leading-relaxed">
               EvrakLab Müşteri Paneli'ne hoş geldiniz. Buradan belgelerinizi, aksiyon planlarınızı ve atık gönderim kayıtlarınızı takip edebilir; atık yönetimi sekmesinden kendi atık sevkiyatlarınızı ekleyip çıkış raporunuzu PDF olarak indirebilirsiniz.
             </p>
             <button
@@ -2029,7 +2060,7 @@ export default function ClientPanel() {
       {/* YENİ ATIK KAYDI MODALI */}
       {showAddWasteModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl w-full max-w-lg shadow-2xl animate-scaleIn overflow-hidden max-h-[90vh] flex flex-col">
+          <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 text-gray-900 dark:text-slate-100 rounded-2xl w-full max-w-lg shadow-2xl animate-scaleIn overflow-hidden max-h-[90vh] flex flex-col">
             <div className="bg-gradient-to-r from-teal-700 to-teal-600 p-5 text-white flex justify-between items-center">
               <div>
                 <h3 className="font-bold text-base">Yeni Atık Gönderimi Ekle</h3>
@@ -2042,17 +2073,17 @@ export default function ClientPanel() {
 
             <form onSubmit={handleAddWasteRecord} className="p-5 space-y-4 overflow-y-auto">
               <div className="relative">
-                <label className="block text-xs font-bold text-slate-400 mb-1">Atık Kodu & Tanımı <span className="text-rose-500">*</span></label>
+                <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Atık Kodu & Tanımı <span className="text-rose-500">*</span></label>
                 <input
                   required
                   type="text"
                   placeholder="Kod yazın (örn: 15 01 02) veya arayın..."
                   value={newWasteCode}
                   onChange={(e) => setNewWasteCode(e.target.value)}
-                  className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-mono font-bold text-white"
+                  className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-mono font-bold text-gray-900 dark:text-white"
                 />
                 {newWasteCode.trim().length > 0 && !WASTE_CODES.some(w => w.code === newWasteCode) && (
-                  <div className="absolute left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 py-1 text-xs">
+                  <div className="absolute left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 py-1 text-xs">
                     {WASTE_CODES.filter(w =>
                       w.code.includes(newWasteCode) ||
                       w.name.toLowerCase().includes(newWasteCode.toLowerCase())
@@ -2061,17 +2092,17 @@ export default function ClientPanel() {
                         type="button"
                         key={w.code}
                         onClick={() => setNewWasteCode(w.code)}
-                        className="w-full text-left px-3 py-2 hover:bg-slate-800 border-b border-slate-800 last:border-0"
+                        className="w-full text-left px-3 py-2 hover:bg-gray-200 dark:hover:bg-slate-800 border-b border-gray-200 dark:border-slate-800 last:border-0"
                       >
-                        <span className="font-bold font-mono text-teal-400 mr-2">{w.code}</span>
-                        <span className="text-slate-400 text-[11px]">{w.name}</span>
+                        <span className="font-bold font-mono text-teal-600 dark:text-teal-400 mr-2">{w.code}</span>
+                        <span className="text-gray-500 dark:text-slate-400 text-[11px]">{w.name}</span>
                       </button>
                     ))}
                     {WASTE_CODES.filter(w =>
                       w.code.includes(newWasteCode) ||
                       w.name.toLowerCase().includes(newWasteCode.toLowerCase())
                     ).length === 0 && (
-                      <div className="px-3 py-2 text-slate-500 italic text-[11px]">
+                      <div className="px-3 py-2 text-gray-400 dark:text-slate-500 italic text-[11px]">
                         Özel kod olarak kaydedilecek: "{newWasteCode}"
                       </div>
                     )}
@@ -2081,17 +2112,17 @@ export default function ClientPanel() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1">Çıkış Tarihi <span className="text-rose-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Çıkış Tarihi <span className="text-rose-500">*</span></label>
                   <input
                     required
                     type="date"
                     value={newWasteExitDate}
                     onChange={(e) => setNewWasteExitDate(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-semibold text-white"
+                    className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-semibold text-gray-900 dark:text-white"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1">Miktar (kg) <span className="text-rose-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Miktar (kg) <span className="text-rose-500">*</span></label>
                   <input
                     required
                     type="number"
@@ -2100,19 +2131,19 @@ export default function ClientPanel() {
                     placeholder="Miktar"
                     value={newWasteQuantity}
                     onChange={(e) => setNewWasteQuantity(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-white"
+                    className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-gray-900 dark:text-white"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1">Taşıyıcı Firma <span className="text-rose-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Taşıyıcı Firma <span className="text-rose-500">*</span></label>
                   <select
                     required
                     value={newWasteTransporterId}
                     onChange={(e) => setNewWasteTransporterId(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-white"
+                    className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-gray-900 dark:text-white"
                   >
                     <option value="">Seçiniz...</option>
                     {wasteCompanies.map(c => (
@@ -2121,12 +2152,12 @@ export default function ClientPanel() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1">Gönderilen Firma <span className="text-rose-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Gönderilen Firma <span className="text-rose-500">*</span></label>
                   <select
                     required
                     value={newWasteDestinationId}
                     onChange={(e) => setNewWasteDestinationId(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-white"
+                    className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-gray-900 dark:text-white"
                   >
                     <option value="">Seçiniz...</option>
                     {wasteCompanies.map(c => (
@@ -2137,15 +2168,15 @@ export default function ClientPanel() {
               </div>
 
               {wasteCompanies.length === 0 && (
-                <p className="text-[11px] text-amber-400 bg-amber-950/20 border border-amber-900/30 rounded-lg px-3 py-2">
+                <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg px-3 py-2">
                   Henüz kayıtlı taşıyıcı/gönderilen firma yok. Önce "Firma Ekle" ile bir firma tanımlayın.
                 </p>
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Yöntem Türü <span className="text-rose-500">*</span></label>
+                <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Yöntem Türü <span className="text-rose-500">*</span></label>
                 <div className="flex gap-4 mb-2">
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300 font-semibold cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-slate-300 font-semibold cursor-pointer">
                     <input
                       type="radio"
                       name="client_new_disposal_type"
@@ -2156,7 +2187,7 @@ export default function ClientPanel() {
                     />
                     Geri Kazanım
                   </label>
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300 font-semibold cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-slate-300 font-semibold cursor-pointer">
                     <input
                       type="radio"
                       name="client_new_disposal_type"
@@ -2174,7 +2205,7 @@ export default function ClientPanel() {
                     required
                     value={newWasteDisposalCode}
                     onChange={(e) => setNewWasteDisposalCode(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white"
+                    className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white"
                   >
                     <option value="">Kod Seçiniz (R1 - R13)...</option>
                     {RECOVERY_CODES.map(item => (
@@ -2186,7 +2217,7 @@ export default function ClientPanel() {
                     required
                     value={newWasteDisposalCode}
                     onChange={(e) => setNewWasteDisposalCode(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white"
+                    className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white"
                   >
                     <option value="">Kod Seçiniz (D1 - D15)...</option>
                     {DISPOSAL_CODES.map(item => (
@@ -2197,12 +2228,12 @@ export default function ClientPanel() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Açıklama (İsteğe Bağlı)</label>
+                <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Açıklama (İsteğe Bağlı)</label>
                 <textarea
                   rows={2}
                   value={newWasteDescription}
                   onChange={(e) => setNewWasteDescription(e.target.value)}
-                  className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white"
+                  className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white"
                 />
               </div>
 
@@ -2210,7 +2241,7 @@ export default function ClientPanel() {
                 <button
                   type="button"
                   onClick={() => setShowAddWasteModal(false)}
-                  className="flex-1 px-4 py-2.5 border border-slate-700 rounded-xl text-slate-300 text-xs font-bold transition hover:bg-slate-800"
+                  className="flex-1 px-4 py-2.5 border border-gray-200 dark:border-slate-700 rounded-xl text-gray-600 dark:text-slate-300 text-xs font-bold transition hover:bg-gray-200 dark:hover:bg-slate-800"
                 >
                   Vazgeç
                 </button>
@@ -2230,7 +2261,7 @@ export default function ClientPanel() {
       {/* FİRMA EKLE MODALI (Taşıyıcı / Gönderilen) */}
       {showAddCompanyModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl w-full max-w-md shadow-2xl animate-scaleIn overflow-hidden">
+          <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 text-gray-900 dark:text-slate-100 rounded-2xl w-full max-w-md shadow-2xl animate-scaleIn overflow-hidden">
             <div className="bg-gradient-to-r from-slate-800 to-slate-700 p-5 text-white flex justify-between items-center">
               <h3 className="font-bold text-base">Taşıyıcı / Gönderilen Firma Ekle</h3>
               <button onClick={() => setShowAddCompanyModal(false)} className="text-white hover:bg-white/10 p-1.5 rounded-full transition">
@@ -2239,9 +2270,9 @@ export default function ClientPanel() {
             </div>
             <form onSubmit={handleCreateWasteCompany} className="p-5 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Firma Türü <span className="text-rose-500">*</span></label>
+                <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Firma Türü <span className="text-rose-500">*</span></label>
                 <div className="flex gap-4">
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300 font-semibold cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-slate-300 font-semibold cursor-pointer">
                     <input
                       type="radio"
                       name="client_new_company_type"
@@ -2252,7 +2283,7 @@ export default function ClientPanel() {
                     />
                     Taşıyıcı
                   </label>
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300 font-semibold cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-slate-300 font-semibold cursor-pointer">
                     <input
                       type="radio"
                       name="client_new_company_type"
@@ -2266,29 +2297,29 @@ export default function ClientPanel() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Firma Adı <span className="text-rose-500">*</span></label>
+                <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Firma Adı <span className="text-rose-500">*</span></label>
                 <input
                   required
                   type="text"
                   value={newCompanyName}
                   onChange={(e) => setNewCompanyName(e.target.value)}
-                  className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-white"
+                  className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 font-bold text-gray-900 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Adres (İsteğe Bağlı)</label>
+                <label className="block text-xs font-bold text-gray-500 dark:text-slate-400 mb-1">Adres (İsteğe Bağlı)</label>
                 <input
                   type="text"
                   value={newCompanyAddress}
                   onChange={(e) => setNewCompanyAddress(e.target.value)}
-                  className="w-full border rounded-xl p-2.5 bg-slate-950 border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-white"
+                  className="w-full border rounded-xl p-2.5 bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-700 text-xs outline-none focus:ring-1 focus:ring-teal-500 text-gray-900 dark:text-white"
                 />
               </div>
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowAddCompanyModal(false)}
-                  className="flex-1 px-4 py-2.5 border border-slate-700 rounded-xl text-slate-300 text-xs font-bold transition hover:bg-slate-800"
+                  className="flex-1 px-4 py-2.5 border border-gray-200 dark:border-slate-700 rounded-xl text-gray-600 dark:text-slate-300 text-xs font-bold transition hover:bg-gray-200 dark:hover:bg-slate-800"
                 >
                   Vazgeç
                 </button>
@@ -2306,10 +2337,11 @@ export default function ClientPanel() {
       )}
 
       {/* FOOTER */}
-      <footer className="mt-auto py-6 border-t border-slate-900 text-center text-[10px] text-slate-500">
+      <footer className="mt-auto py-6 border-t border-gray-200 dark:border-slate-900 text-center text-[10px] text-gray-400 dark:text-slate-500">
         © {new Date().getFullYear()} EvrakLab Müşteri Portalı. Tüm hakları saklıdır.
       </footer>
 
+    </div>
     </div>
   );
 }

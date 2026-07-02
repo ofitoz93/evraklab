@@ -378,6 +378,18 @@ const getOrCreateDriveFolder = async (
       }
     }
 
+    const normalizedLabel = newDefLabel.trim();
+
+    // Aynı isimde bir tanım zaten var mı kontrol et (büyük/küçük harf duyarsız)
+    const currentList = manageCategory === 'doc_type' ? typeOptions : locOptions;
+    const exists = currentList.some(
+      (item) => item.label && item.label.toLowerCase() === normalizedLabel.toLowerCase()
+    );
+    if (exists) {
+      alert(`⛔ "${normalizedLabel}" zaten listenizde mevcut!`);
+      return;
+    }
+
     const {
       data: { session },
     } = await supabase.auth.getSession();
@@ -386,12 +398,16 @@ const getOrCreateDriveFolder = async (
       {
         user_id: session.user.id,
         category: manageCategory,
-        label: newDefLabel.trim(),
+        label: normalizedLabel,
         organization_id: docScope === 'corporate' ? myOrgId : null,
       },
     ]);
     if (error) {
-      alert("Hata: " + error.message);
+      if (error.message.includes('unique constraint') || error.code === '23505') {
+        alert('Bu kayıt zaten veritabanında mevcut.');
+      } else {
+        alert("Hata: " + error.message);
+      }
       return;
     }
     setNewDefLabel('');
