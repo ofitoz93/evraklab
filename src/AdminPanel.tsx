@@ -40,7 +40,7 @@ import WasteManagement from './WasteManagement';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste' | 'ced_categories'
   >('tickets');
 
   const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
@@ -432,6 +432,8 @@ export default function AdminPanel() {
       fetchGlobalLegislations();
       fetchLegislationRequests();
       fetchCompanies();
+    } else if (activeTab === 'ced_categories') {
+      fetchCedCategories();
     }
   }, [activeTab]);
 
@@ -639,6 +641,87 @@ export default function AdminPanel() {
       }
     }
     setLoading(false);
+  };
+
+  // --- ÇED PROJE KATEGORİLERİ (EK-1 / EK-2) YÖNETİMİ ---
+  // İşletmelerin "ÇED Durumu" alanında seçilebilen madde listesi; ConsultantPanel'deki
+  // İşletme Ekle/Düzenle/Şube Ekle formları bu tabloyu okuyor (ced_project_categories).
+  const [cedCategories, setCedCategories] = useState<any[]>([]);
+  const [loadingCed, setLoadingCed] = useState(false);
+  const [cedStageFilter, setCedStageFilter] = useState<'ek1' | 'ek2'>('ek1');
+  const [cedSearch, setCedSearch] = useState('');
+  const [editingCedItem, setEditingCedItem] = useState<any>(null);
+  const [cedFormCode, setCedFormCode] = useState('');
+  const [cedFormTitle, setCedFormTitle] = useState('');
+  const [savingCed, setSavingCed] = useState(false);
+
+  const fetchCedCategories = async () => {
+    setLoadingCed(true);
+    const { data, error } = await supabase
+      .from('ced_project_categories')
+      .select('*')
+      .order('stage', { ascending: true })
+      .order('sort_order', { ascending: true });
+    if (error) {
+      console.error('ÇED kategorileri çekilirken hata:', error.message);
+    } else {
+      setCedCategories(data || []);
+    }
+    setLoadingCed(false);
+  };
+
+  const openCedModal = (item?: any) => {
+    if (item) {
+      setEditingCedItem(item);
+      setCedFormCode(item.code);
+      setCedFormTitle(item.title);
+    } else {
+      setEditingCedItem({ id: 'new', stage: cedStageFilter });
+      setCedFormCode('');
+      setCedFormTitle('');
+    }
+  };
+
+  const handleSaveCedCategory = async () => {
+    if (!cedFormCode.trim() || !cedFormTitle.trim()) {
+      alert('Kod ve başlık alanları zorunludur.');
+      return;
+    }
+    setSavingCed(true);
+    try {
+      if (editingCedItem.id === 'new') {
+        const maxSort = Math.max(0, ...cedCategories.filter((c) => c.stage === editingCedItem.stage).map((c) => c.sort_order || 0));
+        const { error } = await supabase.from('ced_project_categories').insert({
+          stage: editingCedItem.stage,
+          code: cedFormCode.trim(),
+          title: cedFormTitle.trim(),
+          sort_order: maxSort + 1,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('ced_project_categories')
+          .update({ code: cedFormCode.trim(), title: cedFormTitle.trim() })
+          .eq('id', editingCedItem.id);
+        if (error) throw error;
+      }
+      setEditingCedItem(null);
+      await fetchCedCategories();
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingCed(false);
+    }
+  };
+
+  const handleDeleteCedCategory = async (id: string) => {
+    if (!window.confirm('Bu maddeyi silmek istediğinize emin misiniz? Bu maddeyi zaten seçmiş işletmelerin kayıtlarından otomatik kaldırılmaz, sadece yeni seçim listesinden çıkar.')) return;
+    const { error } = await supabase.from('ced_project_categories').delete().eq('id', id);
+    if (error) {
+      alert('Silinirken hata: ' + error.message);
+      return;
+    }
+    await fetchCedCategories();
   };
 
   const fetchTickets = async () => {
@@ -1259,7 +1342,18 @@ export default function AdminPanel() {
                   </span>
                 )}
               </button>
-              
+              <button
+                onClick={() => setActiveTab('ced_categories')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'ced_categories'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <BookOpen size={18} />
+                <span>ÇED Proje Listesi</span>
+              </button>
+
             </nav>
           </div>
 
@@ -1322,6 +1416,150 @@ export default function AdminPanel() {
         {activeTab === 'waste' && (
           <div className="animate-fadeIn">
             <WasteManagement />
+          </div>
+        )}
+
+        {/* ÇED PROJE LİSTESİ TAB */}
+        {activeTab === 'ced_categories' && (
+          <div className="animate-fadeIn bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800 dark:text-white">ÇED Proje Listesi (EK-1 / EK-2)</h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Bu liste, danışman panelindeki işletme ekleme/düzenleme formlarında "ÇED Durumu" seçilirken kullanılır.
+                  Yeni bir mevzuat değişikliği geldiğinde buradan madde ekleyebilirsiniz.
+                </p>
+              </div>
+              <button
+                onClick={() => openCedModal()}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition"
+              >
+                <Plus size={16} /> Yeni Madde Ekle
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <div className="flex items-center bg-gray-100 dark:bg-slate-900 rounded-lg p-1">
+                <button
+                  onClick={() => setCedStageFilter('ek1')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                    cedStageFilter === 'ek1' ? 'bg-white dark:bg-slate-700 shadow text-indigo-700 dark:text-indigo-400' : 'text-gray-500'
+                  }`}
+                >
+                  EK-1 ({cedCategories.filter((c) => c.stage === 'ek1').length})
+                </button>
+                <button
+                  onClick={() => setCedStageFilter('ek2')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                    cedStageFilter === 'ek2' ? 'bg-white dark:bg-slate-700 shadow text-indigo-700 dark:text-indigo-400' : 'text-gray-500'
+                  }`}
+                >
+                  EK-2 ({cedCategories.filter((c) => c.stage === 'ek2').length})
+                </button>
+              </div>
+              <input
+                type="text"
+                placeholder="Kod veya başlıkta ara..."
+                value={cedSearch}
+                onChange={(e) => setCedSearch(e.target.value)}
+                className="flex-1 min-w-[200px] border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+              />
+            </div>
+
+            {loadingCed ? (
+              <div className="py-12 text-center text-gray-400 text-sm">Yükleniyor...</div>
+            ) : (
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                {cedCategories
+                  .filter((c) => c.stage === cedStageFilter)
+                  .filter(
+                    (c) =>
+                      c.code.toLowerCase().includes(cedSearch.toLowerCase()) ||
+                      c.title.toLowerCase().includes(cedSearch.toLowerCase())
+                  )
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-start justify-between gap-3 p-3 rounded-lg border border-gray-100 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-900/50 transition"
+                    >
+                      <div className="text-sm">
+                        <span className="font-bold text-indigo-700 dark:text-indigo-400 mr-2">{item.code}</span>
+                        <span className="text-gray-700 dark:text-gray-300">{item.title}</span>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => openCedModal(item)}
+                          className="p-1.5 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30 rounded"
+                          title="Düzenle"
+                        >
+                          <Edit size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteCedCategory(item.id)}
+                          className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded"
+                          title="Sil"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                {cedCategories.filter((c) => c.stage === cedStageFilter).length === 0 && (
+                  <div className="py-12 text-center text-gray-400 text-sm">Bu kategoride henüz madde yok.</div>
+                )}
+              </div>
+            )}
+
+            {editingCedItem && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-md shadow-2xl">
+                  <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+                    <h3 className="font-bold text-gray-800 dark:text-white">
+                      {editingCedItem.id === 'new' ? 'Yeni ÇED Maddesi' : 'Maddeyi Düzenle'} · {(editingCedItem.stage || cedStageFilter).toUpperCase()}
+                    </h3>
+                    <button onClick={() => setEditingCedItem(null)} className="text-gray-400 hover:text-gray-600">
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Kod</label>
+                      <input
+                        type="text"
+                        value={cedFormCode}
+                        onChange={(e) => setCedFormCode(e.target.value)}
+                        placeholder="örn: 55"
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Başlık</label>
+                      <textarea
+                        value={cedFormTitle}
+                        onChange={(e) => setCedFormTitle(e.target.value)}
+                        rows={4}
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                  </div>
+                  <div className="p-5 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
+                    <button
+                      onClick={() => setEditingCedItem(null)}
+                      className="px-4 py-2 border rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-slate-700"
+                    >
+                      İptal
+                    </button>
+                    <button
+                      onClick={handleSaveCedCategory}
+                      disabled={savingCed}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg text-sm font-bold"
+                    >
+                      {savingCed ? 'Kaydediliyor...' : 'Kaydet'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

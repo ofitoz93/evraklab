@@ -1130,7 +1130,7 @@ const getOrCreateDriveFolder = async (
                           </button>
                         )}
 
-                        {doc.env_report_id && doc.uploader_id === userId && (
+                        {doc.env_report_id && canEdit && (
                           <button
                             onClick={() => {
                               if (doc.env_report?.wet_signature_url) {
@@ -1142,7 +1142,7 @@ const getOrCreateDriveFolder = async (
                               setWetSigModalOpen(true);
                             }}
                             className="p-2 bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded transition"
-                            title="Islak İmzalı Rapor Yükle"
+                            title={doc.env_report?.wet_signature_url ? 'Islak İmzalı Raporu Değiştir' : 'Islak İmzalı Rapor Yükle'}
                           >
                             <PenLine size={16} />
                           </button>
@@ -1254,6 +1254,14 @@ const getOrCreateDriveFolder = async (
                     {archivedList.map((arc) => {
                       const isReport = !!arc.env_report_id;
                       const isWetSigned = !!arc.env_report?.wet_signature_url;
+                      const arcIsCorporate = !!arc.organization_id;
+                      const canEditArc =
+                        arc.uploader_id === userId ||
+                        userRole === 'admin' ||
+                        (userRole === 'premium_corporate' && arcIsCorporate) ||
+                        (userRole === 'corporate_chief' &&
+                          myPermissions?.can_edit_team_docs &&
+                          arcIsCorporate);
                       return (
                         <tr key={arc.id} className="border-b border-gray-100 hover:bg-gray-50/50">
                           <td className="p-3">
@@ -1293,7 +1301,7 @@ const getOrCreateDriveFolder = async (
                             ) : null}
 
                             {/* Islak İmza Yükleme (Sadece Raporlar İçin) */}
-                            {isReport && arc.uploader_id === userId && (
+                            {isReport && canEditArc && (
                               <button
                                 onClick={() => {
                                   if (arc.env_report?.wet_signature_url) {
@@ -1305,7 +1313,7 @@ const getOrCreateDriveFolder = async (
                                   setWetSigModalOpen(true);
                                 }}
                                 className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 rounded transition"
-                                title="Islak İmzalı Rapor Yükle"
+                                title={arc.env_report?.wet_signature_url ? 'Islak İmzalı Raporu Değiştir' : 'Islak İmzalı Rapor Yükle'}
                               >
                                 <PenLine size={14} />
                               </button>

@@ -18,7 +18,9 @@ import {
   Info,
   Plus,
   Trash2,
+  PenTool,
 } from 'lucide-react';
+import PdfAnnotateTool from './PdfAnnotateTool';
 
 // --- YARDIMCI FONKSİYONLAR ---
 function downloadBlob(blob: Blob, filename: string) {
@@ -142,6 +144,14 @@ export default function Tools() {
       desc: 'JPG/PNG dosyalarını PDF yapın.',
       color: 'text-purple-500 bg-purple-50',
       borderColor: 'border-purple-200',
+    },
+    {
+      id: 'pdf-annotate',
+      name: 'PDF Üzerine Yazı & Çizim',
+      icon: <PenTool size={32} />,
+      desc: 'PDF sayfalarına not, imza veya çizim ekleyin.',
+      color: 'text-teal-500 bg-teal-50',
+      borderColor: 'border-teal-200',
     },
     {
       id: 'pdf-lock',
@@ -318,11 +328,16 @@ function ToolModal({
     );
   }
 
+  const isWideTool = toolId === 'pdf-annotate';
+
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <div
+        className={`bg-white rounded-2xl shadow-2xl w-full flex flex-col ${isWideTool ? 'max-w-5xl h-[92vh]' : 'max-w-lg max-h-[90vh] overflow-y-auto'
+          }`}
+      >
         {/* Header */}
-        <div className={`p-6 border-b ${tool.borderColor} flex items-center justify-between`}>
+        <div className={`p-6 border-b ${tool.borderColor} flex items-center justify-between flex-shrink-0`}>
           <div className="flex items-center gap-3">
             <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${tool.color}`}>
               {React.cloneElement(tool.icon, { size: 24 })}
@@ -338,7 +353,7 @@ function ToolModal({
         </div>
 
         {/* İçerik */}
-        <div className="p-6">
+        <div className={isWideTool ? 'p-4 flex-1 min-h-0 flex flex-col' : 'p-6'}>
           {toolId === 'pdf-split' && (
             <PdfSplitTool
               processing={processing}
@@ -371,6 +386,15 @@ function ToolModal({
               processing={processing}
               setProcessing={setProcessing}
               recordUsage={() => recordUsage('Resimden PDF')}
+              resultMessage={resultMessage}
+              setResultMessage={setResultMessage}
+            />
+          )}
+          {toolId === 'pdf-annotate' && (
+            <PdfAnnotateTool
+              processing={processing}
+              setProcessing={setProcessing}
+              recordUsage={() => recordUsage('PDF Üzerine Yazı & Çizim')}
               resultMessage={resultMessage}
               setResultMessage={setResultMessage}
             />

@@ -39,10 +39,13 @@ import {
   Send,
   Star,
   Table,
+  GitBranch,
+  GitBranchPlus,
 } from 'lucide-react';
 
 import QRCode from 'qrcode';
-import { MapPickerModal } from './MapPickerModal';
+import { MapPickerModal, calculatePolygonAreaM2, formatArea } from './MapPickerModal';
+import type { AreaPoint } from './MapPickerModal';
 import { Link } from 'react-router-dom';
 import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
@@ -67,6 +70,20 @@ interface Client {
   permit_stage?: string;
   permit_articles?: string[];
   kep_address?: string;
+  parent_client_id?: string | null;
+  ced_status?: string;
+  ced_articles?: string[];
+  latitude?: number | null;
+  longitude?: number | null;
+  area_points?: AreaPoint[] | null;
+  area_m2?: number | null;
+}
+
+interface CedCategory {
+  id: string;
+  stage: 'ek1' | 'ek2';
+  code: string;
+  title: string;
 }
 
 interface Report {
@@ -732,8 +749,40 @@ export default function ConsultantPanel() {
     permit_stage: 'out_of_scope',
     permit_articles: [] as string[],
     kep_address: '',
+    ced_status: 'out_of_scope',
+    ced_articles: [] as string[],
+    area_points: [] as AreaPoint[],
   });
   const [newClientArticleSearch, setNewClientArticleSearch] = useState('');
+
+  // --- ŞUBE EKLEME STATE'LERİ ---
+  // Şubenin sözleşmesi ve izin/ÇED kapsamı ana firmadan farklı olabileceği için
+  // Add Client ile aynı alan setini kullanıyoruz; sadece ana firmadan kopyalanan
+  // değerlerle önceden dolduruluyor (bkz. openAddBranchModal), tamamı düzenlenebilir.
+  const [showAddBranchModal, setShowAddBranchModal] = useState(false);
+  const [branchParent, setBranchParent] = useState<Client | null>(null);
+  const [newBranch, setNewBranch] = useState({
+    name: '',
+    address: '',
+    tax_no: '',
+    phone: '',
+    logo_url: '',
+    latitude: null as number | null,
+    longitude: null as number | null,
+    service_start_date: '',
+    contract_file_url: '',
+    permit_stage: 'out_of_scope',
+    permit_articles: [] as string[],
+    kep_address: '',
+    ced_status: 'out_of_scope',
+    ced_articles: [] as string[],
+    area_points: [] as AreaPoint[],
+  });
+  const [savingBranch, setSavingBranch] = useState(false);
+  const [showAddBranchMap, setShowAddBranchMap] = useState(false);
+  const [uploadingBranchLogo, setUploadingBranchLogo] = useState(false);
+  const [uploadingBranchContract, setUploadingBranchContract] = useState(false);
+  const [branchArticleSearch, setBranchArticleSearch] = useState('');
   const [editClientArticleSearch, setEditClientArticleSearch] = useState('');
 
   // Change requests states
@@ -804,6 +853,49 @@ export default function ConsultantPanel() {
       ? current.filter(c => c !== code)
       : [...current, code];
     setEditingClient({ ...editingClient, permit_articles: updated });
+  };
+
+  // --- ÇED DURUMU (Ek-1/Ek-2 proje listesi, Çevre İzni'nden bağımsız) ---
+  const [cedCategories, setCedCategories] = useState<CedCategory[]>([]);
+  const [newClientCedSearch, setNewClientCedSearch] = useState('');
+  const [editClientCedSearch, setEditClientCedSearch] = useState('');
+  const [newBranchCedSearch, setNewBranchCedSearch] = useState('');
+
+  const fetchCedCategories = async () => {
+    const { data, error } = await supabase
+      .from('ced_project_categories')
+      .select('id, stage, code, title')
+      .order('sort_order', { ascending: true });
+    if (error) {
+      console.error('ÇED kategorileri çekilirken hata:', error.message);
+      return;
+    }
+    setCedCategories(data || []);
+  };
+
+  const handleToggleNewClientCedArticle = (code: string) => {
+    const current = newClient.ced_articles || [];
+    const updated = current.includes(code) ? current.filter((c) => c !== code) : [...current, code];
+    setNewClient({ ...newClient, ced_articles: updated });
+  };
+
+  const handleToggleEditClientCedArticle = (code: string) => {
+    if (!editingClient) return;
+    const current = editingClient.ced_articles || [];
+    const updated = current.includes(code) ? current.filter((c: string) => c !== code) : [...current, code];
+    setEditingClient({ ...editingClient, ced_articles: updated });
+  };
+
+  const handleToggleNewBranchCedArticle = (code: string) => {
+    const current = newBranch.ced_articles || [];
+    const updated = current.includes(code) ? current.filter((c) => c !== code) : [...current, code];
+    setNewBranch({ ...newBranch, ced_articles: updated });
+  };
+
+  const handleToggleNewBranchArticle = (code: string) => {
+    const current = newBranch.permit_articles || [];
+    const updated = current.includes(code) ? current.filter((c) => c !== code) : [...current, code];
+    setNewBranch({ ...newBranch, permit_articles: updated });
   };
   const [uploadingContract, setUploadingContract] = useState(false);
   const [showAddClientMap, setShowAddClientMap] = useState(false);
@@ -1790,6 +1882,51 @@ export default function ConsultantPanel() {
     }
   };
 
+  const handleBranchLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingBranchLogo(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+      const filePath = `logos/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage.from('client_assets').upload(filePath, file);
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('client_assets').getPublicUrl(filePath);
+      setNewBranch((prev) => ({ ...prev, logo_url: data.publicUrl }));
+    } catch (err: any) {
+      alert('Logo yüklenirken hata: ' + err.message);
+    } finally {
+      setUploadingBranchLogo(false);
+    }
+  };
+
+  const handleBranchContractUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingBranchContract(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `contract_${Math.random()}.${fileExt}`;
+      const filePath = `contracts/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage.from('client_assets').upload(filePath, file);
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('client_assets').getPublicUrl(filePath);
+      setNewBranch((prev) => ({ ...prev, contract_file_url: data.publicUrl }));
+      alert('Sözleşme dosyası başarıyla yüklendi!');
+    } catch (err: any) {
+      alert('Sözleşme yüklenirken hata: ' + err.message);
+    } finally {
+      setUploadingBranchContract(false);
+    }
+  };
+
   const handleOrgLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2026,6 +2163,7 @@ export default function ConsultantPanel() {
           fetchClients(profile.organization_id, profile.role, session.user.id, perms),
           fetchReports(profile.organization_id, profile.role, session.user.id, perms),
           fetchChangeRequests(profile.organization_id, profile.role, session.user.id, perms),
+          fetchCedCategories(),
         ]);
       }
     } catch (err) {
@@ -3450,6 +3588,18 @@ export default function ConsultantPanel() {
       return;
     }
 
+    // İşletmeler (şube olmayan kayıtlar) arasında aynı vergi numarası tekrar edemez.
+    // Şubeler bu kontrolden muaf (bkz. handleAddBranch) çünkü bir şube ana firmayla
+    // aynı veya farklı bir vergi numarasına sahip olabilir.
+    const trimmedTaxNo = newClient.tax_no.trim();
+    if (trimmedTaxNo) {
+      const duplicate = clients.find((c) => !c.parent_client_id && (c.tax_no || '').trim() === trimmedTaxNo);
+      if (duplicate) {
+        alert(`⛔ "${trimmedTaxNo}" vergi numarası zaten "${duplicate.name}" firmasında kayıtlı. Bir işletme için aynı vergi numarası tekrar kullanılamaz (şube eklemek istiyorsanız "Şube Ekle" butonunu kullanın).`);
+        return;
+      }
+    }
+
     try {
       const { error } = await supabase.from('consultant_clients').insert([
         {
@@ -3467,6 +3617,10 @@ export default function ConsultantPanel() {
           permit_stage: newClient.permit_stage || 'out_of_scope',
           permit_articles: newClient.permit_articles || [],
           kep_address: newClient.kep_address || null,
+          ced_status: newClient.ced_status || 'out_of_scope',
+          ced_articles: newClient.ced_articles || [],
+          area_points: newClient.area_points.length >= 3 ? newClient.area_points : null,
+          area_m2: newClient.area_points.length >= 3 ? calculatePolygonAreaM2(newClient.area_points) : null,
         },
       ]);
       if (error) throw error;
@@ -3484,11 +3638,114 @@ export default function ConsultantPanel() {
         permit_stage: 'out_of_scope',
         permit_articles: [],
         kep_address: '',
+        ced_status: 'out_of_scope',
+        ced_articles: [],
+        area_points: [],
       });
       setNewClientArticleSearch('');
+      setNewClientCedSearch('');
       fetchClients(orgId, userRole, userId);
     } catch (err: any) {
       alert('Firma eklenirken hata: ' + err.message);
+    }
+  };
+
+  const openAddBranchModal = (parent: Client) => {
+    if (!canCreateClients) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+    setBranchParent(parent);
+    // Ana firmanın bilgileri başlangıç değeri olarak dolduruluyor; hepsi
+    // (adres, sözleşme, izin/ÇED kapsamı dahil) şube için ayrıca düzenlenebilir.
+    setNewBranch({
+      name: '',
+      address: parent.address || '',
+      tax_no: parent.tax_no || '',
+      phone: parent.phone || '',
+      logo_url: parent.logo_url || '',
+      latitude: parent.latitude ?? null,
+      longitude: parent.longitude ?? null,
+      service_start_date: parent.service_start_date || '',
+      contract_file_url: parent.contract_file_url || '',
+      permit_stage: parent.permit_stage || 'out_of_scope',
+      permit_articles: parent.permit_articles || [],
+      kep_address: parent.kep_address || '',
+      ced_status: parent.ced_status || 'out_of_scope',
+      ced_articles: parent.ced_articles || [],
+      area_points: [], // Şube farklı bir konumda olabileceği için alan ayrıca çizilir
+    });
+    setBranchArticleSearch('');
+    setNewBranchCedSearch('');
+    setShowAddBranchModal(true);
+  };
+
+  const handleAddBranch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!branchParent) return;
+    if (!newBranch.name.trim()) {
+      alert('Lütfen şube adını girin (örn: Atölye Şube).');
+      return;
+    }
+    if (!canCreateClients) {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+
+    // NOT: Vergi no tekilliği kontrolü kasıtlı olarak burada yok - şubeler bu
+    // kontrolden muaf (bkz. handleAddClient/handleUpdateClient'taki kontrol).
+    setSavingBranch(true);
+    try {
+      const fullName = `${branchParent.name} ${newBranch.name.trim()}`;
+      const { error } = await supabase.from('consultant_clients').insert([
+        {
+          consultant_company_id: orgId,
+          parent_client_id: branchParent.id,
+          name: fullName,
+          address: newBranch.address,
+          phone: newBranch.phone,
+          created_by: userId,
+          tax_no: newBranch.tax_no,
+          logo_url: newBranch.logo_url,
+          latitude: newBranch.latitude || null,
+          longitude: newBranch.longitude || null,
+          kep_address: newBranch.kep_address || null,
+          permit_stage: newBranch.permit_stage || 'out_of_scope',
+          permit_articles: newBranch.permit_articles || [],
+          service_start_date: newBranch.service_start_date || null,
+          contract_file_url: newBranch.contract_file_url || null,
+          ced_status: newBranch.ced_status || 'out_of_scope',
+          ced_articles: newBranch.ced_articles || [],
+          area_points: newBranch.area_points.length >= 3 ? newBranch.area_points : null,
+          area_m2: newBranch.area_points.length >= 3 ? calculatePolygonAreaM2(newBranch.area_points) : null,
+        },
+      ]);
+      if (error) throw error;
+      alert(`✅ "${fullName}" şubesi başarıyla eklendi! Personel atamak için şubenin yanındaki "Personel Ata" butonunu kullanabilirsiniz.`);
+      setShowAddBranchModal(false);
+      setBranchParent(null);
+      setNewBranch({
+        name: '',
+        address: '',
+        tax_no: '',
+        phone: '',
+        logo_url: '',
+        latitude: null,
+        longitude: null,
+        service_start_date: '',
+        contract_file_url: '',
+        permit_stage: 'out_of_scope',
+        permit_articles: [],
+        kep_address: '',
+        ced_status: 'out_of_scope',
+        ced_articles: [],
+        area_points: [],
+      });
+      fetchClients(orgId, userRole, userId);
+    } catch (err: any) {
+      alert('Şube eklenirken hata: ' + err.message);
+    } finally {
+      setSavingBranch(false);
     }
   };
 
@@ -3505,9 +3762,21 @@ export default function ConsultantPanel() {
         : typeof client.permit_articles === 'string'
           ? JSON.parse(client.permit_articles || '[]')
           : [],
-      kep_address: client.kep_address || ''
+      kep_address: client.kep_address || '',
+      ced_status: client.ced_status || 'out_of_scope',
+      ced_articles: Array.isArray(client.ced_articles)
+        ? client.ced_articles
+        : typeof client.ced_articles === 'string'
+          ? JSON.parse(client.ced_articles || '[]')
+          : [],
+      area_points: Array.isArray(client.area_points)
+        ? client.area_points
+        : typeof client.area_points === 'string'
+          ? JSON.parse(client.area_points || '[]')
+          : [],
     });
     setEditClientArticleSearch('');
+    setEditClientCedSearch('');
     setShowEditClient(true);
   };
 
@@ -3517,6 +3786,20 @@ export default function ConsultantPanel() {
     if (!checkClientEditable(editingClient)) {
       alert('Bu işlem için yetkiniz bulunmamaktadır.');
       return;
+    }
+
+    // Şube olmayan (ana) işletmeler için vergi no tekilliği kontrolü. Şubeler muaf.
+    if (!editingClient.parent_client_id) {
+      const trimmedTaxNo = (editingClient.tax_no || '').trim();
+      if (trimmedTaxNo) {
+        const duplicate = clients.find(
+          (c) => c.id !== editingClient.id && !c.parent_client_id && (c.tax_no || '').trim() === trimmedTaxNo
+        );
+        if (duplicate) {
+          alert(`⛔ "${trimmedTaxNo}" vergi numarası zaten "${duplicate.name}" firmasında kayıtlı. Bir işletme için aynı vergi numarası tekrar kullanılamaz.`);
+          return;
+        }
+      }
     }
 
     try {
@@ -3535,6 +3818,10 @@ export default function ConsultantPanel() {
           permit_stage: editingClient.permit_stage || 'out_of_scope',
           permit_articles: editingClient.permit_articles || [],
           kep_address: editingClient.kep_address || null,
+          ced_status: editingClient.ced_status || 'out_of_scope',
+          ced_articles: editingClient.ced_articles || [],
+          area_points: (editingClient.area_points || []).length >= 3 ? editingClient.area_points : null,
+          area_m2: (editingClient.area_points || []).length >= 3 ? calculatePolygonAreaM2(editingClient.area_points) : null,
         })
         .eq('id', editingClient.id);
 
@@ -4477,7 +4764,10 @@ export default function ConsultantPanel() {
 
           {clientSubView === 'grid' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {clients.map((client) => (
+              {clients.map((client) => {
+                const branches = clients.filter((c) => c.parent_client_id === client.id);
+                const parentOfBranch = client.parent_client_id ? clients.find((c) => c.id === client.parent_client_id) : null;
+                return (
                 <div
                   key={client.id}
                   className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 hover:shadow-md transition"
@@ -4495,6 +4785,14 @@ export default function ConsultantPanel() {
                         <h3 className="font-bold text-gray-900 dark:text-white line-clamp-1">{client.name}</h3>
                         <p className="text-xs text-gray-500">Vergi No: {client.tax_no || 'Belirtilmemiş'}</p>
                         <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          {parentOfBranch && (
+                            <span
+                              className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/20 dark:text-teal-400 dark:border-teal-900/50 uppercase flex items-center gap-1"
+                              title={`${parentOfBranch.name} firmasının şubesi`}
+                            >
+                              <GitBranch size={10} /> Şube · {parentOfBranch.name}
+                            </span>
+                          )}
                           {client.permit_stage === 'ek1' ? (
                             <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-450 dark:border-rose-900/50 uppercase">
                               EK-1
@@ -4508,6 +4806,15 @@ export default function ConsultantPanel() {
                               Kapsam Dışı
                             </span>
                           )}
+                          {client.ced_status === 'ek1' ? (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/20 dark:text-purple-400 dark:border-purple-900/50 uppercase">
+                              ÇED EK-1
+                            </span>
+                          ) : client.ced_status === 'ek2' ? (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/20 dark:text-indigo-400 dark:border-indigo-900/50 uppercase">
+                              ÇED EK-2
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -4516,6 +4823,11 @@ export default function ConsultantPanel() {
                     <p className="line-clamp-2"><span className="font-medium">Adres:</span> {client.address}</p>
                     <p><span className="font-medium">Tel:</span> {client.phone}</p>
                     {client.kep_address && <p><span className="font-medium">KEP:</span> {client.kep_address}</p>}
+                    {(client.area_m2 || (client.area_points && client.area_points.length >= 3)) && (
+                      <p className="text-teal-600 dark:text-teal-400 font-medium">
+                        Alan: {formatArea(client.area_m2 || calculatePolygonAreaM2(client.area_points || []))}
+                      </p>
+                    )}
                     {client.permit_stage !== 'out_of_scope' && (() => {
                       const articlesArray = Array.isArray(client.permit_articles)
                         ? client.permit_articles
@@ -4571,6 +4883,53 @@ export default function ConsultantPanel() {
                         </div>
                       );
                     })()}
+
+                    {branches.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-dashed border-gray-200 dark:border-slate-700 space-y-1.5">
+                        <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                          <GitBranch size={11} /> Şubeler ({branches.length})
+                        </span>
+                        {branches.map((branch) => (
+                          <div
+                            key={branch.id}
+                            className="flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-900/50 rounded-lg px-2.5 py-1.5"
+                          >
+                            <span className="font-semibold text-xs text-gray-700 dark:text-slate-300 truncate" title={branch.name}>
+                              {branch.name}
+                            </span>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {canAssignClients && (
+                                <button
+                                  onClick={() => openAssignModal(branch)}
+                                  title="Personel Ata"
+                                  className="p-1 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded"
+                                >
+                                  <User size={12} />
+                                </button>
+                              )}
+                              {checkClientEditable(branch) && (
+                                <button
+                                  onClick={() => handleOpenEditModal(branch)}
+                                  title="Şubeyi Düzenle"
+                                  className="p-1 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30 rounded"
+                                >
+                                  <Edit2 size={12} />
+                                </button>
+                              )}
+                              {canDeleteClients && (
+                                <button
+                                  onClick={() => handleDeleteClient(branch.id)}
+                                  title="Şubeyi Sil"
+                                  className="p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {(canDeleteClients || checkClientEditable(client) || canAssignClients || true) && (
                     <div className="mt-4 pt-4 border-t border-gray-100 dark:border-slate-700 flex flex-wrap justify-between items-center gap-2">
@@ -4610,18 +4969,29 @@ export default function ConsultantPanel() {
                           <User size={14} /> Müşteri Girişi
                         </button>
                       </div>
-                      {canAssignClients && (
-                        <button 
-                          onClick={() => openAssignModal(client)}
-                          className="bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400 px-3 py-1.5 rounded-lg text-xs font-bold transition"
-                        >
-                          Personel Ata
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {canCreateClients && (
+                          <button
+                            onClick={() => openAddBranchModal(client)}
+                            className="bg-teal-50 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/20 dark:text-teal-400 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                          >
+                            <GitBranchPlus size={13} /> Şube Ekle
+                          </button>
+                        )}
+                        {canAssignClients && (
+                          <button
+                            onClick={() => openAssignModal(client)}
+                            className="bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                          >
+                            Personel Ata
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : clientSubView === 'personnel' ? (
             <div className="space-y-6">
@@ -9638,7 +10008,92 @@ export default function ConsultantPanel() {
                   </div>
                 </div>
               )}
-              
+
+              <div>
+                <label className="block text-sm font-medium mb-1">ÇED Durumu</label>
+                <select
+                  value={newClient.ced_status}
+                  onChange={(e) => {
+                    setNewClient({ ...newClient, ced_status: e.target.value, ced_articles: [] });
+                    setNewClientCedSearch('');
+                  }}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 bg-white dark:text-white"
+                >
+                  <option value="out_of_scope">Kapsam Dışı</option>
+                  <option value="ek1">EK-1 (ÇED Uygulanacak Projeler)</option>
+                  <option value="ek2">EK-2 (ÇED Ön İnceleme ve Değerlendirmeye Tabi Projeler)</option>
+                </select>
+              </div>
+
+              {(newClient.ced_status === 'ek1' || newClient.ced_status === 'ek2') && (
+                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      ÇED Proje Kategorileri ({newClient.ced_articles.length} Seçildi)
+                    </label>
+                    {newClient.ced_articles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setNewClient({ ...newClient, ced_articles: [] })}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Maddelerde ara (örn: rafineri, 4)..."
+                    value={newClientCedSearch}
+                    onChange={(e) => setNewClientCedSearch(e.target.value)}
+                    className="w-full border rounded-lg p-1.5 text-xs dark:bg-slate-800 dark:border-slate-700"
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
+                    {(() => {
+                      const articlesList = cedCategories.filter((c) => c.stage === newClient.ced_status);
+                      const filtered = articlesList.filter(art =>
+                        art.code.toLowerCase().includes(newClientCedSearch.toLowerCase()) ||
+                        art.title.toLowerCase().includes(newClientCedSearch.toLowerCase())
+                      );
+                      if (filtered.length === 0) {
+                        if (articlesList.length === 0) {
+                          return (
+                            <p className="text-center text-xs text-amber-600 py-3 px-2 italic">
+                              Bu liste henüz boş görünüyor. Sistem admininin "add_ced_status_and_admin_lists.sql" dosyasını veritabanında çalıştırması gerekebilir.
+                            </p>
+                          );
+                        }
+                        return <p className="text-center text-xs text-gray-450 py-2 italic">Eşleşen madde bulunamadı.</p>;
+                      }
+                      return filtered.map((art) => {
+                        const isChecked = newClient.ced_articles.includes(art.code);
+                        return (
+                          <label
+                            key={art.code}
+                            className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs transition ${
+                              isChecked
+                                ? 'bg-teal-50 dark:bg-teal-950/40 text-teal-900 dark:text-teal-200'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleNewClientCedArticle(art.code)}
+                              className="mt-0.5 w-4 h-4 text-teal-600 rounded border-gray-300 focus:ring-teal-500"
+                            />
+                            <span>
+                              <strong className="text-teal-700 dark:text-teal-400 mr-1">{art.code}</strong>
+                              {art.title}
+                            </span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Hizmet Başlangıç Tarihi</label>
@@ -9710,6 +10165,11 @@ export default function ConsultantPanel() {
                 >
                   <MapPin size={14} /> Haritadan Konum Seç
                 </button>
+                {newClient.area_points.length >= 3 && (
+                  <p className="text-[11px] text-teal-600 font-bold mt-1">
+                    ✓ İşletme alanı çizildi: {formatArea(calculatePolygonAreaM2(newClient.area_points))}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Firma Logosu (Opsiyonel)</label>
@@ -9717,7 +10177,7 @@ export default function ConsultantPanel() {
                   {newClient.logo_url ? (
                     <div className="relative">
                       <img src={newClient.logo_url} alt="Önizleme" className="w-16 h-16 rounded border object-contain bg-gray-50" />
-                      <button 
+                      <button
                         type="button"
                         onClick={() => setNewClient({...newClient, logo_url: ''})}
                         className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1"
@@ -9752,6 +10212,384 @@ export default function ConsultantPanel() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Add Branch Modal */}
+      {showAddBranchModal && branchParent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+              <div>
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <GitBranchPlus size={20} className="text-teal-600" /> Şube Ekle
+                </h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  <span className="font-bold">{branchParent.name}</span> firmasına yeni bir şube ekleniyor. Bilgiler ana firmadan kopyalandı, dilediğiniz alanı değiştirebilirsiniz.
+                </p>
+              </div>
+              <button onClick={() => setShowAddBranchModal(false)} className="text-gray-400 hover:text-gray-600">
+                X
+              </button>
+            </div>
+            <form onSubmit={handleAddBranch} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Şube Adı *</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="örn: Atölye Şube"
+                  value={newBranch.name}
+                  onChange={(e) => setNewBranch({ ...newBranch, name: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  İşletme adı olarak kaydedilecek: <span className="font-bold text-gray-600 dark:text-gray-300">{branchParent.name} {newBranch.name || '...'}</span>
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Vergi No</label>
+                <input
+                  type="text"
+                  value={newBranch.tax_no}
+                  onChange={(e) => setNewBranch({ ...newBranch, tax_no: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Şubeler için vergi no tekillik kontrolü uygulanmaz; ana firmayla aynı veya farklı bir numara girebilirsiniz.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Şube Adresi</label>
+                <textarea
+                  value={newBranch.address}
+                  onChange={(e) => setNewBranch({ ...newBranch, address: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 h-20"
+                  placeholder="Ana firmadan farklıysa şubenin adresini girin"
+                ></textarea>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Şube Telefonu</label>
+                <input
+                  type="text"
+                  value={newBranch.phone}
+                  onChange={(e) => setNewBranch({ ...newBranch, phone: e.target.value })}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">KEP Adresi</label>
+                <input
+                  type="text"
+                  value={newBranch.kep_address}
+                  onChange={(e) => setNewBranch({ ...newBranch, kep_address: e.target.value })}
+                  placeholder="örnek@hs01.kep.tr"
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Çevre İzin/Lisans Kapsamı</label>
+                <select
+                  value={newBranch.permit_stage}
+                  onChange={(e) => {
+                    setNewBranch({ ...newBranch, permit_stage: e.target.value, permit_articles: [] });
+                    setBranchArticleSearch('');
+                  }}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 bg-white dark:text-white"
+                >
+                  <option value="out_of_scope">Kapsam Dışı</option>
+                  <option value="ek1">EK-1 (Çevreye Kirletici Etkisi Yüksek Tesisler)</option>
+                  <option value="ek2">EK-2 (Çevreye Kirletici Etkisi Olan Tesisler)</option>
+                </select>
+              </div>
+
+              {(newBranch.permit_stage === 'ek1' || newBranch.permit_stage === 'ek2') && (
+                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      İzin/Lisans Maddeleri ({newBranch.permit_articles.length} Seçildi)
+                    </label>
+                    {newBranch.permit_articles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setNewBranch({ ...newBranch, permit_articles: [] })}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Maddelerde ara (örn: Enerji, 1.1)..."
+                    value={branchArticleSearch}
+                    onChange={(e) => setBranchArticleSearch(e.target.value)}
+                    className="w-full border rounded-lg p-1.5 text-xs dark:bg-slate-800 dark:border-slate-700"
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
+                    {(() => {
+                      const articlesList = newBranch.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                      const filtered = articlesList.filter(art =>
+                        art.code.toLowerCase().includes(branchArticleSearch.toLowerCase()) ||
+                        art.title.toLowerCase().includes(branchArticleSearch.toLowerCase())
+                      );
+                      if (filtered.length === 0) {
+                        return <p className="text-center text-xs text-gray-450 py-2 italic">Eşleşen madde bulunamadı.</p>;
+                      }
+                      return filtered.map((art) => {
+                        const isChecked = newBranch.permit_articles.includes(art.code);
+                        return (
+                          <label
+                            key={art.code}
+                            className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs transition ${
+                              isChecked
+                                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleNewBranchArticle(art.code)}
+                              className="mt-0.5 w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                            />
+                            <span>
+                              <strong className="text-blue-700 dark:text-blue-400 mr-1">{art.code}</strong>
+                              {art.title}
+                            </span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium mb-1">ÇED Durumu</label>
+                <select
+                  value={newBranch.ced_status}
+                  onChange={(e) => {
+                    setNewBranch({ ...newBranch, ced_status: e.target.value, ced_articles: [] });
+                    setNewBranchCedSearch('');
+                  }}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 bg-white dark:text-white"
+                >
+                  <option value="out_of_scope">Kapsam Dışı</option>
+                  <option value="ek1">EK-1 (ÇED Uygulanacak Projeler)</option>
+                  <option value="ek2">EK-2 (ÇED Ön İnceleme ve Değerlendirmeye Tabi Projeler)</option>
+                </select>
+              </div>
+
+              {(newBranch.ced_status === 'ek1' || newBranch.ced_status === 'ek2') && (
+                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      ÇED Proje Kategorileri ({newBranch.ced_articles.length} Seçildi)
+                    </label>
+                    {newBranch.ced_articles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setNewBranch({ ...newBranch, ced_articles: [] })}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Maddelerde ara (örn: rafineri, 4)..."
+                    value={newBranchCedSearch}
+                    onChange={(e) => setNewBranchCedSearch(e.target.value)}
+                    className="w-full border rounded-lg p-1.5 text-xs dark:bg-slate-800 dark:border-slate-700"
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
+                    {(() => {
+                      const articlesList = cedCategories.filter((c) => c.stage === newBranch.ced_status);
+                      const filtered = articlesList.filter(art =>
+                        art.code.toLowerCase().includes(newBranchCedSearch.toLowerCase()) ||
+                        art.title.toLowerCase().includes(newBranchCedSearch.toLowerCase())
+                      );
+                      if (filtered.length === 0) {
+                        if (articlesList.length === 0) {
+                          return (
+                            <p className="text-center text-xs text-amber-600 py-3 px-2 italic">
+                              Bu liste henüz boş görünüyor. Sistem admininin "add_ced_status_and_admin_lists.sql" dosyasını veritabanında çalıştırması gerekebilir.
+                            </p>
+                          );
+                        }
+                        return <p className="text-center text-xs text-gray-450 py-2 italic">Eşleşen madde bulunamadı.</p>;
+                      }
+                      return filtered.map((art) => {
+                        const isChecked = newBranch.ced_articles.includes(art.code);
+                        return (
+                          <label
+                            key={art.code}
+                            className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs transition ${
+                              isChecked
+                                ? 'bg-teal-50 dark:bg-teal-950/40 text-teal-900 dark:text-teal-200'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleNewBranchCedArticle(art.code)}
+                              className="mt-0.5 w-4 h-4 text-teal-600 rounded border-gray-300 focus:ring-teal-500"
+                            />
+                            <span>
+                              <strong className="text-teal-700 dark:text-teal-400 mr-1">{art.code}</strong>
+                              {art.title}
+                            </span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Hizmet Başlangıç Tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-sm font-medium"
+                    value={newBranch.service_start_date}
+                    onChange={(e) => setNewBranch({ ...newBranch, service_start_date: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1.5 uppercase">Sözleşme Dosyası (.pdf, görsel)</label>
+                  <div className="flex items-center gap-2">
+                    {newBranch.contract_file_url ? (
+                      <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 p-2 rounded-lg border w-full justify-between">
+                        <a href={newBranch.contract_file_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline truncate max-w-[180px]">
+                          Sözleşmeyi Gör ↗
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => setNewBranch({ ...newBranch, contract_file_url: '' })}
+                          className="text-red-500 hover:text-red-700 text-xs font-bold"
+                        >
+                          Sil
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="w-full flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-2 hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer transition">
+                        <Upload size={14} className="text-gray-400 mr-1.5" />
+                        <span className="text-xs text-gray-500 font-medium">
+                          {uploadingBranchContract ? 'Yükleniyor...' : 'Sözleşme Yükle'}
+                        </span>
+                        <input
+                          type="file"
+                          accept=".pdf,image/*"
+                          className="hidden"
+                          onChange={handleBranchContractUpload}
+                          disabled={uploadingBranchContract}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Konum Koordinatları</label>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Enlem (Latitude)"
+                    value={newBranch.latitude !== null ? newBranch.latitude : ''}
+                    onChange={(e) => setNewBranch({ ...newBranch, latitude: e.target.value ? parseFloat(e.target.value) : null })}
+                    className="w-1/2 border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-xs font-mono font-bold"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Boylam (Longitude)"
+                    value={newBranch.longitude !== null ? newBranch.longitude : ''}
+                    onChange={(e) => setNewBranch({ ...newBranch, longitude: e.target.value ? parseFloat(e.target.value) : null })}
+                    className="w-1/2 border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 text-xs font-mono font-bold"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddBranchMap(true)}
+                  className="w-full bg-[#2ca58d] hover:bg-[#238c75] text-white py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition shadow-sm"
+                >
+                  <MapPin size={14} /> Haritadan Konum Seç
+                </button>
+                {newBranch.area_points.length >= 3 && (
+                  <p className="text-[11px] text-teal-600 font-bold mt-1">
+                    ✓ İşletme alanı çizildi: {formatArea(calculatePolygonAreaM2(newBranch.area_points))}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Şube Logosu (Opsiyonel)</label>
+                <div className="flex items-center gap-4">
+                  {newBranch.logo_url ? (
+                    <div className="relative">
+                      <img src={newBranch.logo_url} alt="Önizleme" className="w-16 h-16 rounded border object-contain bg-gray-50" />
+                      <button
+                        type="button"
+                        onClick={() => setNewBranch({ ...newBranch, logo_url: '' })}
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition">
+                      <Upload className="text-gray-400 mb-2" size={24} />
+                      <span className="text-xs text-gray-500">{uploadingBranchLogo ? 'Yükleniyor...' : 'Bilgisayardan Seç'}</span>
+                      <input type="file" accept="image/*" className="hidden" onChange={handleBranchLogoUpload} disabled={uploadingBranchLogo} />
+                    </label>
+                  )}
+                </div>
+              </div>
+              <div className="pt-4 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAddBranchModal(false)}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingBranch}
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 disabled:bg-gray-300 text-white rounded-lg font-medium"
+                >
+                  {savingBranch ? 'Kaydediliyor...' : 'Şubeyi Kaydet'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showAddBranchMap && (
+        <MapPickerModal
+          isOpen={showAddBranchMap}
+          onClose={() => setShowAddBranchMap(false)}
+          initialLat={newBranch.latitude}
+          initialLng={newBranch.longitude}
+          initialAreaPoints={newBranch.area_points}
+          onSelect={(lat, lng, addressVal, areaPointsVal) => {
+            setNewBranch((prev) => ({
+              ...prev,
+              latitude: lat,
+              longitude: lng,
+              address: prev.address || addressVal || '',
+              area_points: areaPointsVal || [],
+            }));
+            setShowAddBranchMap(false);
+          }}
+        />
       )}
 
       {/* Edit Client Modal */}
@@ -9897,6 +10735,91 @@ export default function ConsultantPanel() {
                 </div>
               )}
 
+              <div>
+                <label className="block text-sm font-medium mb-1">ÇED Durumu</label>
+                <select
+                  value={editingClient.ced_status || 'out_of_scope'}
+                  onChange={(e) => {
+                    setEditingClient({ ...editingClient, ced_status: e.target.value, ced_articles: [] });
+                    setEditClientCedSearch('');
+                  }}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 bg-white dark:text-white"
+                >
+                  <option value="out_of_scope">Kapsam Dışı</option>
+                  <option value="ek1">EK-1 (ÇED Uygulanacak Projeler)</option>
+                  <option value="ek2">EK-2 (ÇED Ön İnceleme ve Değerlendirmeye Tabi Projeler)</option>
+                </select>
+              </div>
+
+              {(editingClient.ced_status === 'ek1' || editingClient.ced_status === 'ek2') && (
+                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      ÇED Proje Kategorileri ({(editingClient.ced_articles || []).length} Seçildi)
+                    </label>
+                    {(editingClient.ced_articles || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingClient({ ...editingClient, ced_articles: [] })}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Maddelerde ara (örn: rafineri, 4)..."
+                    value={editClientCedSearch}
+                    onChange={(e) => setEditClientCedSearch(e.target.value)}
+                    className="w-full border rounded-lg p-1.5 text-xs dark:bg-slate-800 dark:border-slate-700"
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
+                    {(() => {
+                      const articlesList = cedCategories.filter((c) => c.stage === editingClient.ced_status);
+                      const filtered = articlesList.filter(art =>
+                        art.code.toLowerCase().includes(editClientCedSearch.toLowerCase()) ||
+                        art.title.toLowerCase().includes(editClientCedSearch.toLowerCase())
+                      );
+                      if (filtered.length === 0) {
+                        if (articlesList.length === 0) {
+                          return (
+                            <p className="text-center text-xs text-amber-600 py-3 px-2 italic">
+                              Bu liste henüz boş görünüyor. Sistem admininin "add_ced_status_and_admin_lists.sql" dosyasını veritabanında çalıştırması gerekebilir.
+                            </p>
+                          );
+                        }
+                        return <p className="text-center text-xs text-gray-450 py-2 italic">Eşleşen madde bulunamadı.</p>;
+                      }
+                      return filtered.map((art) => {
+                        const isChecked = (editingClient.ced_articles || []).includes(art.code);
+                        return (
+                          <label
+                            key={art.code}
+                            className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs transition ${
+                              isChecked
+                                ? 'bg-teal-50 dark:bg-teal-950/40 text-teal-900 dark:text-teal-200'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleEditClientCedArticle(art.code)}
+                              className="mt-0.5 w-4 h-4 text-teal-600 rounded border-gray-300 focus:ring-teal-500"
+                            />
+                            <span>
+                              <strong className="text-teal-700 dark:text-teal-400 mr-1">{art.code}</strong>
+                              {art.title}
+                            </span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-650 dark:text-slate-400 mb-1 uppercase">Hizmet Başlangıç Tarihi</label>
@@ -9968,6 +10891,11 @@ export default function ConsultantPanel() {
                 >
                   <MapPin size={14} /> Haritadan Konum Seç
                 </button>
+                {(editingClient.area_points || []).length >= 3 && (
+                  <p className="text-[11px] text-teal-600 font-bold mt-1">
+                    ✓ İşletme alanı çizildi: {formatArea(calculatePolygonAreaM2(editingClient.area_points))}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Firma Logosu (Opsiyonel)</label>
@@ -10774,12 +11702,14 @@ export default function ConsultantPanel() {
         onClose={() => setShowAddClientMap(false)}
         initialLat={newClient.latitude}
         initialLng={newClient.longitude}
-        onSelect={(latVal, lngVal, addressVal) => {
+        initialAreaPoints={newClient.area_points}
+        onSelect={(latVal, lngVal, addressVal, areaPointsVal) => {
           setNewClient(prev => ({
             ...prev,
             latitude: latVal,
             longitude: lngVal,
-            address: prev.address || addressVal || ''
+            address: prev.address || addressVal || '',
+            area_points: areaPointsVal || [],
           }));
           setShowAddClientMap(false);
         }}
@@ -10790,12 +11720,14 @@ export default function ConsultantPanel() {
         onClose={() => setShowEditClientMap(false)}
         initialLat={editingClient?.latitude}
         initialLng={editingClient?.longitude}
-        onSelect={(latVal, lngVal, addressVal) => {
+        initialAreaPoints={editingClient?.area_points}
+        onSelect={(latVal, lngVal, addressVal, areaPointsVal) => {
           setEditingClient(prev => ({
             ...prev,
             latitude: latVal,
             longitude: lngVal,
-            address: prev.address || addressVal || ''
+            address: prev.address || addressVal || '',
+            area_points: areaPointsVal || [],
           }));
           setShowEditClientMap(false);
         }}
