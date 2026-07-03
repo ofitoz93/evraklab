@@ -31,6 +31,7 @@ import {
   X,
   Check,
   FileText,
+  Save,
 } from 'lucide-react';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
@@ -1927,10 +1928,12 @@ export default function AdminPanel() {
               >
                 <Scale size={14} /> Mevzuat Havuzu
               </button>
+              {/* Admin'den mevzuat talep etme akışı kaldırıldı: personel artık sadece kendi
+                  firma yöneticisinden talep edebiliyor (bkz. ConsultantPanel/CompanyPanel 'staff_to_owner'). */}
               <button
                 type="button"
                 onClick={() => setLegSubTab('requests')}
-                className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition relative ${
+                className={`hidden items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition relative ${
                   legSubTab === 'requests'
                     ? 'bg-teal-600 text-white shadow-sm'
                     : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
@@ -3256,25 +3259,26 @@ export default function AdminPanel() {
                 </div>
               </div>
 
-              <div className="bg-blue-50/40 p-4 rounded-2xl border border-blue-100 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="comp-env"
-                  className="mt-1 w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
-                  checked={compIsEnvConsultant}
-                  onChange={(e) => setCompIsEnvConsultant(e.target.checked)}
-                />
-                <label htmlFor="comp-env" className="flex flex-col cursor-pointer select-none">
-                  <span className="text-sm font-bold text-blue-900">Çevre Danışmanlık Yetkisi (Raporlar Modülü)</span>
-                  <span className="text-[10px] text-blue-600/80 font-medium">Bu şirket için detaylı Çevre Danışmanlığı Raporu (Aylık/Yıllık) hazırlama modülünü etkinleştirir.</span>
-                </label>
-              </div>
-
               {editingCompany.id !== 'new' && (
                 <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-[10px] font-medium leading-relaxed">
                   ⚠️ Şirket bilgileri veya abonelik süresi güncellendiğinde, bu şirkete bağlı tüm çalışanların paket aktiflik süreleri bu durumdan etkilenecektir.
                 </div>
               )}
+
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
+                <button
+                  onClick={handleSaveCompany}
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-purple-100"
+                >
+                  <Save size={16} /> Değişiklikleri Kaydet
+                </button>
+                <button
+                  onClick={() => setEditingCompany(null)}
+                  className="flex-1 border border-slate-200 py-3 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition"
+                >
+                  İptal
+                </button>
+              </div>
 
             </div>
           </div>

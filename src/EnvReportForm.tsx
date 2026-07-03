@@ -43,6 +43,7 @@ export default function EnvReportForm() {
 
   const [userMode, setUserMode] = useState<'personal' | 'consultant' | 'loading'>('loading');
   const [noAssignedClients, setNoAssignedClients] = useState(false);
+  const [isCorporateExpired, setIsCorporateExpired] = useState(false);
 
   useEffect(() => {
     fetchInitialData();
@@ -81,6 +82,17 @@ export default function EnvReportForm() {
           .eq('id', profile.organization_id)
           .single();
         if (org?.is_environmental_consultant) isEnvConsultantOrg = true;
+      }
+
+      // Kurumsal (yönetici/şef/danışman) hesap, şirket abonelik süresi doldu mu?
+      if (hasOrg && isCorporateRole && profile.role !== 'admin') {
+        const { data: orgSub } = await supabase
+          .from('organizations')
+          .select('subscription_end_date')
+          .eq('id', profile.organization_id)
+          .single();
+        const expired = !orgSub?.subscription_end_date || new Date(orgSub.subscription_end_date) <= new Date();
+        setIsCorporateExpired(expired);
       }
 
       // Admin veya corporate rolle şirkete bağlı veya env danışmanlık üyesi → danışman modu
@@ -202,6 +214,10 @@ export default function EnvReportForm() {
   };
 
   const handleSave = async () => {
+    if (isCorporateExpired) {
+      alert('Şirketinizin premium süresi doldu. Yeni rapor oluşturmak için lütfen paketinizi yenileyin.');
+      return;
+    }
     const isPersonal = userMode === 'personal';
     if (!isPersonal && !clientId) {
       alert('Lütfen bir işletme seçin!');
@@ -895,6 +911,35 @@ export default function EnvReportForm() {
       <div className="max-w-5xl mx-auto p-8 text-center">
         <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
         <p className="text-gray-500">Yükleniyor...</p>
+      </div>
+    );
+  }
+
+  // --- Premium Süresi Dolmuş Kurumsal Hesap ---
+  if (isCorporateExpired) {
+    return (
+      <div className="max-w-5xl mx-auto space-y-6 pb-24">
+        <div className="flex items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+          <button onClick={() => navigate('/documents')} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
+            <ArrowLeft size={20} />
+          </button>
+          <h1 className="text-xl font-bold">Yeni Rapor Oluştur</h1>
+        </div>
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-rose-200 p-12 text-center">
+          <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
+            <RefreshCw size={32} className="text-rose-500" />
+          </div>
+          <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">Premium Süresi Doldu</h2>
+          <p className="text-gray-500 dark:text-gray-400 text-sm max-w-md mx-auto">
+            Şirketinizin premium paketi sona ermiş. Yeni rapor oluşturabilmek için lütfen paketinizi yenileyin.
+          </p>
+          <a
+            href="/pricing"
+            className="mt-6 inline-block bg-rose-600 hover:bg-rose-700 text-white px-6 py-2 rounded-lg font-bold transition"
+          >
+            Paketi Yenile
+          </a>
+        </div>
       </div>
     );
   }

@@ -36,6 +36,8 @@ export default function AddDocument() {
 
   // Premium Kontrolü
   const [isPremium, setIsPremium] = useState(false);
+  // Kurumsal (yönetici/şef/danışman) hesap, şirket abonelik süresi doldu mu?
+  const [isCorporateExpired, setIsCorporateExpired] = useState(false);
 
   // Listeler
   const [typeOptions, setTypeOptions] = useState<any[]>([]);
@@ -229,6 +231,9 @@ const getOrCreateDriveFolder = async (
         }
 
         setIsPremium(hasActivePremium);
+        setIsCorporateExpired(
+          ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(role) && !hasActivePremium
+        );
 
         // 3. Varsayılan Kapsam (Scope)
         if (profile.organization_id) setDocScope('corporate');
@@ -623,6 +628,10 @@ const getOrCreateDriveFolder = async (
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (isCorporateExpired) {
+      return alert('Şirketinizin premium süresi doldu. Yeni belge eklemek için lütfen paketinizi yenileyin.');
+    }
+
     const selectedType = typeOptions.find(t => t.id === selectedTypeId);
     const finalTitle = selectedType ? selectedType.label : (file ? file.name : 'Belge');
 
@@ -865,10 +874,25 @@ const getOrCreateDriveFolder = async (
           </h2>
           {!isPremium && (
             <div className="text-xs bg-orange-50 text-orange-800 px-3 py-1 rounded-full border border-orange-200 font-bold">
-              Kota: {currentDocCount}/5
+              Kota: {currentDocCount}/3
             </div>
           )}
         </div>
+
+        {isCorporateExpired && (
+          <div className="mb-6 bg-gradient-to-r from-rose-600 to-orange-500 text-white p-4 rounded-xl shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div>
+              <p className="font-bold text-sm">Premium süresi doldu!</p>
+              <p className="text-xs text-white/90">Yeni belge ekleyebilmek için lütfen paket yenilemesi yapın.</p>
+            </div>
+            <a
+              href="/pricing"
+              className="bg-white text-rose-700 px-4 py-2 rounded-lg font-bold text-xs whitespace-nowrap hover:bg-rose-50 transition shrink-0"
+            >
+              Paketi Yenile
+            </a>
+          </div>
+        )}
 
 
 
@@ -1342,11 +1366,11 @@ const getOrCreateDriveFolder = async (
           )}
 
           <button
-            disabled={uploading || (uploadMode === 'ai' && bulkAnalysisResults.length === 0)}
+            disabled={uploading || isCorporateExpired || (uploadMode === 'ai' && bulkAnalysisResults.length === 0)}
             className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg disabled:bg-gray-300 flex items-center justify-center gap-2"
           >
             {uploading ? <Loader size={20} className="animate-spin" /> : <Save size={20} />}
-            {uploading ? 'Belgeler Kaydediliyor...' : (uploadMode === 'ai' ? 'Tüm Belgeleri Sisteme Kaydet' : 'Belgeyi Kaydet')}
+            {uploading ? 'Belgeler Kaydediliyor...' : isCorporateExpired ? 'Premium Süresi Doldu' : (uploadMode === 'ai' ? 'Tüm Belgeleri Sisteme Kaydet' : 'Belgeyi Kaydet')}
           </button>
 
           {uploadMode === 'ai' && isPremium && files.length > 0 && (

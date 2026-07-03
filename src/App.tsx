@@ -56,6 +56,9 @@ import InspectionPage from './InspectionPage';
 import ClientEvaluationPage from './ClientEvaluationPage';
 import ClientPanel from './ClientPanel';
 import ClientLogin from './ClientLogin';
+import CompanyPanel from './CompanyPanel';
+import OpinionLetterForm from './OpinionLetterForm';
+import OpinionLetterView from './OpinionLetterView';
 
 
 // --- GOOGLE OAUTH POPUP CALLBACK HANDLING ---
@@ -1001,6 +1004,17 @@ function AppContent() {
                 />
 
                 <Route
+                  path="/company"
+                  element={
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
+                      <Navigate to="/consultant" />
+                    ) : (
+                      <CompanyPanel />
+                    )
+                  }
+                />
+
+                <Route
                   path="/consultant"
                   element={
                     (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
@@ -1023,6 +1037,20 @@ function AppContent() {
                 <Route
                   path="/consultant/reports/:id"
                   element={<EnvReportView />}
+                />
+                <Route
+                  path="/consultant/opinions/add"
+                  element={
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
+                      <OpinionLetterForm />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
+                />
+                <Route
+                  path="/consultant/opinions/:id"
+                  element={<OpinionLetterView />}
                 />
 
                 <Route

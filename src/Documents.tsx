@@ -19,8 +19,6 @@ import {
   Filter,
   Maximize,
   Lock,
-  Crown,
-  Layers,
   BellRing,
   Building,
   Share2,
@@ -694,9 +692,7 @@ const getOrCreateDriveFolder = async (
     return false;
   };
 
-  const limit = isPremium ? filteredDocs.length : 5;
-  const displayedDocs = filteredDocs.slice(0, limit);
-  const hiddenCount = Math.max(0, filteredDocs.length - limit);
+  const limit = isPremium ? filteredDocs.length : 3;
 
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
 
@@ -781,6 +777,14 @@ const getOrCreateDriveFolder = async (
           >
             <Plus size={20} /> Yeni Belge Ekle
           </Link>
+          {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
+            <Link
+              to="/consultant/opinions/add"
+              className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg hover:bg-purple-700 transition"
+            >
+              <PenLine size={20} /> Görüş
+            </Link>
+          )}
         </div>
       </div>
 
@@ -1000,7 +1004,8 @@ const getOrCreateDriveFolder = async (
               </tr>
             </thead>
             <tbody className="text-sm divide-y">
-              {displayedDocs.map((doc) => {
+              {filteredDocs.map((doc, docIdx) => {
+                const isLocked = docIdx >= limit;
                 const daysLeft = getDaysLeft(doc.application_deadline);
                 const isCorporate = !!doc.organization_id;
                 const isOwner = doc.uploader_id === userId;
@@ -1055,11 +1060,31 @@ const getOrCreateDriveFolder = async (
                   );
 
                 return (
-                  <tr
-                    key={doc.id}
-                    className="hover:bg-gray-50 transition group"
-                  >
-                    <td className="p-4">
+                  <React.Fragment key={doc.id}>
+                    {isLocked && docIdx === limit && (
+                      <tr>
+                        <td colSpan={4} className="p-0">
+                          <div className="bg-gradient-to-r from-rose-600 to-orange-500 text-white p-3.5 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+                            <div className="flex items-center gap-2">
+                              <Lock size={16} />
+                              <span className="font-bold text-xs sm:text-sm">
+                                Premium süresi doldu! Evrakları görüntülemek için yenileme yapın.
+                              </span>
+                            </div>
+                            <Link
+                              to="/pricing"
+                              className="bg-white text-rose-700 px-4 py-1.5 rounded-full font-bold text-xs whitespace-nowrap hover:bg-rose-50 transition shrink-0"
+                            >
+                              Paketi Yenile
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    <tr
+                      className={`hover:bg-gray-50 transition group ${isLocked ? 'relative' : ''}`}
+                    >
+                    <td className={`p-4 ${isLocked ? 'blur-[4px] select-none pointer-events-none opacity-70' : ''}`}>
                       <div className="font-bold text-blue-700 uppercase mb-1">
                         {doc.type_def?.label || 'Genel'}
                       </div>
@@ -1101,12 +1126,12 @@ const getOrCreateDriveFolder = async (
                         </span>
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className={`p-4 ${isLocked ? 'blur-[4px] select-none pointer-events-none opacity-70' : ''}`}>
                       <div className="text-sm text-gray-700 font-bold flex items-center gap-1 bg-gray-100 px-2 py-1 rounded w-fit">
                         <MapPin size={12} /> {doc.location_def?.label || '-'}
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className={`p-4 ${isLocked ? 'blur-[4px] select-none pointer-events-none opacity-70' : ''}`}>
                       {statusBadge}
                       {doc.application_deadline && (
                         <div className="text-[10px] text-gray-400 mt-1">
@@ -1117,7 +1142,7 @@ const getOrCreateDriveFolder = async (
                         </div>
                       )}
                     </td>
-                    <td className="p-4 text-right">
+                    <td className={`p-4 text-right ${isLocked ? 'blur-[4px] select-none pointer-events-none opacity-70' : ''}`}>
                       <div className="flex items-center justify-end gap-2">
                         {/* İLET BUTONU */}
                         {canForward(doc) && (
@@ -1192,38 +1217,11 @@ const getOrCreateDriveFolder = async (
                         )}
                       </div>
                     </td>
-                  </tr>
+                    </tr>
+                  </React.Fragment>
                 );
               })}
 
-              {hiddenCount > 0 && (
-                <tr className="bg-gray-50 relative">
-                  <td colSpan={4} className="p-0">
-                    <div className="relative h-24 overflow-hidden">
-                      <div className="absolute inset-0 flex flex-col justify-center gap-4 p-4 opacity-30 filter blur-sm select-none pointer-events-none">
-                        <div className="h-4 bg-gray-300 rounded w-3/4"></div>
-                        <div className="h-4 bg-gray-300 rounded w-1/2"></div>
-                      </div>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 z-10 backdrop-blur-sm">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Layers className="text-gray-400" />
-                          <span className="text-gray-700 font-bold text-sm">
-                            {hiddenCount} adet belge gizlendi.
-                          </span>
-                        </div>
-                        <Link
-                          to="/pricing"
-                          className="bg-gradient-to-r from-gray-900 to-gray-700 text-white px-6 py-2 rounded-full font-bold text-xs flex items-center gap-2 shadow-lg hover:scale-105 transition"
-                        >
-                          <Lock size={12} />{' '}
-                          <Crown size={12} className="text-yellow-400" /> Tümünü
-                          Görmek İçin Premium'a Geç
-                        </Link>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              )}
             </tbody>
           </table>
         )}

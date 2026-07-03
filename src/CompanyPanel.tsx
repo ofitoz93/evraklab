@@ -34,6 +34,7 @@ import {
   Edit2,
   QrCode,
   Eye,
+  RefreshCw,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
@@ -121,8 +122,10 @@ export default function CompanyPanel() {
   const [articleActions, setArticleActions] = useState<any[]>([]);
   const [loadingActions, setLoadingActions] = useState(false);
   const [selectedClientAction, setSelectedClientAction] = useState<any>(null);
+  const [actionsLastSeen, setActionsLastSeen] = useState<number>(0);
   
   const [showCreateActionModal, setShowCreateActionModal] = useState(false);
+  const [creatingAction, setCreatingAction] = useState(false);
   const [showCompleteActionModal, setShowCompleteActionModal] = useState(false);
   const [showCorrectionModal, setShowCorrectionModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -157,6 +160,7 @@ export default function CompanyPanel() {
     articleNo: string;
     title: string;
     currentNotes?: string;
+    currentExpiryDate?: string;
     currentMandatoryState?: boolean;
   } | null>(null);
   const [complianceNoteValue, setComplianceNoteValue] = useState('');
@@ -169,6 +173,8 @@ export default function CompanyPanel() {
   const [selectedEvidenceLocation, setSelectedEvidenceLocation] = useState<string>('');
   const [requestsFilterClient, setRequestsFilterClient] = useState<string>('');
   const [reqNotesArticleId, setReqNotesArticleId] = useState<string>('');
+  const [selectedArticleIdsForAction, setSelectedArticleIdsForAction] = useState<string[]>([]);
+  const [pendingActionArticleIds, setPendingActionArticleIds] = useState<string[]>([]);
 
   const [clientRecId, setClientRecId] = useState<string | null>(null);
   const [myRegulations, setMyRegulations] = useState<any[]>([]);
@@ -487,8 +493,8 @@ export default function CompanyPanel() {
 
     try {
       setSubmittingRequest(true);
-      const isOwner = myProfile?.role === 'premium_corporate';
-      const reqType = isOwner ? 'owner_to_admin' : 'staff_to_owner';
+      // Admin'e talep gönderme kaldırıldı: personel/şef her zaman firma yöneticisinden (owner) talep eder.
+      const reqType = 'staff_to_owner';
 
       const { error } = await supabase
         .from('regulation_requests')
@@ -924,6 +930,12 @@ export default function CompanyPanel() {
     );
   };
 
+  const handleToggleArticleForAction = (artId: string) => {
+    setSelectedArticleIdsForAction(prev =>
+      prev.includes(artId) ? prev.filter(id => id !== artId) : [...prev, artId]
+    );
+  };
+
   const handleRequestSelectedArticleNotes = async () => {
     if (selectedArticleIdsForRequest.length === 0) {
       alert('Lütfen en az bir madde seçin.');
@@ -961,6 +973,32 @@ export default function CompanyPanel() {
       fetchInspections();
     }
   }, [activeTab, myOrg, myProfile, assignedClients]);
+
+  // Navbar rozeti için: org yüklenir yüklenmez aksiyonları ve "son görülme" zamanını çek
+  useEffect(() => {
+    if (myOrg) {
+      fetchComplianceActions();
+    }
+  }, [myOrg]);
+
+  useEffect(() => {
+    if (!myProfile?.id) return;
+    const stored = localStorage.getItem(`evraklab_actions_seen_${myProfile.id}`);
+    setActionsLastSeen(stored ? parseInt(stored, 10) : 0);
+  }, [myProfile?.id]);
+
+  useEffect(() => {
+    if (activeTab === 'actions' && myProfile?.id) {
+      const now = Date.now();
+      localStorage.setItem(`evraklab_actions_seen_${myProfile.id}`, String(now));
+      setActionsLastSeen(now);
+    }
+  }, [activeTab, myProfile?.id]);
+
+  const newActionsCount = complianceActions.filter((a) => {
+    const createdMs = a.created_at ? new Date(a.created_at).getTime() : 0;
+    return createdMs > actionsLastSeen;
+  }).length;
 
   // --- ATIK YÖNETİMİ METOTLARI ---
   const fetchWasteCompanies = async () => {
@@ -1829,24 +1867,88 @@ export default function CompanyPanel() {
     }
   };
 
+  // Sorumlu personele aksiyon bildirim e-postası gönderir (Google Apps Script üzerinden)
+  const sendActionAssignmentEmail = async (
+    assigneeId: string,
+    actionTitle: string,
+    dueDate: string | null,
+    type: 'action_opened' | 'action_completed' = 'action_opened'
+  ): Promise<boolean> => {
+    try {
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      const actualScriptUrl = scriptSetting?.value;
+      if (!actualScriptUrl) {
+        console.warn('Aksiyon bildirim e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return false;
+      }
+
+      const { data: assigneeProfile } = await supabase
+        .from('profiles')
+        .select('full_name, email')
+        .eq('id', assigneeId)
+        .maybeSingle();
+      if (!assigneeProfile?.email) return false;
+
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type,
+          email: assigneeProfile.email,
+          clientName: assigneeProfile.full_name || 'Personel',
+          actionTitle,
+          dueDate: dueDate ? new Date(dueDate).toLocaleDateString('tr-TR') : '',
+          loginLink: `${window.location.origin}/login`,
+        }),
+      });
+      return true;
+    } catch (err) {
+      console.error('Aksiyon bildirim e-postası gönderilemedi:', err);
+      return false;
+    }
+  };
+
   const handleCreateAction = async () => {
     const title = newActionTitle.trim();
     const desc = newActionDesc.trim();
     const cId = isConsultant ? newActionClientId : clientRecId;
     const aId = newActionAssigneeId || myProfile?.id;
     const dDate = newActionDueDate;
-    
-    if (!title || !cId || !aId || !dDate) {
-      alert('Lütfen tüm zorunlu alanları doldurun.');
+
+    if (!title || !cId || !aId || !dDate || !desc) {
+      alert('Lütfen tüm zorunlu alanları doldurun. Açıklama yazmadan aksiyon açılamaz.');
       return;
     }
-    
+
+    // Normal (premium olmayan) üyeler aynı anda sadece 1 aktif (onaylanmamış) aksiyon açabilir.
+    const isNormalTier = myProfile?.role === 'normal';
+    if (isNormalTier) {
+      const activeCount = complianceActions.filter((a) => a.status !== 'approved').length;
+      if (activeCount >= 1) {
+        alert('Aksiyon Takip modülünde aynı anda sadece 1 aktif aksiyonunuz olabilir. Yeni aksiyon açmak için mevcut aksiyonunuzun kapanmasını (onaylanmasını) bekleyin ya da premium üyeliğe geçin.');
+        return;
+      }
+    }
+
+    if (creatingAction) return;
+    setCreatingAction(true);
+
     try {
+      const articleIds = pendingActionArticleIds.length > 0
+        ? pendingActionArticleIds
+        : (reqNotesArticleId ? [reqNotesArticleId] : null);
+
       const { error } = await supabase
         .from('compliance_actions')
         .insert({
           client_id: cId,
           article_id: reqNotesArticleId || null,
+          article_ids: articleIds,
           title: title,
           description: desc || null,
           due_date: dDate,
@@ -1854,15 +1956,20 @@ export default function CompanyPanel() {
           assigned_to: aId,
           status: 'pending'
         });
-        
+
       if (error) throw error;
-      
-      alert('Aksiyon başarıyla oluşturuldu.');
+
+      // Aksiyon açıldı e-postası sadece premium üyelere ait bir bildirim; normal üyelere gönderilmiyor.
+      const emailSent = isNormalTier ? false : await sendActionAssignmentEmail(aId, title, dDate, 'action_opened');
+
+      alert('Aksiyon başarıyla oluşturuldu.' + (emailSent ? ' Sorumlu personele bildirim e-postası gönderildi.' : ''));
       closeCreateActionModal();
-      
+
       await fetchComplianceActions();
     } catch (err: any) {
       alert('Aksiyon oluşturulurken hata: ' + err.message);
+    } finally {
+      setCreatingAction(false);
     }
   };
 
@@ -1874,21 +1981,33 @@ export default function CompanyPanel() {
     setNewActionAssigneeId('');
     setNewActionDueDate('');
     setReqNotesArticleId('');
+    setPendingActionArticleIds([]);
+    setCreatingAction(false);
   };
 
-  const handleOpenActionForArticle = async (art: any) => {
-    setNewActionTitle(`[${art.article_no}] Aksiyon`);
-    setNewActionDesc(`Bu madde için aksiyon tamamlanması gerekmektedir.\nİlgili Madde: ${art.article_no} - ${art.title || ''}`);
+  // Tek veya birden fazla madde için aksiyon oluşturma modalını hazırlar
+  const openActionModalForArticles = async (arts: any[]) => {
+    if (arts.length === 0) return;
+
+    if (arts.length === 1) {
+      setNewActionTitle(`[${arts[0].article_no}] Aksiyon`);
+      setNewActionDesc(`Bu madde için aksiyon tamamlanması gerekmektedir.\nİlgili Madde: ${arts[0].article_no} - ${arts[0].title || ''}`);
+    } else {
+      const articleList = arts.map((a) => `${a.article_no} - ${a.title || ''}`).join('\n');
+      setNewActionTitle(`${arts.length} Madde İçin Aksiyon`);
+      setNewActionDesc(`Aşağıdaki maddeler için aksiyon tamamlanması gerekmektedir:\n${articleList}`);
+    }
     setNewActionClientId(clientRecId || '');
-    setReqNotesArticleId(art.id);
-    
+    setReqNotesArticleId(arts[0].id);
+    setPendingActionArticleIds(arts.map((a) => a.id));
+
     // Otomatik atama
     try {
       const { data: assignments } = await supabase
         .from('consultant_assignments')
         .select('user_id')
         .eq('client_id', clientRecId);
-      
+
       if (assignments && assignments.length > 0) {
         setNewActionAssigneeId(assignments[0].user_id);
       } else {
@@ -1898,11 +2017,25 @@ export default function CompanyPanel() {
       console.error('Error fetching assignments:', err);
       setNewActionAssigneeId(myProfile?.id || '');
     }
-    
+
     setNewActionDueDate('');
     setShowCreateActionModal(true);
     setActiveTab('actions');
     setSearchParams({ tab: 'actions' });
+  };
+
+  const handleOpenActionForArticle = async (art: any) => {
+    await openActionModalForArticles([art]);
+  };
+
+  const handleOpenActionForSelectedArticles = async () => {
+    if (selectedArticleIdsForAction.length === 0) {
+      alert('Lütfen aksiyon açmak için en az bir madde seçin.');
+      return;
+    }
+    const arts = selectedRegArticles.filter((a) => selectedArticleIdsForAction.includes(a.id));
+    await openActionModalForArticles(arts);
+    setSelectedArticleIdsForAction([]);
   };
 
   const handleUploadEvidence = async (file: File): Promise<string> => {
@@ -1985,16 +2118,23 @@ export default function CompanyPanel() {
         .eq('id', action.id);
         
       if (error) throw error;
-      
-            if (action.article_id) {
+
+      const linkedArticleIds = (action.article_ids && action.article_ids.length > 0)
+        ? action.article_ids
+        : (action.article_id ? [action.article_id] : []);
+      if (linkedArticleIds.length > 0) {
         await supabase
           .from('client_regulation_articles')
           .update({
             current_status_requested: false
           })
-          .eq('id', action.article_id);
+          .in('id', linkedArticleIds);
       }
-      
+
+      if (action.assigned_to && myProfile?.role !== 'normal') {
+        await sendActionAssignmentEmail(action.assigned_to, action.title, action.due_date, 'action_completed');
+      }
+
       alert('Aksiyon başarıyla onaylandı!');
       await fetchComplianceActions();
       if (selectedReg) {
@@ -2588,17 +2728,21 @@ export default function CompanyPanel() {
     printWindow.document.close();
   };
 
-  const getModuleForTab = (tab: string): 'compliance' | 'operations' | 'hr' => {
-    if (['compliance', 'actions', 'requests'].includes(tab)) return 'compliance';
+  const getModuleForTab = (tab: string): 'compliance' | 'actions' | 'operations' | 'hr' => {
+    if (['compliance', 'requests'].includes(tab)) return 'compliance';
+    if (tab === 'actions') return 'actions';
     if (['waste', 'inspections'].includes(tab)) return 'operations';
     return 'hr';
   };
   const activeModule = getModuleForTab(activeTab);
 
-  const selectModule = (moduleName: 'compliance' | 'operations' | 'hr') => {
+  const selectModule = (moduleName: 'compliance' | 'actions' | 'operations' | 'hr') => {
     if (moduleName === 'compliance') {
       setActiveTab('compliance');
       setSearchParams({ tab: 'compliance' });
+    } else if (moduleName === 'actions') {
+      setActiveTab('actions');
+      setSearchParams({ tab: 'actions' });
     } else if (moduleName === 'operations') {
       setActiveTab('waste');
       setSearchParams({ tab: 'waste' });
@@ -2615,8 +2759,15 @@ export default function CompanyPanel() {
       icon: <Shield size={18} />,
       tabs: [
         { id: 'compliance', label: 'Mevzuatlarımız', icon: <Shield size={14} />, show: true },
-        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
         { id: 'requests', label: 'Gönderilen Mevzuat Talepleri', icon: <Clock size={14} />, show: true },
+      ]
+    },
+    {
+      id: 'actions',
+      label: 'Aksiyon Takip',
+      icon: <CheckCircle size={18} />,
+      tabs: [
+        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
       ]
     },
     {
@@ -2687,7 +2838,7 @@ export default function CompanyPanel() {
             <button
               key={mod.id}
               onClick={() => selectModule(mod.id as any)}
-              className={`px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
+              className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
                 isActive
                   ? 'bg-purple-650 text-white shadow-md shadow-purple-600/10 scale-[1.02]'
                   : 'text-slate-600 dark:text-slate-400 hover:text-purple-650 hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -2695,6 +2846,11 @@ export default function CompanyPanel() {
             >
               {mod.icon}
               <span>{mod.label}</span>
+              {mod.id === 'actions' && newActionsCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
+                  {newActionsCount > 99 ? '99+' : newActionsCount}
+                </span>
+              )}
             </button>
           );
         })}
@@ -3054,7 +3210,8 @@ export default function CompanyPanel() {
                     </div>
                   )}
 
-                  {/* Mevzuat Talep Et Butonu */}
+                  {/* Mevzuat Talep Et Butonu (yönetici hariç: yönetici talep almaz, doğrudan ekler) */}
+                  {myProfile?.role !== 'premium_corporate' && (
                   <button
                     onClick={() => {
                       setRequestClientId(clientRecId || '');
@@ -3064,6 +3221,7 @@ export default function CompanyPanel() {
                   >
                     <PlusCircle size={14} /> Mevzuat Talep Et
                   </button>
+                  )}
                 </div>
               )}
 
@@ -3150,6 +3308,15 @@ export default function CompanyPanel() {
                            className="bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm"
                          >
                            ⚠️ Seçilenler İçin Durum Talep Et ({selectedArticleIdsForRequest.length})
+                         </button>
+                       )}
+                       {(myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief') && (
+                         <button
+                           onClick={handleOpenActionForSelectedArticles}
+                           className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm"
+                           title="Seçilen tüm maddeler için tek bir aksiyon oluştur"
+                         >
+                           📌 Seçilenler İçin Aksiyon Aç ({selectedArticleIdsForAction.length})
                          </button>
                        )}
                       
@@ -3240,7 +3407,17 @@ export default function CompanyPanel() {
                                      type="checkbox"
                                      checked={selectedArticleIdsForRequest.includes(art.id)}
                                      onChange={() => handleToggleArticleSelection(art.id)}
+                                     title="Durum talebi için seç"
                                      className="mr-2 h-4 w-4 rounded border-gray-300 text-purple-650 focus:ring-purple-500 cursor-pointer"
+                                   />
+                                 )}
+                                 {(myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief') && (
+                                   <input
+                                     type="checkbox"
+                                     checked={selectedArticleIdsForAction.includes(art.id)}
+                                     onChange={() => handleToggleArticleForAction(art.id)}
+                                     title="Aksiyon açmak için seç"
+                                     className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                                    />
                                  )}
                                 <span className="font-bold text-xs text-slate-800">{art.article_no} - {art.title}</span>
@@ -3563,7 +3740,7 @@ export default function CompanyPanel() {
                     Danışman firmanızdan talep ettiğiniz veya şirket içi personelin talep ettiği mevzuatları görüntüleyin.
                   </p>
                 </div>
-                {(myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief' || myProfile?.role === 'corporate_staff') && (
+                {(myProfile?.role === 'corporate_chief' || myProfile?.role === 'corporate_staff') && (
                   <button
                     onClick={() => {
                       setRequestClientId(isConsultant ? '' : (clientRecId || ''));
@@ -3571,7 +3748,7 @@ export default function CompanyPanel() {
                     }}
                     className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-md"
                   >
-                    <PlusCircle size={16} /> Yeni Mevzuat Talep Et
+                    <PlusCircle size={16} /> Yöneticimden Mevzuat Talep Et
                   </button>
                 )}
               </div>
@@ -3751,6 +3928,8 @@ export default function CompanyPanel() {
                 setNewActionClientId(isConsultant ? '' : (clientRecId || ''));
                 setNewActionAssigneeId(myProfile?.id || '');
                 setNewActionDueDate('');
+                setReqNotesArticleId('');
+                setPendingActionArticleIds([]);
                 setShowCreateActionModal(true);
               }}
               className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition shadow-md"
@@ -4889,6 +5068,11 @@ export default function CompanyPanel() {
             </div>
 
             <div className="space-y-4">
+              {pendingActionArticleIds.length > 1 && (
+                <div className="text-[10px] bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40 rounded-xl p-2.5 font-bold">
+                  📌 Bu aksiyon {pendingActionArticleIds.length} madde ile ilişkilendirilecek.
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Aksiyon Başlığı *</label>
                 <input
@@ -4902,10 +5086,11 @@ export default function CompanyPanel() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Detaylar</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Detaylar *</label>
                 <textarea
+                  required
                   rows={3}
-                  placeholder="Aksiyon detaylarını buraya yazın..."
+                  placeholder="Aksiyon detaylarını buraya yazın... (zorunlu)"
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-purple-500 font-medium text-xs text-slate-700 dark:text-slate-350 border-slate-200"
                   value={newActionDesc}
                   onChange={(e) => setNewActionDesc(e.target.value)}
@@ -4980,9 +5165,10 @@ export default function CompanyPanel() {
                 </button>
                 <button
                   onClick={handleCreateAction}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition"
+                  disabled={!newActionDesc.trim() || creatingAction}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Oluştur
+                  {creatingAction ? 'Oluşturuluyor...' : 'Oluştur'}
                 </button>
               </div>
             </div>

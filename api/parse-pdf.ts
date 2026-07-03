@@ -141,17 +141,40 @@ Her bir eleman için:
     }
   }
 
-  // 2. Fallback parser: Extract text with pdfjs-dist and parse via regex
-  console.log('[Parser] Executing local regex fallback parser...');
-  
+  // 2. Marker (https://github.com/datalab-to/marker): PDF -> temiz Markdown dönüşümü.
+  // Yerel/self-hosted bir Marker sunucusu (bkz. start_marker.bat, requirements_marker.txt)
+  // çalışıyorsa, pdf.js'in ham koordinat-tabanlı satır birleştirmesinden çok daha
+  // düzenli/yapılandırılmış metin üretir; bu da "MADDE X" ayrımının doğruluğunu artırır.
+  const markerText = await tryExtractWithMarker(fileBuffer, fileName);
+  if (markerText) {
+    console.log('[Parser] Marker sunucusundan metin alındı, regex ile madde ayrıştırılıyor...');
+    const articles = parseLegislationText(markerText);
+    if (articles.length > 0) {
+      const meta = guessMetadataFromText(markerText, fileName);
+      return {
+        title: meta.title,
+        category: meta.category,
+        publication_date: meta.rg_date,
+        effective_date: null,
+        rg_no: meta.rg_no,
+        rg_date: meta.rg_date,
+        articles,
+      };
+    }
+    console.warn('[Parser] Marker metninden madde çıkarılamadı, pdf.js yedeğine geçiliyor...');
+  }
+
+  // 3. Son yedek: pdf.js ile metin çıkar ve regex ile ayrıştır
+  console.log('[Parser] Executing local regex fallback parser (pdf.js)...');
+
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer) });
   const pdf = await loadingTask.promise;
-  
+
   let fullText = '';
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
-    
+
     // Group text items by coordinate like client-side parser to preserve layout
     const lineGroups: any[] = [];
     for (const item of textContent.items as any[]) {
@@ -159,7 +182,7 @@ Her bir eleman için:
       const x = item.transform[4];
       const y = item.transform[5];
       const tolerance = 3;
-      
+
       let group = lineGroups.find(g => Math.abs(g.y - y) < tolerance);
       if (group) {
         group.items.push({ str: item.str, x });
@@ -167,7 +190,7 @@ Her bir eleman için:
         lineGroups.push({ y, items: [{ str: item.str, x }] });
       }
     }
-    
+
     lineGroups.sort((a, b) => b.y - a.y);
     const pageText = lineGroups.map(group => {
       return group.items
@@ -175,13 +198,63 @@ Her bir eleman için:
         .map((item: any) => item.str)
         .join(' ');
     }).join('\n');
-    
+
     fullText += pageText + '\n';
   }
 
   // Parse articles via our regex helper
   const articles = parseLegislationText(fullText);
+  const { category, title, rg_no, rg_date } = guessMetadataFromText(fullText, fileName);
 
+  return {
+    title,
+    category,
+    publication_date: rg_date, // Use RG date as publication date guess
+    effective_date: null,
+    rg_no,
+    rg_date,
+    articles,
+  };
+}
+
+/**
+ * Yerel/self-hosted Marker sunucusuna (bkz. start_marker.bat, varsayılan port 8001)
+ * bağlanıp PDF'i Markdown'a çevirir. Sunucu yapılandırılmamışsa veya erişilemiyorsa
+ * null döner ve çağıran taraf pdf.js yedeğine geçer.
+ */
+async function tryExtractWithMarker(fileBuffer: Buffer, fileName: string): Promise<string | null> {
+  const baseUrl = process.env.MARKER_SERVER_URL || process.env.VITE_MARKER_SERVER_URL || 'http://127.0.0.1:8001';
+  const endpoints = ['/convert', '/convert/single', '/marker'];
+
+  for (const endpoint of endpoints) {
+    try {
+      const formData = new FormData();
+      formData.append('file', new Blob([fileBuffer], { type: 'application/pdf' }), fileName);
+
+      const response = await fetch(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        body: formData,
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!response.ok) continue;
+
+      const data: any = await response.json();
+      const text = data.markdown || data.text || data.content || data.markdown_text;
+      if (text && typeof text === 'string' && text.trim().length > 0) {
+        return text;
+      }
+    } catch (err) {
+      // Sunucu çalışmıyor olabilir (yerel geliştirme dışı ortamlarda beklenen durum) - sessizce bir sonraki endpoint'e geç
+      continue;
+    }
+  }
+  return null;
+}
+
+function guessMetadataFromText(
+  fullText: string,
+  fileName: string
+): { category: 'Yönetmelik' | 'Kanun' | 'Yönerge' | 'Diğer'; title: string; rg_no: string | null; rg_date: string | null } {
   // Guess metadata from text
   let category: 'Yönetmelik' | 'Kanun' | 'Yönerge' | 'Diğer' = 'Yönetmelik';
   const textLower = fullText.toLowerCase();
@@ -217,15 +290,7 @@ Her bir eleman için:
     }
   }
 
-  return {
-    title,
-    category,
-    publication_date: rg_date, // Use RG date as publication date guess
-    effective_date: null,
-    rg_no,
-    rg_date,
-    articles,
-  };
+  return { category, title, rg_no, rg_date };
 }
 
 export default async function handler(req: any, res: any) {

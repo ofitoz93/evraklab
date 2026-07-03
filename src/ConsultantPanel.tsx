@@ -41,6 +41,8 @@ import {
   Table,
   GitBranch,
   GitBranchPlus,
+  PenLine,
+  Lock,
 } from 'lucide-react';
 
 import QRCode from 'qrcode';
@@ -140,7 +142,7 @@ const getContractStatus = (startDateStr: string) => {
 };
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix' | 'opinions'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
@@ -631,6 +633,9 @@ export default function ConsultantPanel() {
   const [requestTitle, setRequestTitle] = useState('');
   const [requestDescription, setRequestDescription] = useState('');
   const [selectedReqClientId, setSelectedReqClientId] = useState('');
+  const [reviewingRequest, setReviewingRequest] = useState<any>(null);
+  const [reviewResponseNote, setReviewResponseNote] = useState('');
+  const [answeringRequest, setAnsweringRequest] = useState(false);
   const [selectedReqRegulationId, setSelectedReqRegulationId] = useState('');
   const [submittingRequest, setSubmittingRequest] = useState(false);
 
@@ -647,6 +652,8 @@ export default function ConsultantPanel() {
   const [parsingPdf, setParsingPdf] = useState(false);
   const [parsingTextMode, setParsingTextMode] = useState(false);
   const [savingLegislation, setSavingLegislation] = useState(false);
+  const [pendingCompanyLegislations, setPendingCompanyLegislations] = useState<any[]>([]);
+  const [reviewingLegId, setReviewingLegId] = useState<string | null>(null);
 
   // Mevcut Durum (Current Status Notes) states
   const [editingNotesArtId, setEditingNotesArtId] = useState<string | null>(null);
@@ -657,8 +664,10 @@ export default function ConsultantPanel() {
   const [articleActions, setArticleActions] = useState<any[]>([]);
   const [loadingActions, setLoadingActions] = useState(false);
   const [selectedClientAction, setSelectedClientAction] = useState<any>(null);
+  const [actionsLastSeen, setActionsLastSeen] = useState<number>(0);
   
   const [showCreateActionModal, setShowCreateActionModal] = useState(false);
+  const [creatingAction, setCreatingAction] = useState(false);
   const [showCompleteActionModal, setShowCompleteActionModal] = useState(false);
   const [showCorrectionModal, setShowCorrectionModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -714,6 +723,8 @@ export default function ConsultantPanel() {
   const [reqNotesAssigneeId, setReqNotesAssigneeId] = useState('');
   const [reqNotesDueDate, setReqNotesDueDate] = useState('');
   const [reqNotesDesc, setReqNotesDesc] = useState('');
+  const [selectedArticleIdsForAction, setSelectedArticleIdsForAction] = useState<string[]>([]);
+  const [pendingActionArticleIds, setPendingActionArticleIds] = useState<string[]>([]);
 
   const [clients, setClients] = useState<Client[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -722,6 +733,12 @@ export default function ConsultantPanel() {
   const [userId, setUserId] = useState('');
   const [orgId, setOrgId] = useState('');
   const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
+
+  // Görüşler Tab State'leri
+  const [opinionLetters, setOpinionLetters] = useState<any[]>([]);
+  const [loadingOpinions, setLoadingOpinions] = useState(false);
+  const [opinionsFilterClientId, setOpinionsFilterClientId] = useState('');
+  const [opinionsFilterYear, setOpinionsFilterYear] = useState('');
 
   // Tanımlamalar Tab State'leri
   const [defTabTypes, setDefTabTypes] = useState<any[]>([]);
@@ -802,7 +819,7 @@ export default function ConsultantPanel() {
   const [showChangeRejectionModal, setShowChangeRejectionModal] = useState(false);
 
   // Required documents states
-  const [defSubTab, setDefSubTab] = useState<'standard' | 'required' | 'matrix'>('standard');
+  const [defSubTab, setDefSubTab] = useState<'standard' | 'required'>('standard');
   const [requiredDocs, setRequiredDocs] = useState<any[]>([]);
   const [loadingReqDocs, setLoadingReqDocs] = useState(false);
   const [selectedClientForReqDocs, setSelectedClientForReqDocs] = useState<string>('');
@@ -969,6 +986,9 @@ export default function ConsultantPanel() {
       fetchRequiredDocs();
       fetchAllDocsForMatrix();
     }
+    if (activeTab === 'opinions' && orgId) {
+      fetchOpinionLetters();
+    }
     if ((activeTab === 'legislations' || activeTab === 'actions' || activeTab === 'requests') && orgId) {
       fetchConsultantLegislations();
       fetchConsultantRequests();
@@ -978,6 +998,32 @@ export default function ConsultantPanel() {
       fetchInspections();
     }
   }, [activeTab, orgId]);
+
+  // Navbar rozeti için: org yüklenir yüklenmez aksiyonları ve "son görülme" zamanını çek
+  useEffect(() => {
+    if (orgId) {
+      fetchComplianceActions();
+    }
+  }, [orgId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    const stored = localStorage.getItem(`evraklab_actions_seen_${userId}`);
+    setActionsLastSeen(stored ? parseInt(stored, 10) : 0);
+  }, [userId]);
+
+  useEffect(() => {
+    if (activeTab === 'actions' && userId) {
+      const now = Date.now();
+      localStorage.setItem(`evraklab_actions_seen_${userId}`, String(now));
+      setActionsLastSeen(now);
+    }
+  }, [activeTab, userId]);
+
+  const newActionsCount = complianceActions.filter((a) => {
+    const createdMs = a.created_at ? new Date(a.created_at).getTime() : 0;
+    return createdMs > actionsLastSeen;
+  }).length;
 
   useEffect(() => {
     if (activeTab === 'legislations' && legSubTab === 'calendar' && orgId) {
@@ -2177,11 +2223,14 @@ export default function ConsultantPanel() {
     try {
       const { data: compLegs, error: err1 } = await supabase
         .from('company_pdf_regulations')
-        .select('*, regulation:pdf_regulations(*)')
+        .select('*, regulation:pdf_regulations(*), submitter:profiles!submitted_by(full_name)')
         .eq('company_id', orgId);
-      
+
       if (err1) throw err1;
-      setAssignedGlobalLegislations(compLegs?.map((cl: any) => cl.regulation).filter(Boolean) || []);
+      const approvedCompLegs = (compLegs || []).filter((cl: any) => !cl.status || cl.status === 'approved');
+      const pendingCompLegs = (compLegs || []).filter((cl: any) => cl.status === 'pending_approval');
+      setAssignedGlobalLegislations(approvedCompLegs.map((cl: any) => cl.regulation).filter(Boolean));
+      setPendingCompanyLegislations(pendingCompLegs);
 
       const { data: allRegs, error: errGlobal } = await supabase
         .from('pdf_regulations')
@@ -2238,7 +2287,7 @@ export default function ConsultantPanel() {
         .select('*, requester:profiles!requested_by(full_name, email), client:consultant_clients!client_id(name), target_regulation:pdf_regulations!target_regulation_id(title)')
         .order('created_at', { ascending: false });
 
-      if (userRole === 'premium_corporate') {
+      if (userRole === 'premium_corporate' || userRole === 'corporate_chief') {
         if (clientIds.length > 0) {
           query = query.or(`organization_id.eq.${orgId},client_id.in.(${clientIds.join(',')})`);
         } else {
@@ -2253,6 +2302,84 @@ export default function ConsultantPanel() {
       setStaffRequests(data || []);
     } catch (err: any) {
       console.error('Mevzuat talepleri yüklenirken hata:', err.message);
+    }
+  };
+
+  // Yönetici/şef, incelediği (görüntülediği) mevzuat talebini onaylar veya reddeder
+  const handleAnswerRegulationRequest = async (req: any, approve: boolean, note: string) => {
+    const hasDraft = !!req.draft_regulation;
+    if (approve && hasDraft && !window.confirm('Bu mevzuatı onaylayıp firma havuzunuza eklemek istediğinize emin misiniz?')) return;
+    if (!approve && !window.confirm('Bu talebi reddetmek istediğinize emin misiniz?')) return;
+
+    setAnsweringRequest(true);
+    try {
+      // Personelin tam metniyle gönderdiği bir mevzuat talebi onaylanıyorsa,
+      // önce gerçek mevzuatı/maddelerini oluşturup firma havuzuna ekle.
+      if (approve && hasDraft) {
+        const draft = req.draft_regulation;
+        const { data: newReg, error: regErr } = await supabase
+          .from('pdf_regulations')
+          .insert({
+            title: draft.title,
+            category: draft.category,
+            publication_date: draft.publication_date || null,
+            effective_date: draft.effective_date || null,
+            rg_no: draft.rg_no || null,
+            rg_date: draft.rg_date || null,
+            company_id: orgId,
+            created_by: req.requested_by
+          })
+          .select()
+          .single();
+        if (regErr) throw regErr;
+
+        if (draft.articles && draft.articles.length > 0) {
+          const artsToInsert = draft.articles.map((a: any) => ({
+            regulation_id: newReg.id,
+            article_no: a.article_no,
+            title: a.title,
+            content: a.content,
+            order_index: a.order_index
+          }));
+          const { error: artsErr } = await supabase.from('pdf_articles').insert(artsToInsert);
+          if (artsErr) throw artsErr;
+        }
+
+        const { error: poolErr } = await supabase
+          .from('company_pdf_regulations')
+          .insert({
+            company_id: orgId,
+            regulation_id: newReg.id,
+            status: 'approved',
+            submitted_by: req.requested_by,
+            reviewed_by: userId,
+            reviewed_at: new Date().toISOString()
+          });
+        if (poolErr) throw poolErr;
+      }
+
+      const { error } = await supabase
+        .from('regulation_requests')
+        .update({
+          status: approve ? 'approved' : 'rejected',
+          admin_notes: note.trim() || null
+        })
+        .eq('id', req.id);
+      if (error) throw error;
+
+      alert(approve
+        ? (hasDraft ? 'Talep onaylandı ve mevzuat firma havuzunuza eklendi.' : 'Talep onaylandı.')
+        : 'Talep reddedildi.');
+      setReviewingRequest(null);
+      setReviewResponseNote('');
+      await fetchConsultantRequests();
+      if (approve && hasDraft) {
+        await fetchConsultantLegislations();
+      }
+    } catch (err: any) {
+      alert('Talep cevaplanırken hata: ' + err.message);
+    } finally {
+      setAnsweringRequest(false);
     }
   };
 
@@ -2369,50 +2496,91 @@ export default function ConsultantPanel() {
       if (!window.confirm('Bu mevzuatta hiç madde bulunmuyor. Yine de kaydetmek istiyor musunuz?')) return;
     }
 
+    const isManagerRole = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+
     setSavingLegislation(true);
     try {
-      // Create new regulation
-      const { data: newReg, error: regErr } = await supabase
-        .from('pdf_regulations')
-        .insert({
+      if (isManagerRole) {
+        // Yönetici/şef ekliyor: doğrudan havuza, onaylı olarak girer.
+        const { data: newReg, error: regErr } = await supabase
+          .from('pdf_regulations')
+          .insert({
+            title: legTitle.trim(),
+            category: legCategory,
+            publication_date: legPubDate || null,
+            effective_date: legEffDate || null,
+            rg_no: legRgNo || null,
+            rg_date: legRgDate || null,
+            company_id: orgId, // Associate with consultant company!
+            created_by: userId
+          })
+          .select()
+          .single();
+        if (regErr) throw regErr;
+
+        if (legArticles.length > 0) {
+          const artsToInsert = legArticles.map(a => ({
+            regulation_id: newReg.id,
+            article_no: a.article_no,
+            title: a.title,
+            content: a.content,
+            order_index: a.order_index
+          }));
+          const { error: artsErr } = await supabase
+            .from('pdf_articles')
+            .insert(artsToInsert);
+          if (artsErr) throw artsErr;
+        }
+
+        const { error: poolErr } = await supabase
+          .from('company_pdf_regulations')
+          .insert({
+            company_id: orgId,
+            regulation_id: newReg.id,
+            status: 'approved',
+            submitted_by: userId,
+            reviewed_by: userId,
+            reviewed_at: new Date().toISOString()
+          });
+        if (poolErr) throw poolErr;
+
+        alert('✅ Özel mevzuat başarıyla havuzunuza eklendi!');
+        fetchConsultantLegislations();
+      } else {
+        // Personel ekliyor: mevzuat havuza düşmez, yönetici/şef onayı bekleyen
+        // bir mevzuat talebi olarak kaydedilir. Onaylanırsa havuza düşer.
+        const draftRegulation = {
           title: legTitle.trim(),
           category: legCategory,
           publication_date: legPubDate || null,
           effective_date: legEffDate || null,
           rg_no: legRgNo || null,
           rg_date: legRgDate || null,
-          company_id: orgId, // Associate with consultant company!
-          created_by: userId
-        })
-        .select()
-        .single();
-      if (regErr) throw regErr;
+          articles: legArticles.map(a => ({
+            article_no: a.article_no,
+            title: a.title,
+            content: a.content,
+            order_index: a.order_index
+          }))
+        };
 
-      // Insert articles
-      if (legArticles.length > 0) {
-        const artsToInsert = legArticles.map(a => ({
-          regulation_id: newReg.id,
-          article_no: a.article_no,
-          title: a.title,
-          content: a.content,
-          order_index: a.order_index
-        }));
-        const { error: artsErr } = await supabase
-          .from('pdf_articles')
-          .insert(artsToInsert);
-        if (artsErr) throw artsErr;
+        const { error: reqErr } = await supabase
+          .from('regulation_requests')
+          .insert({
+            title: legTitle.trim(),
+            description: `Personel tarafından tam metniyle eklenen yeni mevzuat talebi (${legArticles.length} madde).`,
+            requested_by: userId,
+            organization_id: orgId,
+            request_type: 'staff_to_owner',
+            status: 'pending',
+            draft_regulation: draftRegulation
+          });
+        if (reqErr) throw reqErr;
+
+        alert('✅ Mevzuat talebiniz yöneticinize/şefinize gönderildi. Onaylanırsa firma havuzunuzda görünecektir.');
+        fetchConsultantRequests();
       }
 
-      // Automatically assign to company pool (company_pdf_regulations)
-      const { error: poolErr } = await supabase
-        .from('company_pdf_regulations')
-        .insert({
-          company_id: orgId,
-          regulation_id: newReg.id
-        });
-      if (poolErr) throw poolErr;
-
-      alert('✅ Özel mevzuat başarıyla havuzunuza eklendi!');
       setShowAddCustomLegModal(false);
       // Reset fields
       setLegTitle('');
@@ -2424,13 +2592,41 @@ export default function ConsultantPanel() {
       setLegArticles([]);
       setPasteText('');
       setParsingTextMode(false);
-      
-      // Refresh pool
-      fetchConsultantLegislations();
     } catch (err: any) {
       alert('Kaydedilirken hata oluştu: ' + err.message);
     } finally {
       setSavingLegislation(false);
+    }
+  };
+
+  // Personel tarafından eklenen ve onay bekleyen özel mevzuatı yönetici onaylar/reddeder
+  const handleReviewPendingLegislation = async (companyRegId: string, approve: boolean, regulationId: string) => {
+    if (!window.confirm(approve ? 'Bu mevzuatı onaylayıp firma havuzuna almak istiyor musunuz?' : 'Bu mevzuatı reddetmek istiyor musunuz? Reddedilen mevzuat havuzdan silinecektir.')) return;
+    setReviewingLegId(companyRegId);
+    try {
+      if (approve) {
+        const { error } = await supabase
+          .from('company_pdf_regulations')
+          .update({ status: 'approved', reviewed_by: userId, reviewed_at: new Date().toISOString() })
+          .eq('id', companyRegId);
+        if (error) throw error;
+        alert('Mevzuat onaylandı ve firma havuzuna eklendi.');
+      } else {
+        const { error } = await supabase
+          .from('company_pdf_regulations')
+          .delete()
+          .eq('id', companyRegId);
+        if (error) throw error;
+        // Reddedilen özel mevzuatı ve maddelerini de temizle (başka bir yerde kullanılmıyorsa)
+        await supabase.from('pdf_articles').delete().eq('regulation_id', regulationId);
+        await supabase.from('pdf_regulations').delete().eq('id', regulationId);
+        alert('Mevzuat reddedildi ve kaldırıldı.');
+      }
+      await fetchConsultantLegislations();
+    } catch (err: any) {
+      alert('İşlem sırasında hata: ' + err.message);
+    } finally {
+      setReviewingLegId(null);
     }
   };
 
@@ -2832,17 +3028,27 @@ export default function ConsultantPanel() {
     }
   };
 
-  const handleRequestArticleNotes = async (art: any) => {
-    setReqNotesArticleId(art.id);
+  const handleToggleArticleForAction = (artId: string) => {
+    setSelectedArticleIdsForAction(prev =>
+      prev.includes(artId) ? prev.filter(id => id !== artId) : [...prev, artId]
+    );
+  };
+
+  // Tek veya birden fazla madde için "aksiyon aç / mevcut durum talep et" modalını hazırlar
+  const openRequestNotesModalForArticles = async (arts: any[]) => {
+    if (arts.length === 0) return;
+
+    setReqNotesArticleId(arts[0].id);
     setReqNotesClientId(selectedClientRegulation?.client_id || '');
-    
+    setPendingActionArticleIds(arts.map((a) => a.id));
+
     // Auto-select assignee from client assignments
     try {
       const { data: assignments } = await supabase
         .from('consultant_assignments')
         .select('user_id')
         .eq('client_id', selectedClientRegulation?.client_id);
-      
+
       if (userRole === 'corporate_staff') {
         setReqNotesAssigneeId(userId);
       } else if (assignments && assignments.length > 0) {
@@ -2856,11 +3062,29 @@ export default function ConsultantPanel() {
         setReqNotesAssigneeId(userId);
       }
     }
-    
+
     setReqNotesDueDate('');
     setReqNotesDesc('');
-    setNewActionTitle(`${art.article_no} Mevcut Durum Talebi`);
+    if (arts.length === 1) {
+      setNewActionTitle(`${arts[0].article_no} Mevcut Durum Talebi`);
+    } else {
+      setNewActionTitle(`${arts.length} Madde İçin Aksiyon (${arts.map((a) => a.article_no).join(', ')})`);
+    }
     setShowRequestNotesModal(true);
+  };
+
+  const handleRequestArticleNotes = async (art: any) => {
+    await openRequestNotesModalForArticles([art]);
+  };
+
+  const handleRequestNotesForSelectedArticles = async () => {
+    if (selectedArticleIdsForAction.length === 0) {
+      alert('Lütfen aksiyon açmak için en az bir madde seçin.');
+      return;
+    }
+    const arts = selectedClientRegulationArticles.filter((a) => selectedArticleIdsForAction.includes(a.id));
+    await openRequestNotesModalForArticles(arts);
+    setSelectedArticleIdsForAction([]);
   };
 
   const handleOpenActionForArticle = async (art: any) => {
@@ -2868,6 +3092,7 @@ export default function ConsultantPanel() {
     setNewActionDesc(`Bu madde için aksiyon tamamlanması gerekmektedir.\nİlgili Madde: ${art.article_no} - ${art.title || ''}`);
     setNewActionClientId(selectedClientRegulation?.client_id || '');
     setReqNotesArticleId(art.id); // Also associate this action with the article ID if saved through the normal form
+    setPendingActionArticleIds([art.id]);
     
     // Auto-select assignee from client assignments
     try {
@@ -2943,6 +3168,26 @@ export default function ConsultantPanel() {
     }
   };
 
+  const fetchOpinionLetters = async () => {
+    if (!orgId) return;
+    setLoadingOpinions(true);
+    try {
+      // Tüm personel, firmanın tüm görüşlerini (önceki dönemler dahil) görüp
+      // işletme/yıl bazında filtreleyebilir.
+      const { data, error } = await supabase
+        .from('opinion_letters')
+        .select('*, client:client_id(name), creator:created_by(full_name)')
+        .eq('organization_id', orgId)
+        .order('letter_date', { ascending: false });
+      if (error) throw error;
+      setOpinionLetters(data || []);
+    } catch (err: any) {
+      console.error('Görüşler yüklenirken hata:', err.message);
+    } finally {
+      setLoadingOpinions(false);
+    }
+  };
+
   const fetchClientPortalEmails = async (clientId: string) => {
     if (!clientId) {
       setNewActionClientEmails([]);
@@ -2997,19 +3242,27 @@ export default function ConsultantPanel() {
     const aId = isArticleAction ? reqNotesAssigneeId : newActionAssigneeId;
     const dDate = isArticleAction ? reqNotesDueDate : newActionDueDate;
     
-    if (!title || !cId || !aId || !dDate) {
-      alert('Lütfen tüm zorunlu alanları doldurun.');
+    if (!title || !cId || !aId || !dDate || !desc) {
+      alert('Lütfen tüm zorunlu alanları doldurun. Açıklama yazmadan aksiyon açılamaz.');
       return;
     }
-    
+
+    if (creatingAction) return;
+    setCreatingAction(true);
+
     const clientEmail = isArticleAction ? null : (newActionEmail || null);
+    const resolvedArticleId = articleId || reqNotesArticleId || null;
+    const articleIds = pendingActionArticleIds.length > 0
+      ? pendingActionArticleIds
+      : (resolvedArticleId ? [resolvedArticleId] : null);
 
     try {
       const { error } = await supabase
         .from('compliance_actions')
         .insert({
           client_id: cId,
-          article_id: articleId || reqNotesArticleId || null,
+          article_id: resolvedArticleId,
+          article_ids: articleIds,
           title: title,
           description: desc || null,
           due_date: dDate,
@@ -3021,14 +3274,36 @@ export default function ConsultantPanel() {
 
       if (error) throw error;
 
+      // Sorumlu personele aksiyon ataması e-postası gönder
+      let assigneeEmailSent = true;
+      try {
+        const { data: assigneeProfile } = await supabase
+          .from('profiles')
+          .select('full_name, email')
+          .eq('id', aId)
+          .maybeSingle();
+        if (assigneeProfile?.email) {
+          assigneeEmailSent = await sendActionNotificationEmail(
+            assigneeProfile.email,
+            assigneeProfile.full_name || 'Personel',
+            title,
+            dDate,
+            'action_opened'
+          );
+        }
+      } catch (mailErr) {
+        console.error('Sorumlu personele aksiyon bildirim e-postası gönderilemedi:', mailErr);
+        assigneeEmailSent = false;
+      }
+
       let emailSent = true;
       if (clientEmail) {
         const clientName = clients.find(c => c.id === cId)?.name || '';
         emailSent = await sendActionNotificationEmail(clientEmail, clientName, title, dDate, 'action_opened');
       }
 
-      if (clientEmail && !emailSent) {
-        alert('Aksiyon oluşturuldu fakat bildirim e-postası gönderilemedi. "Sistem & Ayarlar" veya Müşteri Girişi ekranındaki Google Apps Script URL ayarını kontrol edin.');
+      if ((clientEmail && !emailSent) || !assigneeEmailSent) {
+        alert('Aksiyon oluşturuldu fakat bildirim e-postalarından biri gönderilemedi. "Sistem & Ayarlar" ekranındaki Google Apps Script URL ayarını kontrol edin.');
       } else {
         alert('Aksiyon başarıyla oluşturuldu.' + (clientEmail ? ' Müşteri panelindeki ilgili e-postaya bildirim gönderildi.' : ''));
       }
@@ -3047,20 +3322,23 @@ export default function ConsultantPanel() {
       setReqNotesAssigneeId('');
       setReqNotesDueDate('');
       setReqNotesDesc('');
+      setPendingActionArticleIds([]);
 
       await fetchComplianceActions();
-      
+
       if (isArticleAction && selectedClientRegulation) {
-        if (articleId) {
+        if (articleIds && articleIds.length > 0) {
           await supabase
             .from('client_regulation_articles')
             .update({ current_status_requested: true })
-            .eq('id', articleId);
+            .in('id', articleIds);
         }
         await fetchClientRegulationArticles(selectedClientRegulation);
       }
     } catch (err: any) {
       alert('Aksiyon oluşturulurken hata: ' + err.message);
+    } finally {
+      setCreatingAction(false);
     }
   };
 
@@ -3162,8 +3440,11 @@ export default function ConsultantPanel() {
         .eq('id', action.id);
         
       if (error) throw error;
-      
-      if (action.article_id) {
+
+      const linkedArticleIds = (action.article_ids && action.article_ids.length > 0)
+        ? action.article_ids
+        : (action.article_id ? [action.article_id] : []);
+      if (linkedArticleIds.length > 0) {
         await supabase
           .from('client_regulation_articles')
           .update({
@@ -3171,9 +3452,31 @@ export default function ConsultantPanel() {
             current_status_notes: action.notes,
             last_updated_by: action.assigned_to
           })
-          .eq('id', action.article_id);
+          .in('id', linkedArticleIds);
       }
-      
+
+      // Sorumlu personele aksiyonun kapatıldığını bildiren e-posta gönder
+      if (action.assigned_to) {
+        try {
+          const { data: assigneeProfile } = await supabase
+            .from('profiles')
+            .select('full_name, email')
+            .eq('id', action.assigned_to)
+            .maybeSingle();
+          if (assigneeProfile?.email) {
+            await sendActionNotificationEmail(
+              assigneeProfile.email,
+              assigneeProfile.full_name || 'Personel',
+              action.title,
+              action.due_date,
+              'action_completed'
+            );
+          }
+        } catch (mailErr) {
+          console.error('Aksiyon kapatma bildirim e-postası gönderilemedi:', mailErr);
+        }
+      }
+
       alert('Aksiyon başarıyla onaylandı!');
       await fetchComplianceActions();
       if (selectedClientRegulation) {
@@ -3218,24 +3521,24 @@ export default function ConsultantPanel() {
     }
   };
 
-  const handleDeleteAction = async (actionId: string, articleId: string | null = null) => {
+  const handleDeleteAction = async (actionId: string, articleIds: string[] | null = null) => {
     if (!window.confirm('Bu aksiyonu silmek istediğinize emin misiniz?')) return;
-    
+
     try {
       const { error } = await supabase
         .from('compliance_actions')
         .delete()
         .eq('id', actionId);
-        
+
       if (error) throw error;
-      
-      if (articleId) {
+
+      if (articleIds && articleIds.length > 0) {
         await supabase
           .from('client_regulation_articles')
           .update({ current_status_requested: false })
-          .eq('id', articleId);
+          .in('id', articleIds);
       }
-      
+
       alert('Aksiyon silindi.');
       await fetchComplianceActions();
       if (selectedClientRegulation) {
@@ -3271,8 +3574,8 @@ export default function ConsultantPanel() {
 
     try {
       setSubmittingRequest(true);
-      const isOwner = userRole === 'premium_corporate';
-      const reqType = isOwner ? 'owner_to_admin' : 'staff_to_owner';
+      // Admin'e talep gönderme kaldırıldı: personel/şef her zaman firma yöneticisinden (owner) talep eder.
+      const reqType = 'staff_to_owner';
 
       const { error } = await supabase
         .from('regulation_requests')
@@ -3299,33 +3602,6 @@ export default function ConsultantPanel() {
       alert('Talep gönderilirken hata: ' + err.message);
     } finally {
       setSubmittingRequest(false);
-    }
-  };
-
-  const handleEscalateRequestToAdmin = async (req: any) => {
-    try {
-      const { error } = await supabase
-        .from('regulation_requests')
-        .insert({
-          title: `[YÖNLENDİRİLDİ] ${req.title}`,
-          description: `Personel ${req.requester?.full_name || 'Çalışan'} tarafından iletilen talep:\n${req.description}`,
-          requested_by: userId,
-          organization_id: orgId,
-          target_regulation_id: req.target_regulation_id || null,
-          request_type: 'owner_to_admin',
-          status: 'pending'
-        });
-      if (error) throw error;
-      
-      await supabase
-        .from('regulation_requests')
-        .update({ status: 'approved', admin_notes: 'Talep Sistem Adminine iletildi.' })
-        .eq('id', req.id);
-
-      alert('Talep Sistem Yöneticisine (Admin) başarıyla iletildi!');
-      fetchConsultantRequests();
-    } catch (err: any) {
-      alert('İletilirken hata: ' + err.message);
     }
   };
 
@@ -4392,17 +4668,18 @@ export default function ConsultantPanel() {
     return false;
   };
 
-  const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'documents' | 'finance' | 'hr' | 'settings' => {
-    if (['clients', 'inspections', 'definitions', 'waste'].includes(tab)) return 'operations';
-    if (['legislations', 'actions', 'requests'].includes(tab)) return 'compliance';
-    if (['reports', 'document_matrix'].includes(tab)) return 'documents';
+  const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings' => {
+    if (['clients', 'inspections', 'waste'].includes(tab)) return 'operations';
+    if (['legislations', 'requests'].includes(tab)) return 'compliance';
+    if (tab === 'actions') return 'actions';
+    if (['reports', 'document_matrix', 'opinions', 'definitions'].includes(tab)) return 'documents';
     if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
     if (['team', 'evaluations'].includes(tab)) return 'hr';
     return 'settings';
   };
   const activeModule = getModuleForTab(activeTab);
 
-  const selectModule = (moduleName: 'operations' | 'compliance' | 'documents' | 'finance' | 'hr' | 'settings') => {
+  const selectModule = (moduleName: 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings') => {
     if (moduleName === 'operations') {
       if (canViewClients) {
         setActiveTab('clients');
@@ -4411,6 +4688,8 @@ export default function ConsultantPanel() {
       }
     } else if (moduleName === 'compliance') {
       setActiveTab('legislations');
+    } else if (moduleName === 'actions') {
+      setActiveTab('actions');
     } else if (moduleName === 'documents') {
       setActiveTab('reports');
     } else if (moduleName === 'finance') {
@@ -4435,12 +4714,6 @@ export default function ConsultantPanel() {
       icon: <Building size={18} />,
       tabs: [
         { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients },
-        {
-          id: 'definitions',
-          label: 'Belge & Şablon Tanımları',
-          icon: <SettingsIcon size={14} />,
-          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
-        },
         { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: true },
         { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: true },
       ]
@@ -4451,8 +4724,15 @@ export default function ConsultantPanel() {
       icon: <Scale size={18} />,
       tabs: [
         { id: 'legislations', label: 'Mevzuat Takip', icon: <Scale size={14} />, show: true },
-        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
         { id: 'requests', label: 'Mevzuat Talepleri', icon: <Bell size={14} />, show: true },
+      ]
+    },
+    {
+      id: 'actions',
+      label: 'Aksiyon Takip',
+      icon: <CheckCircle size={18} />,
+      tabs: [
+        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
       ]
     },
     {
@@ -4462,6 +4742,13 @@ export default function ConsultantPanel() {
       tabs: [
         { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports },
         { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: true },
+        { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: true },
+        {
+          id: 'definitions',
+          label: 'Belge & Şablon Tanımları',
+          icon: <SettingsIcon size={14} />,
+          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
+        },
       ]
     },
     {
@@ -4513,7 +4800,7 @@ export default function ConsultantPanel() {
 
         {defTabTypes.length === 0 ? (
           <div className="text-center py-12 text-sm text-gray-400 italic">
-            Henüz tanımlı belge türü bulunmamaktadır. Lütfen önce <strong>"Operasyon & İşletmeler"</strong> altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesinden belge türlerini tanımlayın.
+            Henüz tanımlı belge türü bulunmamaktadır. Lütfen önce <strong>"Dokümantasyon"</strong> altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesinden belge türlerini tanımlayın.
           </div>
         ) : (
           <div className="space-y-4">
@@ -4521,7 +4808,7 @@ export default function ConsultantPanel() {
               <div className="p-4 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-300 rounded-xl text-xs flex items-start gap-2.5">
                 <span className="text-sm">ℹ️</span>
                 <div>
-                  <span className="font-bold">Henüz zorunlu belge ataması yapılmamıştır.</span> Matristeki tüm hücreler varsayılan olarak "-" (gerekli değil) şeklinde görünmektedir. İşletmeler için hangi belgelerin zorunlu tutulacağını belirlemek amacıyla <strong>"Operasyon & İşletmeler"</strong> modülü altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesine giderek "Zorunlu Belgeler Şablonu"nu düzenleyebilirsiniz.
+                  <span className="font-bold">Henüz zorunlu belge ataması yapılmamıştır.</span> Matristeki tüm hücreler varsayılan olarak "-" (gerekli değil) şeklinde görünmektedir. İşletmeler için hangi belgelerin zorunlu tutulacağını belirlemek amacıyla <strong>"Dokümantasyon"</strong> modülü altındaki <strong>"Belge & Şablon Tanımları"</strong> sekmesine giderek "Zorunlu Belgeler Şablonu"nu düzenleyebilirsiniz.
                 </div>
               </div>
             )}
@@ -4643,8 +4930,32 @@ export default function ConsultantPanel() {
     );
   };
 
+  const isPremiumActive = userRole === 'admin' || userRole === 'system_admin' ||
+    (!!orgData?.subscription_end_date && new Date(orgData.subscription_end_date) > new Date());
+
   return (
     <div className="space-y-6">
+      {!isPremiumActive && orgData && (
+        <div className="print-hidden bg-gradient-to-r from-rose-600 to-orange-500 text-white p-4 rounded-xl shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <AlertCircle size={22} className="shrink-0" />
+            <div>
+              <p className="font-bold text-sm">Premium süresi doldu!</p>
+              <p className="text-xs text-white/90">Lütfen paket yenilemesi yapın. Yenileme yapılmadan yeni belge, rapor veya görüş oluşturamazsınız.</p>
+            </div>
+          </div>
+          <Link
+            to="/pricing"
+            className="bg-white text-rose-700 px-4 py-2 rounded-lg font-bold text-xs whitespace-nowrap hover:bg-rose-50 transition shrink-0"
+          >
+            Paketi Yenile
+          </Link>
+        </div>
+      )}
+
+      {/* Premium süresi dolduysa panelin geri kalanı bulanık ve etkileşimsiz gösterilir */}
+      <div className={!isPremiumActive && orgData ? 'pointer-events-none select-none blur-[3px] opacity-70 space-y-6' : 'space-y-6'}>
+
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -4662,12 +4973,22 @@ export default function ConsultantPanel() {
               </button>
             )}
           {activeTab === 'reports' && (
-            <Link
-              to="/consultant/reports/add"
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
-            >
-              <FileText size={18} /> Rapor Oluştur
-            </Link>
+            isPremiumActive ? (
+              <Link
+                to="/consultant/reports/add"
+                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
+              >
+                <FileText size={18} /> Rapor Oluştur
+              </Link>
+            ) : (
+              <Link
+                to="/pricing"
+                title="Rapor oluşturmak için premium paketinizi yenilemeniz gerekiyor"
+                className="flex items-center gap-2 bg-gray-300 dark:bg-slate-700 text-gray-600 dark:text-slate-300 px-4 py-2 rounded-lg cursor-pointer"
+              >
+                <Lock size={16} /> Rapor Oluştur (Premium Gerekli)
+              </Link>
+            )
           )}
         </div>
       </div>
@@ -4680,7 +5001,7 @@ export default function ConsultantPanel() {
             <button
               key={mod.id}
               onClick={() => selectModule(mod.id as any)}
-              className={`px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
+              className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
                 isActive
                   ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10 scale-[1.02]'
                   : 'text-slate-600 dark:text-slate-400 hover:text-blue-600 hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -4688,6 +5009,11 @@ export default function ConsultantPanel() {
             >
               {mod.icon}
               <span>{mod.label}</span>
+              {mod.id === 'actions' && newActionsCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
+                  {newActionsCount > 99 ? '99+' : newActionsCount}
+                </span>
+              )}
             </button>
           );
         })}
@@ -5861,16 +6187,6 @@ export default function ConsultantPanel() {
               >
                 Zorunlu Belgeler Şablonu
               </button>
-              <button
-                onClick={() => setDefSubTab('matrix')}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
-                  defSubTab === 'matrix'
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-                }`}
-              >
-                Zorunlu Belge Matrisi
-              </button>
             </div>
           )}
 
@@ -6196,16 +6512,127 @@ export default function ConsultantPanel() {
             </div>
           )}
 
-          {/* Subtab Document Matrix (Only for owners/chiefs) */}
-          {userRole !== 'corporate_staff' && defSubTab === 'matrix' && (
-            renderDocumentMatrix()
-          )}
-
         </div>
       )}
 
       {activeTab === 'document_matrix' && (
         renderDocumentMatrix()
+      )}
+
+      {/* GÖRÜŞLER TAB */}
+      {activeTab === 'opinions' && (
+        <div className="space-y-6 animate-fadeIn">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <div>
+              <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                <PenLine className="text-purple-600" size={22} /> Görüşler
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">
+                Firmanın tüm görüş taslaklarını (önceki dönemler dahil) işletme ve yıla göre filtreleyerek inceleyebilirsiniz.
+              </p>
+            </div>
+            {isPremiumActive ? (
+              <Link
+                to="/consultant/opinions/add"
+                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-md transition flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Plus size={16} /> Yeni Görüş Hazırla
+              </Link>
+            ) : (
+              <Link
+                to="/pricing"
+                title="Görüş hazırlamak için premium paketinizi yenilemeniz gerekiyor"
+                className="bg-gray-300 dark:bg-slate-700 text-gray-600 dark:text-slate-300 px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Lock size={14} /> Yeni Görüş Hazırla (Premium Gerekli)
+              </Link>
+            )}
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={opinionsFilterClientId}
+                onChange={(e) => setOpinionsFilterClientId(e.target.value)}
+                className="p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none text-[11px] font-bold text-slate-700 dark:text-slate-300"
+              >
+                <option value="">Tüm İşletmeler</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <select
+                value={opinionsFilterYear}
+                onChange={(e) => setOpinionsFilterYear(e.target.value)}
+                className="p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none text-[11px] font-bold text-slate-700 dark:text-slate-300"
+              >
+                <option value="">Tüm Yıllar</option>
+                {Array.from(new Set(opinionLetters.map((l) => new Date(l.letter_date).getFullYear())))
+                  .sort((a, b) => b - a)
+                  .map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+              </select>
+            </div>
+
+            {(() => {
+              const filteredOpinions = opinionLetters.filter((l) => {
+                if (opinionsFilterClientId && l.client_id !== opinionsFilterClientId) return false;
+                if (opinionsFilterYear && String(new Date(l.letter_date).getFullYear()) !== opinionsFilterYear) return false;
+                return true;
+              });
+
+              if (loadingOpinions) {
+                return (
+                  <div className="flex justify-center items-center py-16 text-xs text-gray-500 gap-2">
+                    <Loader className="animate-spin" size={16} /> Görüşler yükleniyor...
+                  </div>
+                );
+              }
+              if (filteredOpinions.length === 0) {
+                return <p className="text-center py-12 text-xs text-gray-400 italic">Filtreye uygun görüş bulunamadı.</p>;
+              }
+
+              return (
+              <div className="divide-y divide-gray-100 dark:divide-slate-700">
+                {filteredOpinions.map((letter) => {
+                  const statusLabel = letter.status === 'approved' ? 'Onaylandı' : letter.status === 'rejected' ? 'Reddedildi' : 'Onay Bekliyor';
+                  const statusColor = letter.status === 'approved'
+                    ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400'
+                    : letter.status === 'rejected'
+                    ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400'
+                    : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400';
+                  return (
+                    <div key={letter.id} className="py-4 flex justify-between items-center gap-4 flex-wrap">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-sm text-gray-800 dark:text-gray-200">{letter.subject}</span>
+                          <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border ${statusColor}`}>{statusLabel}</span>
+                        </div>
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                          İşletme: <b>{letter.client?.name}</b> · Kurum: <b>{letter.institution_name}</b>
+                          {letter.status !== 'rejected' && letter.sequence_no && (
+                            <> · Sayı: <b>{new Date(letter.letter_date).getFullYear()}-{String(letter.sequence_no).padStart(2, '0')}</b></>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-gray-400 dark:text-gray-500">
+                          Hazırlayan: {letter.creator?.full_name || 'Bilinmeyen'} · Tarih: {new Date(letter.letter_date).toLocaleDateString('tr-TR')}
+                        </div>
+                      </div>
+                      <Link
+                        to={`/consultant/opinions/${letter.id}`}
+                        className="text-xs font-bold text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/20 border border-purple-200 px-3 py-1.5 rounded-lg transition whitespace-nowrap"
+                      >
+                        Görüntüle
+                      </Link>
+                    </div>
+                  );
+                })}
+              </div>
+              );
+            })()}
+          </div>
+        </div>
       )}
 
       {/* LEGISLATIONS TAB */}
@@ -6220,7 +6647,7 @@ export default function ConsultantPanel() {
                 Yönetmelik ve kanunları inceleyin, hizmet verdiğiniz işletmelere atama yapın ve maddeleri özelleştirin.
               </p>
             </div>
-            {legSubTab === 'pool' && (
+            {legSubTab === 'pool' && userRole !== 'premium_corporate' && (
               <button
                 onClick={() => {
                   setSelectedReqClientId('');
@@ -6231,7 +6658,7 @@ export default function ConsultantPanel() {
                 }}
                 className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition"
               >
-                <PlusCircle size={16} /> {userRole === 'premium_corporate' ? 'Admin\'den Mevzuat Talep Et' : 'Yeni Mevzuat Talep Et'}
+                <PlusCircle size={16} /> Yöneticimden Mevzuat Talep Et
               </button>
             )}
           </div>
@@ -6290,8 +6717,9 @@ export default function ConsultantPanel() {
           <div className="animate-fadeIn">
             {/* 1. SEKME: MEVZUAT HAVUZU */}
             {legSubTab === 'pool' && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Sistem Mevzuat Havuzu */}
+              <div className={`grid grid-cols-1 gap-6 ${userRole === 'corporate_staff' ? '' : 'lg:grid-cols-2'}`}>
+                {/* Sistem Mevzuat Havuzu - admin genel havuzu, personelden gizli */}
+                {userRole !== 'corporate_staff' && (
                 <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
                   <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2 border-b pb-2 border-gray-100 dark:border-slate-700">
                     <BookOpen size={18} className="text-blue-600" />
@@ -6341,6 +6769,7 @@ export default function ConsultantPanel() {
                     )}
                   </div>
                 </div>
+                )}
 
                 {/* Firma Mevzuat Havuzu */}
                 <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
@@ -6349,27 +6778,59 @@ export default function ConsultantPanel() {
                       <BookOpen size={18} className="text-teal-600" />
                       Firma Mevzuat Havuzu (Bizim Havuzumuz)
                     </h3>
-                    {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
-                      <button
-                        onClick={() => {
-                          setLegTitle('');
-                          setLegCategory('Yönetmelik');
-                          setLegPubDate('');
-                          setLegEffDate('');
-                          setLegRgNo('');
-                          setLegRgDate('');
-                          setLegArticles([]);
-                          setPasteText('');
-                          setParsingTextMode(false);
-                          setShowAddCustomLegModal(true);
-                        }}
-                        className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 transition shadow-sm"
-                      >
-                        <Plus size={10} /> Özel Mevzuat Ekle
-                      </button>
-                    )}
+                    <button
+                      onClick={() => {
+                        setLegTitle('');
+                        setLegCategory('Yönetmelik');
+                        setLegPubDate('');
+                        setLegEffDate('');
+                        setLegRgNo('');
+                        setLegRgDate('');
+                        setLegArticles([]);
+                        setPasteText('');
+                        setParsingTextMode(false);
+                        setShowAddCustomLegModal(true);
+                      }}
+                      className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 transition shadow-sm"
+                    >
+                      <Plus size={10} />
+                      {(userRole === 'premium_corporate' || userRole === 'corporate_chief') ? 'Özel Mevzuat Ekle' : 'Mevzuat Talebi Oluştur (Yeni Mevzuat)'}
+                    </button>
                   </div>
-                  
+
+                  {/* Yönetici/şef için onay bekleyen (personel tarafından eklenen) özel mevzuatlar */}
+                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && pendingCompanyLegislations.length > 0 && (
+                    <div className="bg-amber-50 dark:bg-amber-950/10 border border-amber-200 dark:border-amber-900/40 rounded-xl p-3 space-y-2">
+                      <h4 className="text-[11px] font-black text-amber-700 dark:text-amber-400 uppercase tracking-wide">
+                        ⚠️ Onay Bekleyen Özel Mevzuatlar ({pendingCompanyLegislations.length})
+                      </h4>
+                      {pendingCompanyLegislations.map((cl: any) => (
+                        <div key={cl.id} className="flex justify-between items-center gap-2 bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-amber-100 dark:border-amber-900/30">
+                          <div>
+                            <div className="font-bold text-xs text-slate-800 dark:text-slate-200">{cl.regulation?.title}</div>
+                            <div className="text-[10px] text-gray-400">Ekleyen: <b>{cl.submitter?.full_name || 'Personel'}</b></div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              disabled={reviewingLegId === cl.id}
+                              onClick={() => handleReviewPendingLegislation(cl.id, true, cl.regulation_id)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition disabled:opacity-50"
+                            >
+                              Onayla
+                            </button>
+                            <button
+                              disabled={reviewingLegId === cl.id}
+                              onClick={() => handleReviewPendingLegislation(cl.id, false, cl.regulation_id)}
+                              className="bg-red-50 hover:bg-red-100 text-red-600 text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition border border-red-200 disabled:opacity-50"
+                            >
+                              Reddet
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
                     {assignedGlobalLegislations.length === 0 ? (
                       <p className="text-center py-6 text-xs text-gray-400 italic">
@@ -6585,20 +7046,32 @@ export default function ConsultantPanel() {
                       <Scale size={16} className="text-teal-600" />
                       Maddeler & Uyum
                     </h3>
-                    {selectedClientRegulation && (userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setNewArtNo('');
-                          setNewArtTitle('');
-                          setNewArtContent('');
-                          setShowAddClientArticleModal(true);
-                        }}
-                        className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1 transition shadow-sm cursor-pointer"
-                      >
-                        <Plus size={10} /> Madde Ekle
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {selectedClientRegulation && (userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                        <button
+                          type="button"
+                          onClick={handleRequestNotesForSelectedArticles}
+                          className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1 transition shadow-sm cursor-pointer"
+                          title="Seçilen tüm maddeler için tek bir aksiyon oluştur"
+                        >
+                          📌 Seçilenler İçin Aksiyon Aç ({selectedArticleIdsForAction.length})
+                        </button>
+                      )}
+                      {selectedClientRegulation && (userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewArtNo('');
+                            setNewArtTitle('');
+                            setNewArtContent('');
+                            setShowAddClientArticleModal(true);
+                          }}
+                          className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1 transition shadow-sm cursor-pointer"
+                        >
+                          <Plus size={10} /> Madde Ekle
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {!selectedClientRegulation ? (
@@ -6671,6 +7144,15 @@ export default function ConsultantPanel() {
                                 <div className="flex justify-between items-start gap-2">
                                   <div>
                                     <div className="flex items-center gap-2 flex-wrap">
+                                      {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedArticleIdsForAction.includes(art.id)}
+                                          onChange={() => handleToggleArticleForAction(art.id)}
+                                          title="Aksiyon açmak için seç"
+                                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                        />
+                                      )}
                                       <div className="font-bold text-xs text-slate-755 dark:text-slate-200">
                                         {art.article_no} {art.title ? `- ${art.title}` : ''}
                                       </div>
@@ -6778,192 +7260,46 @@ export default function ConsultantPanel() {
 
                                 <p className="text-xs text-slate-600 dark:text-slate-350 leading-relaxed whitespace-pre-wrap mt-2">{art.content}</p>
 
-                                {/* Action items & status note block */}
+                                {/* Aksiyon durumu: kısa gösterge - detaylar & sonuç sadece Aksiyon Takip sekmesinde */}
                                 {art.is_mandatory && (() => {
-                                  const artAction = articleActions.find((a: any) => a.article_id === art.id);
-                                  
+                                  const artAction = articleActions.find((a: any) => a.article_id === art.id || (Array.isArray(a.article_ids) && a.article_ids.includes(art.id)));
+                                  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+
                                   if (artAction) {
-                                    const isAssignee = artAction.assigned_to === userId;
-                                    const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
-                                    
                                     return (
-                                      <div className="pt-2.5 mt-2 border-t border-gray-150 dark:border-slate-850 space-y-3">
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                          <div className="flex items-center gap-1.5">
-                                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-                                              artAction.status === 'pending'
-                                                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400'
-                                                : artAction.status === 'completed'
-                                                ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400'
-                                                : artAction.status === 'correction_requested'
-                                                ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400'
-                                                : 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400'
-                                            }`}>
-                                              {artAction.status === 'pending' && 'Aksiyon Bekliyor'}
-                                              {artAction.status === 'completed' && 'Onay Bekliyor'}
-                                              {artAction.status === 'correction_requested' && 'Düzeltme İstendi'}
-                                              {artAction.status === 'approved' && 'Onaylandı'}
-                                            </span>
-                                            <span className="text-[10px] text-gray-500 font-medium">
-                                              Son Tarih: <b>{new Date(artAction.due_date).toLocaleDateString('tr-TR')}</b>
-                                            </span>
-                                          </div>
-                                          {isManager && (
-                                            <button
-                                              onClick={() => handleDeleteAction(artAction.id, art.id)}
-                                              className="text-[10px] text-red-500 hover:text-red-700 font-bold"
-                                              title="Talebi İptal Et"
-                                            >
-                                              Talebi İptal Et
-                                            </button>
-                                          )}
+                                      <div className="pt-2.5 mt-2 border-t border-gray-150 dark:border-slate-850 flex flex-wrap items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                                            artAction.status === 'pending'
+                                              ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400'
+                                              : artAction.status === 'completed'
+                                              ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400'
+                                              : artAction.status === 'correction_requested'
+                                              ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400'
+                                              : 'bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400'
+                                          }`}>
+                                            {artAction.status === 'pending' && 'Aksiyon Bekliyor'}
+                                            {artAction.status === 'completed' && 'Onay Bekliyor'}
+                                            {artAction.status === 'correction_requested' && 'Düzeltme İstendi'}
+                                            {artAction.status === 'approved' && 'Onaylandı'}
+                                          </span>
+                                          <span className="text-[10px] text-gray-500 font-medium">
+                                            Son Tarih: <b>{new Date(artAction.due_date).toLocaleDateString('tr-TR')}</b>
+                                          </span>
                                         </div>
-
-                                        {artAction.status === 'correction_requested' && artAction.manager_comment && (
-                                          <div className="bg-rose-50/50 dark:bg-rose-950/10 p-2 rounded-lg border border-rose-100 dark:border-rose-900/30 text-xs text-rose-800 dark:text-rose-350">
-                                            <div className="font-bold text-[9px] uppercase tracking-wide mb-0.5">Düzeltme Gerekçesi</div>
-                                            <p className="italic">{artAction.manager_comment}</p>
-                                          </div>
-                                        )}
-
-                                        {(artAction.status === 'pending' || artAction.status === 'correction_requested') && editingNotesArtId === art.id ? (
-                                          <div className="space-y-2.5">
-                                            <div>
-                                              <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Mevcut Durum Açıklaması</label>
-                                              <textarea
-                                                rows={3}
-                                                value={tempNotesVal}
-                                                onChange={(e) => setTempNotesVal(e.target.value)}
-                                                placeholder="Bu madde için mevcut durumu/açıklamayı buraya yazın..."
-                                                className="w-full p-2 border rounded-lg text-xs bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 outline-none text-slate-755 dark:text-slate-205"
-                                              />
-                                            </div>
-                                            <div>
-                                              <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Kanıt Belgesi</label>
-                                              <div className="flex border-b border-gray-200 dark:border-slate-700 mb-2 text-[10px]">
-                                                <button
-                                                  type="button"
-                                                  onClick={() => setEvidenceMode('upload')}
-                                                  className={`py-1 px-2 font-semibold transition border-b-2 ${evidenceMode === 'upload' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-450'}`}
-                                                >
-                                                  Dosya Yükle
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  onClick={() => {
-                                                    setEvidenceMode('select');
-                                                    if (userId) fetchUserDocuments(userId);
-                                                  }}
-                                                  className={`py-1 px-2 font-semibold transition border-b-2 ${evidenceMode === 'select' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-450'}`}
-                                                >
-                                                  Sistemden Seç
-                                                </button>
-                                              </div>
-
-                                              {evidenceMode === 'upload' ? (
-                                                <input
-                                                  type="file"
-                                                  onChange={(e) => setActionEvidenceFile(e.target.files?.[0] || null)}
-                                                  className="block w-full text-xs text-gray-505 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100"
-                                                />
-                                              ) : (
-                                                <select
-                                                  value={selectedEvidenceDocUrl}
-                                                  onChange={(e) => setSelectedEvidenceDocUrl(e.target.value)}
-                                                  className="w-full p-2 border rounded-lg text-xs bg-white dark:bg-slate-905 border-gray-200 dark:border-slate-700 outline-none"
-                                                >
-                                                  <option value="">-- Belge Seçin --</option>
-                                                  {userDocuments.map(d => (
-                                                    <option key={d.id} value={d.file_url}>{d.title}{d.location_def?.label ? ` (${d.location_def.label})` : ''}</option>
-                                                  ))}
-                                                </select>
-                                              )}
-                                            </div>
-                                            <div className="flex justify-end gap-2">
-                                              <button
-                                                type="button"
-                                                onClick={() => {
-                                                  setEditingNotesArtId(null);
-                                                  setTempNotesVal('');
-                                                  setActionEvidenceFile(null);
-                                                  setSelectedEvidenceDocUrl('');
-                                                }}
-                                                className="px-2.5 py-1.5 border rounded-lg text-[10px] font-bold"
-                                              >
-                                                İptal
-                                              </button>
-                                              <button
-                                                type="button"
-                                                disabled={uploadingEvidence}
-                                                onClick={() => handleCompleteAction(artAction.id, tempNotesVal, evidenceMode === 'upload' ? actionEvidenceFile : null, art.id, evidenceMode === 'select' ? selectedEvidenceDocUrl : null)}
-                                                className="px-2.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[10px] font-bold transition disabled:opacity-50"
-                                              >
-                                                {uploadingEvidence ? 'Kaydediliyor...' : 'Gönder'}
-                                              </button>
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          <div className="space-y-1.5 mt-2">
-                                            {artAction.notes && (
-                                              <div className="bg-slate-50 dark:bg-slate-900/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
-                                                <div className="font-bold text-[9px] uppercase tracking-wide text-gray-400 mb-0.5">Mevcut Durum Açıklaması</div>
-                                                <p className="text-slate-700 dark:text-slate-350">{artAction.notes}</p>
-                                                {artAction.evidence_file_url && (
-                                                  <a
-                                                    href={artAction.evidence_file_url}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold text-teal-600 hover:underline"
-                                                  >
-                                                    Kanıt Belgesi ↗
-                                                  </a>
-                                                )}
-                                              </div>
-                                            )}
-                                            
-                                            {isAssignee && (artAction.status === 'pending' || artAction.status === 'correction_requested') && (
-                                              <button
-                                                onClick={() => {
-                                                  setEditingNotesArtId(art.id);
-                                                  setTempNotesVal(artAction.notes || '');
-                                                  setEvidenceMode('upload');
-                                                  setActionEvidenceFile(null);
-                                                  setSelectedEvidenceDocUrl('');
-                                                }}
-                                                className="w-full bg-teal-50 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/20 dark:text-teal-400 py-1.5 rounded-lg text-[10px] font-bold border border-teal-200 dark:border-teal-900/50 transition flex items-center justify-center gap-1"
-                                              >
-                                                <Plus size={12} /> Durum Bildir / Değişiklik Yap
-                                              </button>
-                                            )}
-
-                                            {isManager && artAction.status === 'completed' && (
-                                              <div className="flex gap-2">
-                                                <button
-                                                  onClick={() => handleApproveAction(artAction.id, art.id)}
-                                                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                                                >
-                                                  <CheckCircle size={12} /> Onayla
-                                                </button>
-                                                <button
-                                                  onClick={() => {
-                                                    setSelectedClientAction(artAction);
-                                                    setReqNotesArticleId(art.id);
-                                                    setCorrectionComment('');
-                                                    setCorrectionDueDate(artAction.due_date);
-                                                    setShowCorrectionModal(true);
-                                                  }}
-                                                  className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-1.5 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                                                >
-                                                  <XCircle size={12} /> Düzeltme İste
-                                                </button>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setActionsFilterClient(selectedClientRegulation?.client_id || '');
+                                            setActiveTab('actions');
+                                          }}
+                                          className="text-[10px] font-bold text-teal-650 hover:underline"
+                                        >
+                                          Aksiyon Takip'te Görüntüle →
+                                        </button>
                                       </div>
                                     );
                                   } else {
-                                    const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
                                     return (
                                       <div className="pt-2 mt-2 border-t border-gray-150 dark:border-slate-800 flex gap-2 justify-end">
                                         {isManager ? (
@@ -7424,21 +7760,23 @@ export default function ConsultantPanel() {
                 <Bell className="text-teal-600" size={24} /> Gönderilen Mevzuat Talepleri
               </h2>
               <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
-                Admin'den veya firma içinden talep edilen mevzuat ve güncelleme taleplerini buradan inceleyebilirsiniz.
+                Firma içinden yöneticinize iletilen mevzuat ve güncelleme taleplerini buradan inceleyebilirsiniz.
               </p>
             </div>
-            <button
-              onClick={() => {
-                setSelectedReqClientId('');
-                setSelectedReqRegulationId('');
-                setRequestTitle('');
-                setRequestDescription('');
-                setShowAddRequestModal(true);
-              }}
-              className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition whitespace-nowrap"
-            >
-              <PlusCircle size={16} /> {userRole === 'premium_corporate' ? 'Admin\'den Mevzuat Talape Et' : 'Yeni Mevzuat Talep Et'}
-            </button>
+            {userRole !== 'premium_corporate' && (
+              <button
+                onClick={() => {
+                  setSelectedReqClientId('');
+                  setSelectedReqRegulationId('');
+                  setRequestTitle('');
+                  setRequestDescription('');
+                  setShowAddRequestModal(true);
+                }}
+                className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 transition whitespace-nowrap"
+              >
+                <PlusCircle size={16} /> Yöneticimden Mevzuat Talep Et
+              </button>
+            )}
           </div>
 
           <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
@@ -7465,6 +7803,11 @@ export default function ConsultantPanel() {
                         <span className="text-[10px] text-gray-450 dark:text-gray-500 bg-gray-50 dark:bg-slate-900/50 px-2 py-0.5 rounded border border-gray-150 dark:border-slate-750">
                           {req.request_type === 'owner_to_admin' ? 'Admin Talebi' : 'Firma İçi Talep'}
                         </span>
+                        {req.draft_regulation && (
+                          <span className="text-[10px] font-bold text-teal-700 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/20 px-2 py-0.5 rounded border border-teal-200 dark:border-teal-900">
+                            📄 Tam Mevzuat Metni Ekli ({req.draft_regulation.articles?.length || 0} madde)
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-gray-600 dark:text-gray-400">{req.description}</p>
                       <div className="text-[10px] text-gray-400 dark:text-gray-500 flex items-center gap-3 pt-1">
@@ -7479,13 +7822,18 @@ export default function ConsultantPanel() {
                         </div>
                       )}
                     </div>
-                    {req.status === 'pending' && userRole === 'premium_corporate' && req.request_type === 'staff_to_owner' && (
-                      <button
-                        onClick={() => handleEscalateRequestToAdmin(req)}
-                        className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1.5 whitespace-nowrap"
-                      >
-                        <PlusCircle size={12} /> Admin'e Yönlendir
-                      </button>
+                    {(req.status === 'pending' || req.draft_regulation) && (
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => {
+                            setReviewingRequest(req);
+                            setReviewResponseNote('');
+                          }}
+                          className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Eye size={12} /> İncele{req.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief') ? ' ve Cevapla' : ''}
+                        </button>
+                      </div>
                     )}
                   </div>
                 ))
@@ -7516,6 +7864,8 @@ export default function ConsultantPanel() {
                   setNewActionClientId('');
                   setReqNotesAssigneeId('');
                   setReqNotesDueDate('');
+                  setReqNotesArticleId('');
+                  setPendingActionArticleIds([]);
                   setShowCreateActionModal(true);
                 }}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-md transition flex items-center gap-1.5 whitespace-nowrap self-stretch sm:self-auto justify-center"
@@ -7731,7 +8081,7 @@ export default function ConsultantPanel() {
 
                           {(isManager || isCreator) && (
                             <button
-                              onClick={() => handleDeleteAction(act.id, act.article_id)}
+                              onClick={() => handleDeleteAction(act.id, (act.article_ids && act.article_ids.length > 0) ? act.article_ids : (act.article_id ? [act.article_id] : null))}
                               className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-gray-50 dark:hover:bg-slate-800 transition"
                               title="Sil"
                             >
@@ -9088,9 +9438,14 @@ export default function ConsultantPanel() {
 
             <div className="space-y-4">
               <div className="text-xs bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 dark:border-slate-750">
-                <div className="text-slate-400 uppercase tracking-wide">Seçili Madde:</div>
+                <div className="text-slate-400 uppercase tracking-wide">{pendingActionArticleIds.length > 1 ? 'Seçili Maddeler:' : 'Seçili Madde:'}</div>
                 <div className="font-bold text-slate-850 dark:text-slate-200 text-sm mt-0.5">{newActionTitle}</div>
               </div>
+              {pendingActionArticleIds.length > 1 && (
+                <div className="text-[10px] bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40 rounded-xl p-2.5 font-bold">
+                  📌 Bu aksiyon {pendingActionArticleIds.length} madde ile ilişkilendirilecek.
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Sorumlu Personel *</label>
@@ -9126,11 +9481,12 @@ export default function ConsultantPanel() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Özel Talimatlar (Opsiyonel)</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Gerekçe *</label>
                 <textarea
+                  required
                   rows={3}
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
-                  placeholder="Personelin dikkat etmesi gereken özel detaylar varsa belirtin..."
+                  placeholder="Bu madde için aksiyon açma gerekçesini yazın... (zorunlu)"
                   value={reqNotesDesc}
                   onChange={(e) => setReqNotesDesc(e.target.value)}
                 />
@@ -9147,9 +9503,10 @@ export default function ConsultantPanel() {
                 <button
                   type="button"
                   onClick={() => handleCreateAction(true, reqNotesArticleId, reqNotesClientId)}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition"
+                  disabled={!reqNotesDesc.trim() || creatingAction}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Talep Et
+                  {creatingAction ? 'Gönderiliyor...' : 'Talep Et'}
                 </button>
               </div>
             </div>
@@ -9427,10 +9784,11 @@ export default function ConsultantPanel() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Detaylar</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Detaylar *</label>
                 <textarea
+                  required
                   rows={3}
-                  placeholder="Yapılması gereken işin detaylı açıklamasını girin..."
+                  placeholder="Yapılması gereken işin detaylı açıklamasını girin... (zorunlu)"
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
                   value={newActionDesc}
                   onChange={(e) => setNewActionDesc(e.target.value)}
@@ -9446,9 +9804,10 @@ export default function ConsultantPanel() {
                 </button>
                 <button
                   onClick={() => handleCreateAction(false, null, null)}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition"
+                  disabled={!newActionDesc.trim() || creatingAction}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Oluştur
+                  {creatingAction ? 'Oluşturuluyor...' : 'Oluştur'}
                 </button>
               </div>
             </div>
@@ -9799,6 +10158,119 @@ export default function ConsultantPanel() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Mevzuat Talebi İnceleme Modalı */}
+      {reviewingRequest && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl p-6 border border-slate-100 dark:border-slate-700 animate-fadeIn flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <Eye size={18} className="text-teal-600" />
+                Mevzuat Talebini İncele
+              </h3>
+              <button
+                onClick={() => {
+                  setReviewingRequest(null);
+                  setReviewResponseNote('');
+                }}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto space-y-4 pr-2 flex-1">
+              <div className="bg-slate-50 dark:bg-slate-900/50 p-3.5 rounded-xl border border-slate-150 dark:border-slate-750 space-y-1.5 text-xs">
+                <div className="font-bold text-sm text-slate-850 dark:text-slate-200">{reviewingRequest.title}</div>
+                <div className="text-gray-500 dark:text-gray-400">
+                  Talep Eden: <b>{reviewingRequest.requester?.full_name || 'Bilinmeyen'}</b> ({reviewingRequest.requester?.email})
+                </div>
+                {reviewingRequest.client?.name && (
+                  <div className="text-gray-500 dark:text-gray-400">İşletme: <b>{reviewingRequest.client.name}</b></div>
+                )}
+                {reviewingRequest.target_regulation?.title && (
+                  <div className="text-gray-500 dark:text-gray-400">İlgili Mevzuat: <b>{reviewingRequest.target_regulation.title}</b></div>
+                )}
+                <div className="text-gray-500 dark:text-gray-400">Tarih: <b>{new Date(reviewingRequest.created_at).toLocaleDateString()}</b></div>
+              </div>
+
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Talep Açıklaması</div>
+                <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap bg-white dark:bg-slate-900 p-3 rounded-lg border border-slate-150 dark:border-slate-750">
+                  {reviewingRequest.description || '—'}
+                </p>
+              </div>
+
+              {reviewingRequest.draft_regulation && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs bg-teal-50/50 dark:bg-teal-950/10 border border-teal-100 dark:border-teal-900/30 rounded-xl p-3">
+                    <div><span className="text-[9px] font-bold text-teal-700 dark:text-teal-400 uppercase block">Kategori</span>{reviewingRequest.draft_regulation.category || '—'}</div>
+                    <div><span className="text-[9px] font-bold text-teal-700 dark:text-teal-400 uppercase block">Yayın Tarihi</span>{reviewingRequest.draft_regulation.publication_date ? new Date(reviewingRequest.draft_regulation.publication_date).toLocaleDateString() : '—'}</div>
+                    <div><span className="text-[9px] font-bold text-teal-700 dark:text-teal-400 uppercase block">RG No</span>{reviewingRequest.draft_regulation.rg_no || '—'}</div>
+                    <div><span className="text-[9px] font-bold text-teal-700 dark:text-teal-400 uppercase block">RG Tarihi</span>{reviewingRequest.draft_regulation.rg_date ? new Date(reviewingRequest.draft_regulation.rg_date).toLocaleDateString() : '—'}</div>
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">
+                      Mevzuat Maddeleri ({reviewingRequest.draft_regulation.articles?.length || 0} Adet) — Onaylamadan önce içeriği uygunluk açısından kontrol edin
+                    </div>
+                    <div className="border border-slate-150 dark:border-slate-750 rounded-xl divide-y max-h-72 overflow-y-auto bg-slate-50/30 dark:bg-slate-900/30 p-2 space-y-2">
+                      {(reviewingRequest.draft_regulation.articles || []).map((art: any, idx: number) => (
+                        <div key={idx} className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-800 text-xs space-y-1">
+                          <div className="font-bold text-slate-800 dark:text-slate-200">
+                            {art.article_no} {art.title ? `- ${art.title}` : ''}
+                          </div>
+                          <p className="text-slate-600 dark:text-slate-350 whitespace-pre-wrap leading-relaxed">{art.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {reviewingRequest.admin_notes && (
+                <div className="text-xs bg-slate-50 dark:bg-slate-900/40 p-2.5 rounded-lg border border-slate-150 dark:border-slate-750 text-slate-750 dark:text-slate-300">
+                  <b>Önceki Not:</b> {reviewingRequest.admin_notes}
+                </div>
+              )}
+
+              {reviewingRequest.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Onay/Red Notu (Opsiyonel)</label>
+                  <textarea
+                    rows={3}
+                    placeholder="Personele iletilecek notunuzu buraya yazabilirsiniz..."
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 text-xs text-slate-700 dark:text-slate-300 font-medium resize-none"
+                    value={reviewResponseNote}
+                    onChange={(e) => setReviewResponseNote(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
+
+            {reviewingRequest.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+              <div className="flex gap-3 pt-4 mt-2 border-t border-gray-100 dark:border-slate-700">
+                <button
+                  type="button"
+                  disabled={answeringRequest}
+                  onClick={() => handleAnswerRegulationRequest(reviewingRequest, true, reviewResponseNote)}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2"
+                >
+                  <Check size={16} /> {answeringRequest ? 'İşleniyor...' : (reviewingRequest.draft_regulation ? 'Onayla ve Havuza Ekle' : 'Onayla')}
+                </button>
+                <button
+                  type="button"
+                  disabled={answeringRequest}
+                  onClick={() => handleAnswerRegulationRequest(reviewingRequest, false, reviewResponseNote)}
+                  className="flex-1 border border-rose-200 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 disabled:opacity-50 py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2"
+                >
+                  <XCircle size={16} /> Reddet
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -11028,7 +11500,9 @@ export default function ConsultantPanel() {
             <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
               <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
                 <BookOpen size={18} className="text-teal-600" />
-                Yeni Özel Mevzuat & Yönetmelik Ekle
+                {(userRole === 'premium_corporate' || userRole === 'corporate_chief')
+                  ? 'Yeni Özel Mevzuat & Yönetmelik Ekle'
+                  : 'Yeni Mevzuat Talebi (Yöneticinizin Onayına Gönderilecek)'}
               </h3>
               <button 
                 onClick={() => setShowAddCustomLegModal(false)}
@@ -11259,7 +11733,7 @@ export default function ConsultantPanel() {
                   className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-teal-100 disabled:shadow-none text-sm"
                 >
                   {savingLegislation ? <Loader size={16} className="animate-spin" /> : <Check size={16} />}
-                  Kaydet & Havuza Ekle
+                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief') ? 'Kaydet & Havuza Ekle' : 'Onaya Gönder'}
                 </button>
                 <button
                   type="button"
@@ -12598,6 +13072,7 @@ export default function ConsultantPanel() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
