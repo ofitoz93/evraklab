@@ -133,6 +133,7 @@ export default function CompanyPanel() {
   
   const [actionsFilterClient, setActionsFilterClient] = useState('');
   const [actionsFilterStatus, setActionsFilterStatus] = useState('');
+  const [actionsSubTab, setActionsSubTab] = useState<'pending' | 'completed'>('pending');
   
   // Yeni Aksiyon Oluşturma Formu
   const [newActionTitle, setNewActionTitle] = useState('');
@@ -2840,8 +2841,8 @@ export default function CompanyPanel() {
               onClick={() => selectModule(mod.id as any)}
               className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
                 isActive
-                  ? 'bg-purple-650 text-white shadow-md shadow-purple-600/10 scale-[1.02]'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-purple-650 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  ? 'bg-purple-600 text-white shadow-md shadow-purple-600/10 scale-[1.02]'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-purple-600 hover:bg-slate-50 dark:hover:bg-slate-800'
               }`}
             >
               {mod.icon}
@@ -3408,7 +3409,7 @@ export default function CompanyPanel() {
                                      checked={selectedArticleIdsForRequest.includes(art.id)}
                                      onChange={() => handleToggleArticleSelection(art.id)}
                                      title="Durum talebi için seç"
-                                     className="mr-2 h-4 w-4 rounded border-gray-300 text-purple-650 focus:ring-purple-500 cursor-pointer"
+                                     className="mr-2 h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
                                    />
                                  )}
                                  {(myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief') && (
@@ -3681,7 +3682,7 @@ export default function CompanyPanel() {
               <button
                 type="submit"
                 disabled={submittingRequest}
-                className="w-full bg-purple-600 hover:bg-purple-750 text-white py-3 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 disabled:opacity-50"
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 {submittingRequest ? (
                   <>
@@ -3734,7 +3735,7 @@ export default function CompanyPanel() {
               <div className="border-b pb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
                   <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
-                    <Clock className="text-purple-650" size={16} /> Gönderilen Mevzuat Talepleri
+                    <Clock className="text-purple-600" size={16} /> Gönderilen Mevzuat Talepleri
                   </h3>
                   <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
                     Danışman firmanızdan talep ettiğiniz veya şirket içi personelin talep ettiği mevzuatları görüntüleyin.
@@ -3797,7 +3798,7 @@ export default function CompanyPanel() {
             <div className="space-y-6">
               <div className="border-b pb-3">
                 <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
-                  <RefreshCw className="text-purple-650" size={16} /> Gelen Ünvan & Adres Değişikliği Talepleri
+                  <RefreshCw className="text-purple-600" size={16} /> Gelen Ünvan & Adres Değişikliği Talepleri
                 </h3>
                 <p className="text-xs text-gray-500 mt-1 dark:text-gray-400 font-medium">
                   Danışman personeliniz tarafından şirketinizin resmi ünvan ve adresi için girilen değişiklik taleplerini inceleyin.
@@ -3938,10 +3939,34 @@ export default function CompanyPanel() {
             </button>
           </div>
 
+          {/* Bekleyen / Tamamlanan Sekmeleri */}
+          <div className="flex flex-wrap border-b border-gray-200 dark:border-slate-700 gap-2 bg-white dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-slate-700">
+            <button
+              onClick={() => setActionsSubTab('pending')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                actionsSubTab === 'pending'
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <Clock size={14} /> Bekleyen Aksiyonlar
+            </button>
+            <button
+              onClick={() => setActionsSubTab('completed')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                actionsSubTab === 'completed'
+                  ? 'bg-green-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <CheckCircle size={14} /> Tamamlanan Aksiyonlar
+            </button>
+          </div>
+
           {/* Filtreler */}
           <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm flex flex-wrap gap-4 items-center animate-fadeIn">
             <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Filtrele</span>
-            
+
             {isConsultant && (
               <div className="flex items-center gap-2">
                 <label className="text-xs text-gray-500 font-semibold">Firma:</label>
@@ -3996,9 +4021,10 @@ export default function CompanyPanel() {
                 );
               }
 
-              return (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fadeIn">
-                  {filtered.map(act => {
+              const pendingList = filtered.filter(act => act.status !== 'approved');
+              const completedList = filtered.filter(act => act.status === 'approved');
+
+              const renderActionCard = (act: any) => {
                     const isAssignee = act.assigned_to === myProfile?.id;
                     const isManager = myProfile?.role === 'premium_corporate' || myProfile?.role === 'corporate_chief';
                     const isCreator = act.created_by === myProfile?.id;
@@ -4153,7 +4179,22 @@ export default function CompanyPanel() {
                         </div>
                       </div>
                     );
-                  })}
+              };
+
+              const activeList = actionsSubTab === 'pending' ? pendingList : completedList;
+
+              if (activeList.length === 0) {
+                return (
+                  <div className="text-center py-20 bg-white dark:bg-slate-800 border border-dashed rounded-xl text-xs text-gray-400 italic space-y-2 animate-fadeIn">
+                    <CheckCircle size={32} className="mx-auto mb-2 opacity-25 text-purple-600" />
+                    {actionsSubTab === 'pending' ? 'Bekleyen aksiyon bulunmuyor.' : 'Tamamlanan aksiyon bulunmuyor.'}
+                  </div>
+                );
+              }
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fadeIn">
+                  {activeList.map(renderActionCard)}
                 </div>
               );
             })()
@@ -4210,7 +4251,7 @@ export default function CompanyPanel() {
               onClick={() => setInspectionsSubTab('points')}
               className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
                 inspectionsSubTab === 'points'
-                  ? 'bg-teal-650 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
               }`}
             >
@@ -4220,7 +4261,7 @@ export default function CompanyPanel() {
               onClick={() => setInspectionsSubTab('forms')}
               className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
                 inspectionsSubTab === 'forms'
-                  ? 'bg-teal-655 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
               }`}
             >
@@ -4230,7 +4271,7 @@ export default function CompanyPanel() {
               onClick={() => setInspectionsSubTab('analytics')}
               className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
                 inspectionsSubTab === 'analytics'
-                  ? 'bg-teal-650 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
               }`}
             >
@@ -4660,7 +4701,7 @@ export default function CompanyPanel() {
       {showSubmissionsModal && selectedInspectionPoint && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
           <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
-            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-teal-650 text-white">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-teal-600 text-white">
               <div>
                 <h3 className="font-bold text-lg flex items-center gap-2">
                   <Clock size={20} />
@@ -5954,7 +5995,7 @@ export default function CompanyPanel() {
                   type="button"
                   onClick={handleGenerateReport}
                   disabled={generatingReport}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-750 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-purple-50"
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-purple-50"
                 >
                   {generatingReport ? 'Oluşturuluyor...' : 'Raporu Oluştur (PDF)'}
                 </button>
@@ -6012,7 +6053,7 @@ export default function CompanyPanel() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-red-650 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition shadow-md"
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition shadow-md"
                 >
                   Reddetmeyi Onayla
                 </button>

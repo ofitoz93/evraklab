@@ -55,7 +55,7 @@ export default function EnvReportForm() {
 
     const { data: profile } = await supabase
       .from('profiles')
-      .select('id, full_name, role, organization_id, extra_permissions')
+      .select('id, full_name, role, organization_id, extra_permissions, subscription_end_date')
       .eq('id', session.user.id)
       .single();
 
@@ -70,12 +70,13 @@ export default function EnvReportForm() {
       // daima danışmanlık moduna alınır (RLS hatalarına karşı güvenli).
 
       const isCorporateRole = ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(profile.role);
+      const isPremiumIndividual = profile.role === 'premium_individual';
       const hasOrg = !!profile.organization_id;
 
       let isEnvConsultantOrg = false;
-      if (hasOrg && !isCorporateRole) {
-        // Sadece corporate dışı roller için org kontrolü yap
-        // (corporate roller zaten danışman modunda)
+      if (hasOrg && !isCorporateRole && !isPremiumIndividual) {
+        // Sadece corporate/bireysel premium dışı roller için org kontrolü yap
+        // (corporate roller ve bireysel premium zaten danışman modunda)
         const { data: org } = await supabase
           .from('organizations')
           .select('is_environmental_consultant')
@@ -93,13 +94,20 @@ export default function EnvReportForm() {
           .single();
         const expired = !orgSub?.subscription_end_date || new Date(orgSub.subscription_end_date) <= new Date();
         setIsCorporateExpired(expired);
+      } else if (isPremiumIndividual) {
+        // Bireysel premium hesabın aboneliği kendi profilinde tutulur, kişisel
+        // organizasyonun subscription_end_date'i hiç set edilmez.
+        const expired = !profile.subscription_end_date || new Date(profile.subscription_end_date) <= new Date();
+        setIsCorporateExpired(expired);
       }
 
-      // Admin veya corporate rolle şirkete bağlı veya env danışmanlık üyesi → danışman modu
+      // Admin veya corporate rolle şirkete bağlı veya env danışmanlık üyesi veya
+      // bireysel premium (kendi lokasyonları için) → danışman modu.
       const isConsultantMode =
         profile.role === 'admin' ||
         (hasOrg && isCorporateRole) ||
-        (hasOrg && isEnvConsultantOrg);
+        (hasOrg && isEnvConsultantOrg) ||
+        (hasOrg && isPremiumIndividual);
 
       if (!isConsultantMode) {
         // Normal / bireysel üye → şahsi rapor modu

@@ -376,7 +376,7 @@ const getOrCreateDriveFolder = async (
     if (!newDefLabel.trim()) return;
 
     if (manageCategory === 'location') {
-      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
       if (!canCreateLoc) {
         alert("Hata: Kurumsal dökümanlar için lokasyon ekleme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından ekleyebilir.");
         return;
@@ -415,13 +415,28 @@ const getOrCreateDriveFolder = async (
       }
       return;
     }
+
+    // Bireysel premium hesaplarda buradan eklenen bir Lokasyon, Premium
+    // Panel > Tanımlar'dan eklenmiş gibi davransın diye consultant_clients'a
+    // da senkron ekleniyor (Aksiyon/Görüş/Mevzuat seçim listelerinde çıksın).
+    if (manageCategory === 'location' && userRole === 'premium_individual' && docScope === 'corporate' && myOrgId) {
+      const alreadyClient = corporateClients.some(c => c.name.toLowerCase() === normalizedLabel.toLowerCase());
+      if (!alreadyClient) {
+        await supabase.from('consultant_clients').insert({
+          consultant_company_id: myOrgId,
+          name: normalizedLabel,
+        });
+      }
+      await fetchCorporateClients(myOrgId, userRole, session.user.id);
+    }
+
     setNewDefLabel('');
     fetchDefinitions(session.user.id, docScope === 'corporate', myOrgId);
   };
 
   const handleDeleteDefinition = async (id: string) => {
     if (manageCategory === 'location') {
-      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
       if (!canCreateLoc) {
         alert("Hata: Kurumsal dökümanlar için lokasyon silme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından yönetebilir.");
         return;
@@ -467,7 +482,7 @@ const getOrCreateDriveFolder = async (
 
   const saveEditing = async (id: string) => {
     if (manageCategory === 'location') {
-      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
       if (!canCreateLoc) {
         alert("Hata: Kurumsal dökümanlar için lokasyon düzenleme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından yönetebilir.");
         return;
@@ -802,7 +817,7 @@ const getOrCreateDriveFolder = async (
           }
         } else if (docLocId === 'NEW_LOC') {
           const manualLocName = doc.manualLoc || (window as any).tempManualLoc;
-          const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+          const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
           if (manualLocName && canCreateLoc) {
             const { data: newLoc } = await supabase
               .from('user_definitions')
@@ -960,7 +975,7 @@ const getOrCreateDriveFolder = async (
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-1 flex justify-between">
                     <span>Belge Türü *</span>
-                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual') && (
                       <button
                         type="button"
                         onClick={() => openManageModal('doc_type')}
@@ -987,7 +1002,7 @@ const getOrCreateDriveFolder = async (
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-1 flex justify-between">
                     <span>Lokasyon</span>
-                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual') && (
                       <button
                         type="button"
                         onClick={() => openManageModal('location')}
@@ -1003,7 +1018,7 @@ const getOrCreateDriveFolder = async (
                     onChange={(e) => {
                       const val = e.target.value;
                       if (val === 'NEW_LOC') {
-                        const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+                        const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
                         if (!canCreateLoc) {
                           alert("Hata: Kurumsal dökümanlar için lokasyon ekleme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından ekleyebilir.");
                           return;
@@ -1018,7 +1033,7 @@ const getOrCreateDriveFolder = async (
                         {l.label}
                       </option>
                     ))}
-                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                    {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual') && (
                       <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
                     )}
                   </select>
@@ -1291,7 +1306,7 @@ const getOrCreateDriveFolder = async (
                                   onChange={(e) => {
                                     const val = e.target.value;
                                     if (val === 'NEW_LOC') {
-                                      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin';
+                                      const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
                                       if (!canCreateLoc) {
                                         alert("Hata: Kurumsal dökümanlar için lokasyon ekleme yetkiniz yoktur. Sadece yönetici ve şefler tanımlamalar sayfasından ekleyebilir.");
                                         return;
@@ -1307,7 +1322,7 @@ const getOrCreateDriveFolder = async (
                                    {getFilteredLocOptions().map(l => (
                                      <option key={l.id} value={l.id}>{l.label}</option>
                                    )) }
-                                  {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+                                  {(docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual') && (
                                     <option value="NEW_LOC">+ Yeni Lokasyon Ekle...</option>
                                   )}
                                 </select>

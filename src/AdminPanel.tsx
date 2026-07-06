@@ -32,6 +32,9 @@ import {
   Check,
   FileText,
   Save,
+  CreditCard,
+  Printer,
+  TrendingUp,
 } from 'lucide-react';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
@@ -41,7 +44,7 @@ import WasteManagement from './WasteManagement';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste' | 'ced_categories'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste' | 'ced_categories' | 'permit_categories' | 'payments'
   >('tickets');
 
   const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
@@ -435,6 +438,10 @@ export default function AdminPanel() {
       fetchCompanies();
     } else if (activeTab === 'ced_categories') {
       fetchCedCategories();
+    } else if (activeTab === 'permit_categories') {
+      fetchPermitCategories();
+    } else if (activeTab === 'payments') {
+      fetchPayments();
     }
   }, [activeTab]);
 
@@ -723,6 +730,234 @@ export default function AdminPanel() {
       return;
     }
     await fetchCedCategories();
+  };
+
+  // --- ÇEVRE İZİN VE LİSANS (EK-1 / EK-2) FAALİYET LİSTESİ YÖNETİMİ ---
+  // Danışman panelindeki İşletme Ekle/Düzenle formlarındaki "Çevre İzin/Lisans
+  // Kapsamı" alanı bu tabloyu (environmental_permit_categories) okuyor.
+  // ÇED listesinden tamamen bağımsız, ayrı bir sınıflandırmadır.
+  const [permitCategories, setPermitCategories] = useState<any[]>([]);
+  const [loadingPermit, setLoadingPermit] = useState(false);
+  const [permitStageFilter, setPermitStageFilter] = useState<'ek1' | 'ek2'>('ek1');
+  const [permitSearch, setPermitSearch] = useState('');
+  const [editingPermitItem, setEditingPermitItem] = useState<any>(null);
+  const [permitFormCode, setPermitFormCode] = useState('');
+  const [permitFormTitle, setPermitFormTitle] = useState('');
+  const [savingPermit, setSavingPermit] = useState(false);
+
+  const fetchPermitCategories = async () => {
+    setLoadingPermit(true);
+    const { data, error } = await supabase
+      .from('environmental_permit_categories')
+      .select('*')
+      .order('stage', { ascending: true })
+      .order('sort_order', { ascending: true });
+    if (error) {
+      console.error('Çevre izin kategorileri çekilirken hata:', error.message);
+    } else {
+      setPermitCategories(data || []);
+    }
+    setLoadingPermit(false);
+  };
+
+  const openPermitModal = (item?: any) => {
+    if (item) {
+      setEditingPermitItem(item);
+      setPermitFormCode(item.code);
+      setPermitFormTitle(item.title);
+    } else {
+      setEditingPermitItem({ id: 'new', stage: permitStageFilter });
+      setPermitFormCode('');
+      setPermitFormTitle('');
+    }
+  };
+
+  const handleSavePermitCategory = async () => {
+    if (!permitFormCode.trim() || !permitFormTitle.trim()) {
+      alert('Kod ve başlık alanları zorunludur.');
+      return;
+    }
+    setSavingPermit(true);
+    try {
+      if (editingPermitItem.id === 'new') {
+        const maxSort = Math.max(0, ...permitCategories.filter((c) => c.stage === editingPermitItem.stage).map((c) => c.sort_order || 0));
+        const { error } = await supabase.from('environmental_permit_categories').insert({
+          stage: editingPermitItem.stage,
+          code: permitFormCode.trim(),
+          title: permitFormTitle.trim(),
+          sort_order: maxSort + 1,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('environmental_permit_categories')
+          .update({ code: permitFormCode.trim(), title: permitFormTitle.trim() })
+          .eq('id', editingPermitItem.id);
+        if (error) throw error;
+      }
+      setEditingPermitItem(null);
+      await fetchPermitCategories();
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingPermit(false);
+    }
+  };
+
+  const handleDeletePermitCategory = async (id: string) => {
+    if (!window.confirm('Bu maddeyi silmek istediğinize emin misiniz? Bu maddeyi zaten seçmiş işletmelerin kayıtlarından otomatik kaldırılmaz, sadece yeni seçim listesinden çıkar.')) return;
+    const { error } = await supabase.from('environmental_permit_categories').delete().eq('id', id);
+    if (error) {
+      alert('Silinirken hata: ' + error.message);
+      return;
+    }
+    await fetchPermitCategories();
+  };
+
+  // --- ÖDEMELER & FATURALAR (Premium satın alım geçmişi) ---
+  const [payments, setPayments] = useState<any[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [paymentsPlanFilter, setPaymentsPlanFilter] = useState('');
+  const [invoicingPayment, setInvoicingPayment] = useState<any>(null);
+  const [invoiceTitle, setInvoiceTitle] = useState('');
+  const [invoiceTaxId, setInvoiceTaxId] = useState('');
+  const [invoiceAddress, setInvoiceAddress] = useState('');
+  const [savingInvoice, setSavingInvoice] = useState(false);
+
+  const fetchPayments = async () => {
+    setLoadingPayments(true);
+    const { data, error } = await supabase
+      .from('subscription_payments')
+      .select('*, payer:profiles!user_id(full_name, email), organization:organizations(name)')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('Ödemeler çekilirken hata:', error.message);
+    } else {
+      setPayments(data || []);
+    }
+    setLoadingPayments(false);
+  };
+
+  const planTypeLabel = (type: string) => {
+    switch (type) {
+      case 'individual': return 'Bireysel Premium';
+      case 'corporate_new': return 'Kurumsal (Yeni Şirket)';
+      case 'corporate_renewal': return 'Kurumsal Yenileme';
+      case 'storage': return 'Ekstra Depolama';
+      default: return type;
+    }
+  };
+
+  const now = new Date();
+  const currentMonthPayments = payments.filter((p) => {
+    const d = new Date(p.created_at);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  });
+  const monthlyRevenue = currentMonthPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const totalRevenue = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const uniqueBuyers = new Set(payments.map((p) => p.organization_id || p.user_id)).size;
+
+  const openInvoiceModal = (payment: any) => {
+    setInvoicingPayment(payment);
+    setInvoiceTitle(payment.invoice_title || payment.organization?.name || payment.payer?.full_name || '');
+    setInvoiceTaxId(payment.invoice_tax_id || '');
+    setInvoiceAddress(payment.invoice_address || '');
+  };
+
+  const handleGenerateInvoice = async () => {
+    if (!invoicingPayment) return;
+    if (!invoiceTitle.trim()) {
+      alert('Fatura ünvanı zorunludur.');
+      return;
+    }
+    setSavingInvoice(true);
+    try {
+      const invoiceNo = invoicingPayment.invoice_no || `EVR-${new Date().getFullYear()}-${String(payments.length + 1).padStart(5, '0')}`;
+      const generatedAt = invoicingPayment.invoice_generated_at || new Date().toISOString();
+
+      const { error } = await supabase
+        .from('subscription_payments')
+        .update({
+          invoice_no: invoiceNo,
+          invoice_title: invoiceTitle.trim(),
+          invoice_tax_id: invoiceTaxId.trim(),
+          invoice_address: invoiceAddress.trim(),
+          invoice_generated_at: generatedAt,
+        })
+        .eq('id', invoicingPayment.id);
+      if (error) throw error;
+
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        printWindow.document.write(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fatura ${invoiceNo}</title>
+  <style>
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; color: #1e293b; padding: 40px; margin: 0; font-size: 13px; }
+    .header { display: flex; justify-content: space-between; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 25px; }
+    .header-logo { font-size: 22px; font-weight: 800; color: #0f172a; }
+    .header-logo span { color: #2ca58d; }
+    .header-meta { text-align: right; font-size: 12px; color: #64748b; font-weight: 600; }
+    .box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 24px; }
+    .label { font-size: 10px; text-transform: uppercase; font-weight: 800; color: #64748b; letter-spacing: 0.5px; margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th { background: #f1f5f9; color: #475569; font-weight: 800; font-size: 11px; text-transform: uppercase; padding: 10px 12px; border: 1px solid #cbd5e1; text-align: left; }
+    td { padding: 10px 12px; border: 1px solid #e2e8f0; font-size: 13px; }
+    .right { text-align: right; }
+    .total-row td { font-weight: 800; font-size: 15px; background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="header-logo">EVRAK<span>LAB</span></div>
+      <div style="font-size:10px; font-weight:bold; color:#64748b; margin-top:2px;">ÇEVRE MEVZUATI TAKİP SİSTEMİ</div>
+    </div>
+    <div class="header-meta">
+      <div>Fatura No: <b>${invoiceNo}</b></div>
+      <div>Tarih: ${new Date(generatedAt).toLocaleDateString('tr-TR')}</div>
+    </div>
+  </div>
+  <div class="box">
+    <div class="label">Fatura Edilen</div>
+    <div style="font-weight:800; font-size:15px;">${invoiceTitle.trim()}</div>
+    ${invoiceTaxId.trim() ? `<div style="margin-top:4px; color:#475569;">Vergi No: ${invoiceTaxId.trim()}</div>` : ''}
+    ${invoiceAddress.trim() ? `<div style="margin-top:4px; color:#475569;">${invoiceAddress.trim()}</div>` : ''}
+  </div>
+  <table>
+    <thead>
+      <tr><th>Açıklama</th><th>Detay</th><th class="right">Tutar</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>${planTypeLabel(invoicingPayment.plan_type)}</td>
+        <td>${invoicingPayment.duration_months ? invoicingPayment.duration_months + ' Ay' : ''}${invoicingPayment.seats ? ' · ' + invoicingPayment.seats + ' Kişi' : ''}${invoicingPayment.storage_bytes ? ' · Ekstra Depolama' : ''}</td>
+        <td class="right">${Number(invoicingPayment.amount).toLocaleString('tr-TR')} ₺</td>
+      </tr>
+      <tr class="total-row">
+        <td colspan="2">TOPLAM</td>
+        <td class="right">${Number(invoicingPayment.amount).toLocaleString('tr-TR')} ₺</td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>
+        `);
+        printWindow.document.close();
+        printWindow.focus();
+        setTimeout(() => printWindow.print(), 300);
+      }
+
+      setInvoicingPayment(null);
+      await fetchPayments();
+    } catch (err: any) {
+      alert('Fatura oluşturulurken hata: ' + err.message);
+    } finally {
+      setSavingInvoice(false);
+    }
   };
 
   const fetchTickets = async () => {
@@ -1354,7 +1589,35 @@ export default function AdminPanel() {
                 <BookOpen size={18} />
                 <span>ÇED Proje Listesi</span>
               </button>
+              <button
+                onClick={() => setActiveTab('permit_categories')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'permit_categories'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <Shield size={18} />
+                <span>Çevre İzin Listesi</span>
+              </button>
 
+            </nav>
+          </div>
+
+          <div>
+            <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider block mb-3 px-2">Finans</span>
+            <nav className="space-y-1">
+              <button
+                onClick={() => setActiveTab('payments')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'payments'
+                    ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <CreditCard size={18} />
+                <span>Ödemeler & Faturalar</span>
+              </button>
             </nav>
           </div>
 
@@ -1556,6 +1819,332 @@ export default function AdminPanel() {
                       className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg text-sm font-bold"
                     >
                       {savingCed ? 'Kaydediliyor...' : 'Kaydet'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ÇEVRE İZİN LİSTESİ TAB */}
+        {activeTab === 'permit_categories' && (
+          <div className="animate-fadeIn bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800 dark:text-white">Çevre İzin Listesi (EK-1 / EK-2)</h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Bu liste, danışman panelindeki işletme ekleme/düzenleme formlarında "Çevre İzin/Lisans Kapsamı" seçilirken kullanılır.
+                  Yeni bir mevzuat değişikliği geldiğinde buradan madde ekleyebilirsiniz.
+                </p>
+              </div>
+              <button
+                onClick={() => openPermitModal()}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition"
+              >
+                <Plus size={16} /> Yeni Madde Ekle
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <div className="flex items-center bg-gray-100 dark:bg-slate-900 rounded-lg p-1">
+                <button
+                  onClick={() => setPermitStageFilter('ek1')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                    permitStageFilter === 'ek1' ? 'bg-white dark:bg-slate-700 shadow text-indigo-700 dark:text-indigo-400' : 'text-gray-500'
+                  }`}
+                >
+                  EK-1 ({permitCategories.filter((c) => c.stage === 'ek1').length})
+                </button>
+                <button
+                  onClick={() => setPermitStageFilter('ek2')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                    permitStageFilter === 'ek2' ? 'bg-white dark:bg-slate-700 shadow text-indigo-700 dark:text-indigo-400' : 'text-gray-500'
+                  }`}
+                >
+                  EK-2 ({permitCategories.filter((c) => c.stage === 'ek2').length})
+                </button>
+              </div>
+              <input
+                type="text"
+                placeholder="Kod veya başlıkta ara..."
+                value={permitSearch}
+                onChange={(e) => setPermitSearch(e.target.value)}
+                className="flex-1 min-w-[200px] border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+              />
+            </div>
+
+            {loadingPermit ? (
+              <div className="py-12 text-center text-gray-400 text-sm">Yükleniyor...</div>
+            ) : (
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                {permitCategories
+                  .filter((c) => c.stage === permitStageFilter)
+                  .filter(
+                    (c) =>
+                      c.code.toLowerCase().includes(permitSearch.toLowerCase()) ||
+                      c.title.toLowerCase().includes(permitSearch.toLowerCase())
+                  )
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-start justify-between gap-3 p-3 rounded-lg border border-gray-100 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-900/50 transition"
+                    >
+                      <div className="text-sm">
+                        <span className="font-bold text-indigo-700 dark:text-indigo-400 mr-2">{item.code}</span>
+                        <span className="text-gray-700 dark:text-gray-300">{item.title}</span>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => openPermitModal(item)}
+                          className="p-1.5 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30 rounded"
+                          title="Düzenle"
+                        >
+                          <Edit size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePermitCategory(item.id)}
+                          className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded"
+                          title="Sil"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                {permitCategories.filter((c) => c.stage === permitStageFilter).length === 0 && (
+                  <div className="py-12 text-center text-gray-400 text-sm">Bu kategoride henüz madde yok.</div>
+                )}
+              </div>
+            )}
+
+            {editingPermitItem && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-md shadow-2xl">
+                  <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+                    <h3 className="font-bold text-gray-800 dark:text-white">
+                      {editingPermitItem.id === 'new' ? 'Yeni Çevre İzin Maddesi' : 'Maddeyi Düzenle'} · {(editingPermitItem.stage || permitStageFilter).toUpperCase()}
+                    </h3>
+                    <button onClick={() => setEditingPermitItem(null)} className="text-gray-400 hover:text-gray-600">
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Kod</label>
+                      <input
+                        type="text"
+                        value={permitFormCode}
+                        onChange={(e) => setPermitFormCode(e.target.value)}
+                        placeholder="örn: 3.15"
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Başlık</label>
+                      <textarea
+                        value={permitFormTitle}
+                        onChange={(e) => setPermitFormTitle(e.target.value)}
+                        rows={4}
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                  </div>
+                  <div className="p-5 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
+                    <button
+                      onClick={() => setEditingPermitItem(null)}
+                      className="px-4 py-2 border rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-slate-700"
+                    >
+                      İptal
+                    </button>
+                    <button
+                      onClick={handleSavePermitCategory}
+                      disabled={savingPermit}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg text-sm font-bold"
+                    >
+                      {savingPermit ? 'Kaydediliyor...' : 'Kaydet'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ÖDEMELER & FATURALAR TAB */}
+        {activeTab === 'payments' && (
+          <div className="animate-fadeIn space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                <div className="flex items-center gap-2 text-gray-500 text-xs font-bold uppercase mb-1">
+                  <TrendingUp size={14} className="text-green-600" /> Bu Ay Alınan Ödeme
+                </div>
+                <div className="text-2xl font-black text-green-600">
+                  {monthlyRevenue.toLocaleString('tr-TR')} ₺
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">{currentMonthPayments.length} işlem · {now.toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}</div>
+              </div>
+              <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                <div className="flex items-center gap-2 text-gray-500 text-xs font-bold uppercase mb-1">
+                  <CreditCard size={14} className="text-indigo-600" /> Toplam Gelir (Tüm Zamanlar)
+                </div>
+                <div className="text-2xl font-black text-indigo-600">
+                  {totalRevenue.toLocaleString('tr-TR')} ₺
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">{payments.length} işlem</div>
+              </div>
+              <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                <div className="flex items-center gap-2 text-gray-500 text-xs font-bold uppercase mb-1">
+                  <Users size={14} className="text-blue-600" /> Premium Satın Alan
+                </div>
+                <div className="text-2xl font-black text-blue-600">{uniqueBuyers}</div>
+                <div className="text-[10px] text-gray-400 mt-1">Farklı kullanıcı/şirket</div>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
+              <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+                <h2 className="text-lg font-bold text-gray-800 dark:text-white">Ödeme Geçmişi</h2>
+                <select
+                  value={paymentsPlanFilter}
+                  onChange={(e) => setPaymentsPlanFilter(e.target.value)}
+                  className="border rounded-lg p-2 text-xs dark:bg-slate-900 dark:border-slate-700"
+                >
+                  <option value="">Tüm Planlar</option>
+                  <option value="individual">Bireysel Premium</option>
+                  <option value="corporate_new">Kurumsal (Yeni Şirket)</option>
+                  <option value="corporate_renewal">Kurumsal Yenileme</option>
+                  <option value="storage">Ekstra Depolama</option>
+                </select>
+              </div>
+
+              {loadingPayments ? (
+                <div className="py-12 text-center text-gray-400 text-sm">Yükleniyor...</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200 dark:border-slate-700 text-gray-500 text-xs uppercase">
+                        <th className="py-2 pr-3">Tarih</th>
+                        <th className="py-2 pr-3">Kullanıcı / Firma</th>
+                        <th className="py-2 pr-3">Plan</th>
+                        <th className="py-2 pr-3 text-right">Tutar</th>
+                        <th className="py-2 pr-3">Fatura</th>
+                        <th className="py-2 pr-3 text-right">İşlem</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                      {payments
+                        .filter((p) => !paymentsPlanFilter || p.plan_type === paymentsPlanFilter)
+                        .map((p) => (
+                          <tr key={p.id}>
+                            <td className="py-2.5 pr-3 text-xs text-gray-500">
+                              {new Date(p.created_at).toLocaleDateString('tr-TR')}
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <div className="font-bold text-gray-800 dark:text-gray-200">
+                                {p.organization?.name || p.payer?.full_name || 'Bilinmeyen'}
+                              </div>
+                              <div className="text-[11px] text-gray-400">{p.payer?.email}</div>
+                            </td>
+                            <td className="py-2.5 pr-3 text-xs">
+                              <span className="px-2 py-0.5 rounded-full border bg-gray-50 dark:bg-slate-900 border-gray-200 dark:border-slate-700 font-bold">
+                                {planTypeLabel(p.plan_type)}
+                              </span>
+                              {(p.duration_months || p.seats) && (
+                                <div className="text-[10px] text-gray-400 mt-1">
+                                  {p.duration_months ? `${p.duration_months} Ay` : ''}{p.seats ? ` · ${p.seats} Kişi` : ''}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 pr-3 text-right font-bold text-gray-800 dark:text-gray-200">
+                              {Number(p.amount).toLocaleString('tr-TR')} ₺
+                            </td>
+                            <td className="py-2.5 pr-3 text-xs">
+                              {p.invoice_no ? (
+                                <span className="text-green-600 font-bold">{p.invoice_no}</span>
+                              ) : (
+                                <span className="text-gray-400">Oluşturulmadı</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 pr-3 text-right">
+                              <button
+                                onClick={() => openInvoiceModal(p)}
+                                className="inline-flex items-center gap-1 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 px-2.5 py-1.5 rounded-lg text-xs font-bold transition"
+                              >
+                                <Printer size={13} /> {p.invoice_no ? 'Yeniden Yazdır' : 'Fatura Oluştur'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      {payments.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="py-12 text-center text-gray-400 text-sm">
+                            Henüz kayıtlı bir ödeme yok.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {invoicingPayment && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-md shadow-2xl">
+                  <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+                    <h3 className="font-bold text-gray-800 dark:text-white">Fatura Bilgileri</h3>
+                    <button onClick={() => setInvoicingPayment(null)} className="text-gray-400 hover:text-gray-600">
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Fatura Ünvanı</label>
+                      <input
+                        type="text"
+                        value={invoiceTitle}
+                        onChange={(e) => setInvoiceTitle(e.target.value)}
+                        placeholder="Şirket / kişi adı"
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Vergi No / TCKN</label>
+                      <input
+                        type="text"
+                        value={invoiceTaxId}
+                        onChange={(e) => setInvoiceTaxId(e.target.value)}
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Adres</label>
+                      <textarea
+                        value={invoiceAddress}
+                        onChange={(e) => setInvoiceAddress(e.target.value)}
+                        rows={3}
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div className="text-xs text-gray-400 bg-gray-50 dark:bg-slate-900 p-2.5 rounded-lg">
+                      Plan: <b>{planTypeLabel(invoicingPayment.plan_type)}</b> · Tutar: <b>{Number(invoicingPayment.amount).toLocaleString('tr-TR')} ₺</b>
+                    </div>
+                  </div>
+                  <div className="p-5 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
+                    <button
+                      onClick={() => setInvoicingPayment(null)}
+                      className="px-4 py-2 border rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-slate-700"
+                    >
+                      İptal
+                    </button>
+                    <button
+                      onClick={handleGenerateInvoice}
+                      disabled={savingInvoice}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg text-sm font-bold flex items-center gap-1.5"
+                    >
+                      <Printer size={14} /> {savingInvoice ? 'Oluşturuluyor...' : 'Fatura Oluştur ve Yazdır'}
                     </button>
                   </div>
                 </div>
@@ -2467,7 +3056,7 @@ export default function AdminPanel() {
                         navigator.clipboard.writeText(GOOGLE_SCRIPT_CODE);
                         alert('Google Apps Script kodu başarıyla panoya kopyalandı!');
                       }}
-                      className="bg-indigo-600 hover:bg-indigo-750 text-white font-bold py-3 px-4 rounded-xl text-xs transition flex items-center justify-center gap-1.5 w-full shadow-md hover:shadow-lg mt-2 cursor-pointer"
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-xl text-xs transition flex items-center justify-center gap-1.5 w-full shadow-md hover:shadow-lg mt-2 cursor-pointer"
                     >
                       📋 Google Script Kodunu Kopyala
                     </button>

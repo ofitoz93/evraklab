@@ -110,7 +110,15 @@ export default function Pricing() {
         const combined = { ...profileData, organization: orgData };
         setProfile(combined);
 
-        if (orgData) {
+        if (profileData.role === 'premium_individual') {
+          // Bireysel premium hesaplar, Premium Panel özellikleri (Saha Denetimleri,
+          // Atık Yönetimi, Mevzuat Takip, Aksiyon Takip) çalışabilsin diye kendilerine
+          // özel "kişisel" bir organizations kaydına bağlı olabilir (bkz.
+          // executePurchaseMock). Bu org kurumsal bir şirket DEĞİLDİR, bu yüzden
+          // orgData var olsa bile burada her zaman bireysel plan gösterilir.
+          setViewMode('dashboard');
+          setSelectedPlan('individual');
+        } else if (orgData) {
           setViewMode('dashboard');
           setTargetSeats(orgData.member_limit);
           const { count } = await supabase
@@ -119,9 +127,6 @@ export default function Pricing() {
             .eq('organization_id', profileData.organization_id);
           setActiveMembersCount(count || 1);
           setSelectedPlan('corporate');
-        } else if (profileData.role === 'premium_individual') {
-          setViewMode('dashboard');
-          setSelectedPlan('individual');
         } else {
           setViewMode('selection');
         }
@@ -200,6 +205,8 @@ export default function Pricing() {
     setShowIndToCorpWarning(false);
     setProcessing(true);
 
+    const totalAmount = calculateTotal();
+
     try {
       if (purchaseType === 'storage') {
         const pack = PRICING_CONFIG.storage[selectedStorageIndex];
@@ -214,6 +221,15 @@ export default function Pricing() {
         });
 
         if (error) throw error;
+
+        await supabase.from('subscription_payments').insert({
+          user_id: user.id,
+          organization_id: profile?.organization_id || null,
+          plan_type: 'storage',
+          amount: totalAmount,
+          storage_bytes: totalBytesToAdd,
+        });
+
         alert(`✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı.`);
       } else {
         // subscription
@@ -255,6 +271,15 @@ export default function Pricing() {
 
             if (profErr) throw profErr;
 
+            await supabase.from('subscription_payments').insert({
+              user_id: user.id,
+              organization_id: newOrg.id,
+              plan_type: 'corporate_new',
+              amount: totalAmount,
+              duration_months: addDuration,
+              seats: targetSeats,
+            });
+
             alert(`✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.`);
           } else {
             // Dashboard mode - extend subscription and seats
@@ -270,20 +295,105 @@ export default function Pricing() {
 
             if (orgErr) throw orgErr;
 
+            // Abonelik süresi dolduğunda 'normal' rolüne düşürülen ekip
+            // üyelerini (previous_role kaydı varsa) eski rollerine geri yükle.
+            await supabase.rpc('restore_org_roles', { org_id: profile.organization_id });
+
+            await supabase.from('subscription_payments').insert({
+              user_id: user.id,
+              organization_id: profile.organization_id,
+              plan_type: 'corporate_renewal',
+              amount: totalAmount,
+              duration_months: addDuration,
+              seats: targetSeats,
+            });
+
             alert(`✅ Kurumsal Aboneliğiniz Başarıyla Güncellendi!\nŞirket personel limitiniz ${targetSeats} kişiye yükseltildi ve abonelik süreniz ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar uzatıldı.`);
           }
         } else {
           // individual
+          // Premium Panel özellikleri (Saha Denetimleri, Atık Yönetimi, Mevzuat
+          // Takip, Aksiyon Takip) organizasyon/firma kimliğine ihtiyaç duyduğu
+          // için, bireysel premium hesaba kendine özel (danışmanlık firması
+          // OLMAYAN) küçük bir "kişisel organizasyon" ve bu organizasyona bağlı,
+          // kendi adını taşıyan bir "kişisel firma" (consultant_clients) kaydı
+          // otomatik tanımlanır/yeniden kullanılır. Zaten varsa (yenileme) yeni
+          // kayıt oluşturulmaz.
+          let personalOrgId: string | null = profile?.organization_id || null;
+          const personalName = profile?.full_name?.trim() || user.email;
+          const isFirstPersonalOrg = !personalOrgId;
+
+          if (isFirstPersonalOrg) {
+            const { data: newPersonalOrg, error: personalOrgErr } = await supabase
+              .from('organizations')
+              .insert([
+                {
+                  name: personalName,
+                  member_limit: 1,
+                  is_environmental_consultant: false,
+                  is_personal: true,
+                },
+              ])
+              .select()
+              .single();
+            if (personalOrgErr) throw personalOrgErr;
+            personalOrgId = newPersonalOrg.id;
+          }
+
+          // Rolü/organizasyonu önce güncelliyoruz: consultant_clients RLS
+          // politikası 'premium_individual' rolünü şart koşuyor, bu yüzden
+          // "kişisel firma" kaydı ancak rol güncellendikten sonra eklenebilir.
           const { error: profErr } = await supabase
             .from('profiles')
             .update({
               role: 'premium_individual',
-              organization_id: null,
+              organization_id: personalOrgId,
               subscription_end_date: finalDate,
             })
             .eq('id', user.id);
 
           if (profErr) throw profErr;
+
+          if (isFirstPersonalOrg) {
+            // Not: kayıt kasıtlı olarak kullanıcının kendi adıyla değil "Lokasyon 1"
+            // adıyla oluşturuluyor - Aksiyon/Görüş/Mevzuat gibi yerlerdeki seçim
+            // listelerinde "kendi adı soyadı" görünmesin diye. Kullanıcı Premium
+            // Panel > Dokümantasyon > Tanımlar'dan kendi lokasyon adlarını
+            // tanımladıkça bu listeye ek kayıtlar (aynı mekanizmayla) eklenir.
+            const { error: personalClientErr } = await supabase
+              .from('consultant_clients')
+              .insert([
+                {
+                  consultant_company_id: personalOrgId,
+                  name: 'Lokasyon 1',
+                },
+              ]);
+            if (personalClientErr) throw personalClientErr;
+
+            // consultant_clients kaydıyla birebir aynı isimde bir
+            // user_definitions (category='location') kaydı da oluşturuyoruz;
+            // Evrak Yükle / Belge Ekle sayfalarındaki "Lokasyon" seçimi bu
+            // tabloyu okuyor, ikisi senkron olmazsa listeler eşleşmez.
+            const { error: personalLocDefErr } = await supabase
+              .from('user_definitions')
+              .insert([
+                {
+                  user_id: user.id,
+                  category: 'location',
+                  label: 'Lokasyon 1',
+                  organization_id: personalOrgId,
+                },
+              ]);
+            if (personalLocDefErr) throw personalLocDefErr;
+          }
+
+          await supabase.from('subscription_payments').insert({
+            user_id: user.id,
+            organization_id: personalOrgId,
+            plan_type: 'individual',
+            amount: totalAmount,
+            duration_months: addDuration,
+          });
 
           alert(`✅ Bireysel Premium Aboneliğiniz Başarıyla Aktifleştirildi!\nTüm premium özellikler ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar hesabınıza tanımlandı.`);
         }

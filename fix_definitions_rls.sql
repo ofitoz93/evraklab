@@ -47,7 +47,7 @@ FOR SELECT TO authenticated USING (
         SELECT 1 FROM public.profiles manager
         WHERE manager.id = auth.uid()
         AND manager.organization_id = user_definitions.organization_id
-        AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin')
+        AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin', 'premium_individual')
       )
       OR
       -- 2. Normal staff can only view definitions assigned to themselves
@@ -69,7 +69,7 @@ FOR INSERT TO authenticated WITH CHECK (
       SELECT 1 FROM public.profiles target
       JOIN public.profiles manager ON manager.organization_id = target.organization_id
       WHERE manager.id = auth.uid()
-      AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin')
+      AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin', 'premium_individual')
       AND target.id = user_definitions.user_id
       AND manager.organization_id = user_definitions.organization_id
     )
@@ -89,7 +89,7 @@ FOR UPDATE TO authenticated USING (
       SELECT 1 FROM public.profiles target
       JOIN public.profiles manager ON manager.organization_id = target.organization_id
       WHERE manager.id = auth.uid()
-      AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin')
+      AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin', 'premium_individual')
       AND target.id = user_definitions.user_id
       AND manager.organization_id = user_definitions.organization_id
     )
@@ -105,7 +105,7 @@ FOR UPDATE TO authenticated USING (
       SELECT 1 FROM public.profiles target
       JOIN public.profiles manager ON manager.organization_id = target.organization_id
       WHERE manager.id = auth.uid()
-      AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin')
+      AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin', 'premium_individual')
       AND target.id = user_definitions.user_id
       AND manager.organization_id = user_definitions.organization_id
     )
@@ -127,7 +127,7 @@ FOR DELETE TO authenticated USING (
         SELECT 1 FROM public.profiles target
         JOIN public.profiles manager ON manager.organization_id = target.organization_id
         WHERE manager.id = auth.uid()
-        AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin')
+        AND manager.role IN ('premium_corporate', 'corporate_chief', 'admin', 'system_admin', 'premium_individual')
         AND target.id = user_definitions.user_id
         AND manager.organization_id = user_definitions.organization_id
       )

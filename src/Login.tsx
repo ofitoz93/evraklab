@@ -283,7 +283,7 @@ export default function Login() {
 
               <button
                 disabled={savingPassword}
-                className="w-full bg-teal-600 dark:bg-teal-500 text-white font-bold py-3 rounded-xl hover:bg-teal-700 dark:hover:bg-teal-650 transition duration-200 flex items-center justify-center gap-2 disabled:opacity-70 shadow-lg shadow-teal-600/20"
+                className="w-full bg-teal-600 dark:bg-teal-500 text-white font-bold py-3 rounded-xl hover:bg-teal-700 dark:hover:bg-teal-700 transition duration-200 flex items-center justify-center gap-2 disabled:opacity-70 shadow-lg shadow-teal-600/20"
               >
                 {savingPassword ? 'Şifre Kaydediliyor...' : 'Şifreyi Kaydet ve Giriş Yap'}
               </button>

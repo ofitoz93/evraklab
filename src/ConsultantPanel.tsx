@@ -51,7 +51,6 @@ import type { AreaPoint } from './MapPickerModal';
 import { Link } from 'react-router-dom';
 import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
-import { EK1_ARTICLES, EK2_ARTICLES } from './permitArticles';
 import { parseLegislationText } from './parserUtils';
 import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
@@ -82,6 +81,13 @@ interface Client {
 }
 
 interface CedCategory {
+  id: string;
+  stage: 'ek1' | 'ek2';
+  code: string;
+  title: string;
+}
+
+interface PermitCategory {
   id: string;
   stage: 'ek1' | 'ek2';
   code: string;
@@ -676,6 +682,7 @@ export default function ConsultantPanel() {
   const [actionsFilterClient, setActionsFilterClient] = useState('');
   const [actionsFilterAssignee, setActionsFilterAssignee] = useState('');
   const [actionsFilterStatus, setActionsFilterStatus] = useState('');
+  const [actionsSubTab, setActionsSubTab] = useState<'pending' | 'completed'>('pending');
   
   // Yeni Aksiyon Oluşturma Formu
   const [newActionTitle, setNewActionTitle] = useState('');
@@ -890,6 +897,21 @@ export default function ConsultantPanel() {
     setCedCategories(data || []);
   };
 
+  // --- ÇEVRE İZİN VE LİSANS (EK-1/EK-2) FAALİYET LİSTESİ, ÇED'den bağımsız ---
+  const [permitCategories, setPermitCategories] = useState<PermitCategory[]>([]);
+
+  const fetchPermitCategories = async () => {
+    const { data, error } = await supabase
+      .from('environmental_permit_categories')
+      .select('id, stage, code, title')
+      .order('sort_order', { ascending: true });
+    if (error) {
+      console.error('Çevre izin kategorileri çekilirken hata:', error.message);
+      return;
+    }
+    setPermitCategories(data || []);
+  };
+
   const handleToggleNewClientCedArticle = (code: string) => {
     const current = newClient.ced_articles || [];
     const updated = current.includes(code) ? current.filter((c) => c !== code) : [...current, code];
@@ -919,6 +941,7 @@ export default function ConsultantPanel() {
   const [showEditClientMap, setShowEditClientMap] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [orgData, setOrgData] = useState<any>(null);
+  const [mySubEndDate, setMySubEndDate] = useState<string | null>(null);
   const [savingOrg, setSavingOrg] = useState(false);
   const [showEditClient, setShowEditClient] = useState(false);
   const [editingClient, setEditingClient] = useState<any>(null);
@@ -1288,6 +1311,13 @@ export default function ConsultantPanel() {
     });
 
     const activeMemberIds = orgProfiles.map(m => m.id);
+    // Sahibin adını embed edilen "user" ilişkisinden değil, doğrudan
+    // orgProfiles listesinden (user_id -> full_name) çözüyoruz; embed bazen
+    // (ör. bireysel premium hesaplarda) boş dönebiliyor ve "Bilinmeyen"
+    // gösteriyordu.
+    const profileNameById = new Map<string, string>(
+      orgProfiles.map(m => [m.id, m.full_name])
+    );
 
     labelGroups.forEach((rows, labelKey) => {
       const rowUserIds = rows.map(r => r.user_id);
@@ -1310,7 +1340,7 @@ export default function ConsultantPanel() {
             ...r,
             isGroup: false,
             rowIds: [r.id],
-            ownerName: r.user?.full_name || 'Bilinmeyen'
+            ownerName: profileNameById.get(r.user_id) || r.user?.full_name || 'Bilinmeyen'
           });
         });
       }
@@ -1324,12 +1354,12 @@ export default function ConsultantPanel() {
     try {
       const { data: orgProfiles } = await supabase
         .from('profiles')
-        .select('id')
+        .select('id, full_name')
         .eq('organization_id', orgId);
 
       const { data: defs, error } = await supabase
         .from('user_definitions')
-        .select('*, user:profiles!user_id(full_name)')
+        .select('*')
         .eq('organization_id', orgId)
         .order('created_at', { ascending: true });
 
@@ -1659,6 +1689,23 @@ export default function ConsultantPanel() {
         });
 
       if (error) throw error;
+
+      // Bireysel premium hesaplarda "Lokasyon" tanımı, Aksiyon/Görüş/Mevzuat/
+      // Zorunlu Belge gibi her yerde kullanılan "İşletme" (consultant_clients)
+      // kaydına da otomatik yansır - bu hesaplarda gerçek bir müşteri firma
+      // kavramı olmadığı için kendi tanımladığı lokasyon bu rolü üstlenir.
+      if (userRole === 'premium_individual' && orgId) {
+        const label = newDefLocLabel.trim();
+        const alreadyClient = clients.some(c => c.name.toLowerCase() === label.toLowerCase());
+        if (!alreadyClient) {
+          await supabase.from('consultant_clients').insert({
+            consultant_company_id: orgId,
+            name: label,
+          });
+        }
+        await fetchClients(orgId, userRole, userId);
+      }
+
       setNewDefLocLabel('');
       await fetchDefinitionsTab();
     } catch (err: any) {
@@ -2173,13 +2220,14 @@ export default function ConsultantPanel() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role, organization_id, extra_permissions')
+        .select('role, organization_id, extra_permissions, subscription_end_date')
         .eq('id', session.user.id)
         .single();
 
         if (profile) {
         setUserRole(profile.role);
         setOrgId(profile.organization_id);
+        setMySubEndDate(profile.subscription_end_date || null);
         const perms = profile.extra_permissions || {};
         setCurrentUserPerms(perms);
 
@@ -2200,6 +2248,10 @@ export default function ConsultantPanel() {
           setLegSubTab('tracking');
         }
 
+        if (profile.role === 'premium_individual') {
+          setActiveTab('inspections');
+        }
+
         if (profile.organization_id) {
           const { data: org } = await supabase.from('organizations').select('*').eq('id', profile.organization_id).single();
           setOrgData(org);
@@ -2210,6 +2262,7 @@ export default function ConsultantPanel() {
           fetchReports(profile.organization_id, profile.role, session.user.id, perms),
           fetchChangeRequests(profile.organization_id, profile.role, session.user.id, perms),
           fetchCedCategories(),
+          fetchPermitCategories(),
         ]);
       }
     } catch (err) {
@@ -2232,9 +2285,13 @@ export default function ConsultantPanel() {
       setAssignedGlobalLegislations(approvedCompLegs.map((cl: any) => cl.regulation).filter(Boolean));
       setPendingCompanyLegislations(pendingCompLegs);
 
+      // Sadece gerçek sistem (admin) mevzuatları - company_id NULL olanlar.
+      // Önceden filtre yoktu ve TÜM firmaların özel mevzuatları burada
+      // (yanlışlıkla "Sistem Mevzuat Havuzu" başlığı altında) görünüyordu.
       const { data: allRegs, error: errGlobal } = await supabase
         .from('pdf_regulations')
         .select('*')
+        .is('company_id', null)
         .order('created_at', { ascending: false });
       if (!errGlobal && allRegs) {
         setAllGlobalRegulations(allRegs);
@@ -2287,7 +2344,7 @@ export default function ConsultantPanel() {
         .select('*, requester:profiles!requested_by(full_name, email), client:consultant_clients!client_id(name), target_regulation:pdf_regulations!target_regulation_id(title)')
         .order('created_at', { ascending: false });
 
-      if (userRole === 'premium_corporate' || userRole === 'corporate_chief') {
+      if (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') {
         if (clientIds.length > 0) {
           query = query.or(`organization_id.eq.${orgId},client_id.in.(${clientIds.join(',')})`);
         } else {
@@ -2496,7 +2553,7 @@ export default function ConsultantPanel() {
       if (!window.confirm('Bu mevzuatta hiç madde bulunmuyor. Yine de kaydetmek istiyor musunuz?')) return;
     }
 
-    const isManagerRole = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+    const isManagerRole = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual';
 
     setSavingLegislation(true);
     try {
@@ -4641,8 +4698,15 @@ export default function ConsultantPanel() {
 
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
 
+  const panelTitle =
+    userRole === 'corporate_chief'
+      ? 'Şef Paneli'
+      : userRole === 'corporate_staff'
+        ? 'Danışman İşlemleri'
+        : 'Yönetici Paneli';
+
   const isAdminOrChief = userRole === 'admin' || userRole === 'system_admin' || userRole === 'corporate_chief' || userRole === 'premium_corporate';
-  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'system_admin';
+  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual' || userRole === 'admin' || userRole === 'system_admin';
   
   // Granular Permissions for Chief / Staff / Admins
   const canViewClients = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_clients !== false);
@@ -4650,7 +4714,7 @@ export default function ConsultantPanel() {
   const canEditClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients);
   const canAssignClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
   const canDeleteClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
-  const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
+  const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
   const canViewTeam = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
 
 
@@ -4747,7 +4811,7 @@ export default function ConsultantPanel() {
           id: 'definitions',
           label: 'Belge & Şablon Tanımları',
           icon: <SettingsIcon size={14} />,
-          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff'
+          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual' || userRole === 'corporate_staff'
         },
       ]
     },
@@ -4931,7 +4995,9 @@ export default function ConsultantPanel() {
   };
 
   const isPremiumActive = userRole === 'admin' || userRole === 'system_admin' ||
-    (!!orgData?.subscription_end_date && new Date(orgData.subscription_end_date) > new Date());
+    (userRole === 'premium_individual'
+      ? (!!mySubEndDate && new Date(mySubEndDate) > new Date())
+      : (!!orgData?.subscription_end_date && new Date(orgData.subscription_end_date) > new Date()));
 
   return (
     <div className="space-y-6">
@@ -4959,7 +5025,7 @@ export default function ConsultantPanel() {
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Scale className="text-blue-600" /> Danışman İşlemleri
+            <Scale className="text-blue-600" /> {panelTitle}
           </h1>
           <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
         </div>
@@ -6165,7 +6231,7 @@ export default function ConsultantPanel() {
       {activeTab === 'definitions' && (
         <div className="space-y-6 animate-fadeIn pb-12">
           {/* Sub tabs configuration for Managers/Sahip */}
-          {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+          {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
             <div className="flex border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-slate-700 gap-2 mb-6">
               <button
                 onClick={() => setDefSubTab('standard')}
@@ -6253,7 +6319,7 @@ export default function ConsultantPanel() {
                         <div>
                           <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">{type.label}</span>
                           <div className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1">
-                            <User size={10} /> Sahibi: {type.user?.full_name || 'Bilinmeyen'}
+                            <User size={10} /> Sahibi: {type.ownerName || 'Bilinmeyen'}
                           </div>
                         </div>
                         {userRole !== 'corporate_staff' && (
@@ -6377,7 +6443,7 @@ export default function ConsultantPanel() {
                                   )}
                                 </div>
                                 <div className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1">
-                                  <User size={10} /> Sahibi: {loc.user?.full_name || 'Bilinmeyen'}
+                                  <User size={10} /> Sahibi: {loc.ownerName || 'Bilinmeyen'}
                                 </div>
                               </div>
                               {!isBusiness && (
@@ -6410,20 +6476,20 @@ export default function ConsultantPanel() {
                     <Building size={22} />
                   </div>
                   <div>
-                    <h2 className="text-lg font-bold">İşletme Seçimi</h2>
-                    <p className="text-xs text-gray-400">Hangi işletmeye zorunlu belge atayacağınızı seçin</p>
+                    <h2 className="text-lg font-bold">{userRole === 'premium_individual' ? 'Lokasyon Seçimi' : 'İşletme Seçimi'}</h2>
+                    <p className="text-xs text-gray-400">{userRole === 'premium_individual' ? 'Hangi lokasyona zorunlu belge atayacağınızı seçin' : 'Hangi işletmeye zorunlu belge atayacağınızı seçin'}</p>
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">İşletme</label>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">{userRole === 'premium_individual' ? 'Lokasyon' : 'İşletme'}</label>
                   <select
                     value={selectedClientForReqDocs}
                     onChange={(e) => setSelectedClientForReqDocs(e.target.value)}
                     className="w-full p-3 border rounded-xl bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white font-semibold"
                   >
-                    <option value="">-- İşletme Seçin --</option>
-                    <option value="all">Tüm İşletmeler (Ortak Tanım)</option>
+                    <option value="">{userRole === 'premium_individual' ? '-- Lokasyon Seçin --' : '-- İşletme Seçin --'}</option>
+                    <option value="all">{userRole === 'premium_individual' ? 'Tüm Lokasyonlar (Ortak Tanım)' : 'Tüm İşletmeler (Ortak Tanım)'}</option>
                     {clients.map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
@@ -6447,12 +6513,12 @@ export default function ConsultantPanel() {
 
                 {!selectedClientForReqDocs ? (
                   <div className="text-center py-12 text-sm text-gray-400 italic">
-                    Lütfen zorunlu belgeleri düzenlemek için sol panelden bir işletme seçin.
+                    {userRole === 'premium_individual' ? 'Lütfen zorunlu belgeleri düzenlemek için sol panelden bir lokasyon seçin.' : 'Lütfen zorunlu belgeleri düzenlemek için sol panelden bir işletme seçin.'}
                   </div>
                 ) : (
                   <div className="space-y-4">
                     <div className="text-xs font-semibold px-4 py-2.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 rounded-lg">
-                      Seçilen Hedef: <span className="font-bold">{selectedClientForReqDocs === 'all' ? 'Tüm İşletmeler (Ortak Tanım)' : (clients.find(c => c.id === selectedClientForReqDocs)?.name || '')}</span>
+                      Seçilen Hedef: <span className="font-bold">{selectedClientForReqDocs === 'all' ? (userRole === 'premium_individual' ? 'Tüm Lokasyonlar (Ortak Tanım)' : 'Tüm İşletmeler (Ortak Tanım)') : (clients.find(c => c.id === selectedClientForReqDocs)?.name || '')}</span>
                     </div>
 
                     <div className="border border-gray-100 dark:border-slate-700 rounded-xl divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto">
@@ -6641,13 +6707,13 @@ export default function ConsultantPanel() {
           <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
             <div>
               <h2 className="text-xl font-bold flex items-center gap-2">
-                <Scale className="text-teal-600" /> Danışman İşlemleri
+                <Scale className="text-teal-600" /> Mevzuat Takip
               </h2>
               <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
                 Yönetmelik ve kanunları inceleyin, hizmet verdiğiniz işletmelere atama yapın ve maddeleri özelleştirin.
               </p>
             </div>
-            {legSubTab === 'pool' && userRole !== 'premium_corporate' && (
+            {legSubTab === 'pool' && userRole !== 'premium_corporate' && userRole !== 'premium_individual' && (
               <button
                 onClick={() => {
                   setSelectedReqClientId('');
@@ -6675,7 +6741,7 @@ export default function ConsultantPanel() {
             >
               <BookOpen size={14} /> Mevzuat Havuzu (Sistem & Firma)
             </button>
-            {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin') && (
+            {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual' || userRole === 'admin') && (
               <button
                 onClick={() => setLegSubTab('assignments')}
                 className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
@@ -6794,12 +6860,12 @@ export default function ConsultantPanel() {
                       className="bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 transition shadow-sm"
                     >
                       <Plus size={10} />
-                      {(userRole === 'premium_corporate' || userRole === 'corporate_chief') ? 'Özel Mevzuat Ekle' : 'Mevzuat Talebi Oluştur (Yeni Mevzuat)'}
+                      {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') ? 'Özel Mevzuat Ekle' : 'Mevzuat Talebi Oluştur (Yeni Mevzuat)'}
                     </button>
                   </div>
 
                   {/* Yönetici/şef için onay bekleyen (personel tarafından eklenen) özel mevzuatlar */}
-                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && pendingCompanyLegislations.length > 0 && (
+                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && pendingCompanyLegislations.length > 0 && (
                     <div className="bg-amber-50 dark:bg-amber-950/10 border border-amber-200 dark:border-amber-900/40 rounded-xl p-3 space-y-2">
                       <h4 className="text-[11px] font-black text-amber-700 dark:text-amber-400 uppercase tracking-wide">
                         ⚠️ Onay Bekleyen Özel Mevzuatlar ({pendingCompanyLegislations.length})
@@ -6852,7 +6918,7 @@ export default function ConsultantPanel() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {(userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                            {(userRole === 'premium_corporate' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
                               <>
                                 <button
                                   onClick={() => {
@@ -6932,7 +6998,7 @@ export default function ConsultantPanel() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {(userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                            {(userRole === 'premium_corporate' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
                               <button
                                 onClick={() => handleRemoveClientRegulation(cr.id, cr.title)}
                                 className="bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold px-3 py-1.5 rounded-lg transition border border-red-200 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400"
@@ -7047,7 +7113,7 @@ export default function ConsultantPanel() {
                       Maddeler & Uyum
                     </h3>
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      {selectedClientRegulation && (userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                      {selectedClientRegulation && (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
                         <button
                           type="button"
                           onClick={handleRequestNotesForSelectedArticles}
@@ -7057,7 +7123,7 @@ export default function ConsultantPanel() {
                           📌 Seçilenler İçin Aksiyon Aç ({selectedArticleIdsForAction.length})
                         </button>
                       )}
-                      {selectedClientRegulation && (userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                      {selectedClientRegulation && (userRole === 'premium_corporate' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
                         <button
                           type="button"
                           onClick={() => {
@@ -7144,7 +7210,7 @@ export default function ConsultantPanel() {
                                 <div className="flex justify-between items-start gap-2">
                                   <div>
                                     <div className="flex items-center gap-2 flex-wrap">
-                                      {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+                                      {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
                                         <input
                                           type="checkbox"
                                           checked={selectedArticleIdsForAction.includes(art.id)}
@@ -7156,7 +7222,7 @@ export default function ConsultantPanel() {
                                       <div className="font-bold text-xs text-slate-755 dark:text-slate-200">
                                         {art.article_no} {art.title ? `- ${art.title}` : ''}
                                       </div>
-                                      {(userRole === 'premium_corporate' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
+                                      {(userRole === 'premium_corporate' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_edit_clients)) && (
                                         <div className="flex items-center gap-1.5 ml-2">
                                           <button
                                             type="button"
@@ -7263,7 +7329,7 @@ export default function ConsultantPanel() {
                                 {/* Aksiyon durumu: kısa gösterge - detaylar & sonuç sadece Aksiyon Takip sekmesinde */}
                                 {art.is_mandatory && (() => {
                                   const artAction = articleActions.find((a: any) => a.article_id === art.id || (Array.isArray(a.article_ids) && a.article_ids.includes(art.id)));
-                                  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+                                  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual';
 
                                   if (artAction) {
                                     return (
@@ -7763,7 +7829,7 @@ export default function ConsultantPanel() {
                 Firma içinden yöneticinize iletilen mevzuat ve güncelleme taleplerini buradan inceleyebilirsiniz.
               </p>
             </div>
-            {userRole !== 'premium_corporate' && (
+            {userRole !== 'premium_corporate' && userRole !== 'premium_individual' && (
               <button
                 onClick={() => {
                   setSelectedReqClientId('');
@@ -7831,7 +7897,7 @@ export default function ConsultantPanel() {
                           }}
                           className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1.5 whitespace-nowrap"
                         >
-                          <Eye size={12} /> İncele{req.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief') ? ' ve Cevapla' : ''}
+                          <Eye size={12} /> İncele{req.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') ? ' ve Cevapla' : ''}
                         </button>
                       </div>
                     )}
@@ -7856,7 +7922,7 @@ export default function ConsultantPanel() {
                 Mevzuat maddelerine ait mevcut durum taleplerini ve genel firma aksiyonlarını buradan takip edebilirsiniz.
               </p>
             </div>
-            {(userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+            {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
               <button
                 onClick={() => {
                   setNewActionTitle('');
@@ -7873,6 +7939,30 @@ export default function ConsultantPanel() {
                 <Plus size={16} /> Yeni Aksiyon Oluştur
               </button>
             )}
+          </div>
+
+          {/* Bekleyen / Tamamlanan Sekmeleri */}
+          <div className="flex flex-wrap border-b border-gray-200 dark:border-slate-700 gap-2 bg-white dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-slate-700">
+            <button
+              onClick={() => setActionsSubTab('pending')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                actionsSubTab === 'pending'
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <Clock size={14} /> Bekleyen Aksiyonlar
+            </button>
+            <button
+              onClick={() => setActionsSubTab('completed')}
+              className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
+                actionsSubTab === 'completed'
+                  ? 'bg-green-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+              }`}
+            >
+              <CheckCircle size={14} /> Tamamlanan Aksiyonlar
+            </button>
           </div>
 
           {/* Filters Bar */}
@@ -7934,18 +8024,24 @@ export default function ConsultantPanel() {
                   return true;
                 });
 
-                if (filtered.length === 0) {
+                const activeList = filtered.filter((act) =>
+                  actionsSubTab === 'pending' ? act.status !== 'approved' : act.status === 'approved'
+                );
+
+                if (activeList.length === 0) {
                   return (
                     <div className="md:col-span-2 bg-white dark:bg-slate-800 p-12 rounded-2xl border border-gray-200 dark:border-slate-700 text-center text-gray-500">
                       <CheckCircle className="mx-auto mb-3 opacity-20" size={48} />
-                      <p className="font-bold">Açık veya eşleşen bir aksiyon bulunamadı.</p>
+                      <p className="font-bold">
+                        {actionsSubTab === 'pending' ? 'Bekleyen aksiyon bulunmuyor.' : 'Tamamlanan aksiyon bulunmuyor.'}
+                      </p>
                     </div>
                   );
                 }
 
-                return filtered.map((act) => {
+                return activeList.map((act) => {
                   const isAssignee = act.assigned_to === userId;
-                  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+                  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual';
                   const isCreator = act.created_by === userId;
                   
                   return (
@@ -8150,7 +8246,7 @@ export default function ConsultantPanel() {
               onClick={() => setInspectionsSubTab('points')}
               className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
                 inspectionsSubTab === 'points'
-                  ? 'bg-teal-650 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
               }`}
             >
@@ -8160,7 +8256,7 @@ export default function ConsultantPanel() {
               onClick={() => setInspectionsSubTab('forms')}
               className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
                 inspectionsSubTab === 'forms'
-                  ? 'bg-teal-655 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
               }`}
             >
@@ -8170,7 +8266,7 @@ export default function ConsultantPanel() {
               onClick={() => setInspectionsSubTab('analytics')}
               className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition ${
                 inspectionsSubTab === 'analytics'
-                  ? 'bg-teal-650 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
               }`}
             >
@@ -9179,7 +9275,7 @@ export default function ConsultantPanel() {
       {showSubmissionsModal && selectedInspectionPoint && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
           <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
-            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-teal-650 text-white">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-teal-600 text-white">
               <div>
                 <h3 className="font-bold text-lg flex items-center gap-2">
                   <Clock size={20} />
@@ -9454,9 +9550,9 @@ export default function ConsultantPanel() {
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
                   value={reqNotesAssigneeId}
                   onChange={(e) => setReqNotesAssigneeId(e.target.value)}
-                  disabled={userRole === 'corporate_staff'}
+                  disabled={userRole === 'corporate_staff' || userRole === 'premium_individual'}
                 >
-                  {userRole === 'corporate_staff' ? (
+                  {(userRole === 'corporate_staff' || userRole === 'premium_individual') ? (
                     <option value={userId}>Kendim ({teamMembers.find(m => m.id === userId)?.full_name || 'Ben'})</option>
                   ) : (
                     <>
@@ -9713,7 +9809,7 @@ export default function ConsultantPanel() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Hedef Müşteri Firma *</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">{userRole === 'premium_individual' ? 'Lokasyon *' : 'Hedef Müşteri Firma *'}</label>
                 <select
                   required
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
@@ -9724,7 +9820,7 @@ export default function ConsultantPanel() {
                     fetchClientPortalEmails(e.target.value);
                   }}
                 >
-                  <option value="">-- Müşteri Seçin --</option>
+                  <option value="">{userRole === 'premium_individual' ? '-- Lokasyon Seçin --' : '-- Müşteri Seçin --'}</option>
                   {clients.map((c) => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
@@ -9757,9 +9853,9 @@ export default function ConsultantPanel() {
                   className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
                   value={newActionAssigneeId}
                   onChange={(e) => setNewActionAssigneeId(e.target.value)}
-                  disabled={userRole === 'corporate_staff'}
+                  disabled={userRole === 'corporate_staff' || userRole === 'premium_individual'}
                 >
-                  {userRole === 'corporate_staff' ? (
+                  {(userRole === 'corporate_staff' || userRole === 'premium_individual') ? (
                     <option value={userId}>Kendim ({teamMembers.find(m => m.id === userId)?.full_name || 'Ben'})</option>
                   ) : (
                     <>
@@ -10237,7 +10333,7 @@ export default function ConsultantPanel() {
                 </div>
               )}
 
-              {reviewingRequest.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+              {reviewingRequest.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
                 <div>
                   <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Onay/Red Notu (Opsiyonel)</label>
                   <textarea
@@ -10251,7 +10347,7 @@ export default function ConsultantPanel() {
               )}
             </div>
 
-            {reviewingRequest.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief') && (
+            {reviewingRequest.status === 'pending' && (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
               <div className="flex gap-3 pt-4 mt-2 border-t border-gray-100 dark:border-slate-700">
                 <button
                   type="button"
@@ -10444,7 +10540,7 @@ export default function ConsultantPanel() {
                   />
                   <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
                     {(() => {
-                      const articlesList = newClient.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                      const articlesList = permitCategories.filter(c => c.stage === (newClient.permit_stage || 'ek1'));
                       const filtered = articlesList.filter(art =>
                         art.code.toLowerCase().includes(newClientArticleSearch.toLowerCase()) ||
                         art.title.toLowerCase().includes(newClientArticleSearch.toLowerCase())
@@ -10801,7 +10897,7 @@ export default function ConsultantPanel() {
                   />
                   <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
                     {(() => {
-                      const articlesList = newBranch.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                      const articlesList = permitCategories.filter(c => c.stage === (newBranch.permit_stage || 'ek1'));
                       const filtered = articlesList.filter(art =>
                         art.code.toLowerCase().includes(branchArticleSearch.toLowerCase()) ||
                         art.title.toLowerCase().includes(branchArticleSearch.toLowerCase())
@@ -11170,7 +11266,7 @@ export default function ConsultantPanel() {
                   />
                   <div className="max-h-40 overflow-y-auto border border-slate-100 dark:border-slate-800 rounded p-1 space-y-1 bg-white dark:bg-slate-950">
                     {(() => {
-                      const articlesList = editingClient.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                      const articlesList = permitCategories.filter(c => c.stage === (editingClient.permit_stage || 'ek1'));
                       const filtered = articlesList.filter(art =>
                         art.code.toLowerCase().includes(editClientArticleSearch.toLowerCase()) ||
                         art.title.toLowerCase().includes(editClientArticleSearch.toLowerCase())
@@ -11483,7 +11579,7 @@ export default function ConsultantPanel() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-750 text-white rounded-lg font-medium disabled:opacity-50"
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-medium disabled:opacity-50"
                   disabled={submittingClientChangeRequest}
                 >
                   {submittingClientChangeRequest ? 'Talep Gönderiliyor...' : 'Talep Gönder'}
@@ -11500,7 +11596,7 @@ export default function ConsultantPanel() {
             <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
               <h3 className="font-bold text-slate-850 dark:text-slate-200 flex items-center gap-2 text-lg">
                 <BookOpen size={18} className="text-teal-600" />
-                {(userRole === 'premium_corporate' || userRole === 'corporate_chief')
+                {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual')
                   ? 'Yeni Özel Mevzuat & Yönetmelik Ekle'
                   : 'Yeni Mevzuat Talebi (Yöneticinizin Onayına Gönderilecek)'}
               </h3>
@@ -11733,7 +11829,7 @@ export default function ConsultantPanel() {
                   className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-teal-100 disabled:shadow-none text-sm"
                 >
                   {savingLegislation ? <Loader size={16} className="animate-spin" /> : <Check size={16} />}
-                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief') ? 'Kaydet & Havuza Ekle' : 'Onaya Gönder'}
+                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') ? 'Kaydet & Havuza Ekle' : 'Onaya Gönder'}
                 </button>
                 <button
                   type="button"

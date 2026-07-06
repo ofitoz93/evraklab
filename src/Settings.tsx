@@ -468,6 +468,25 @@ export default function Settings({ session }: { session: any }) {
       };
     }
 
+    // Bireysel Premium hesaplar da (Saha Denetimleri/Atık/Mevzuat/Aksiyon
+    // özellikleri için) kişisel bir organizasyona sahip olabilir; bu onları
+    // "kurumsal" yapmaz, bu yüzden kurumsal kontrolden ÖNCE elenmeleri lazım.
+    if (role === 'premium_individual') {
+      const subDateStr = profile.subscription_end_date;
+      const endDate = subDateStr ? new Date(subDateStr) : null;
+      const isActive = endDate ? endDate > new Date() : false;
+      return {
+        type: 'individual',
+        title: 'Bireysel Premium Üyelik',
+        subtitle: 'Tüm özellikler aktif',
+        endDate: endDate ? endDate.toLocaleDateString('tr-TR') : 'Belirtilmemiş',
+        status: isActive ? 'active' : 'inactive',
+        color: isActive
+          ? 'from-blue-600 to-cyan-600'
+          : 'from-gray-500 to-gray-600',
+      };
+    }
+
     // Kurumsal Roller (Şirket Sahibi, Departman Şefi, Personel)
     if (
       role === 'premium_corporate' ||
@@ -506,23 +525,6 @@ export default function Settings({ session }: { session: any }) {
           color: 'from-gray-500 to-gray-700',
         };
       }
-    }
-
-    // Bireysel Premium
-    if (role === 'premium_individual') {
-      const subDateStr = profile.subscription_end_date;
-      const endDate = subDateStr ? new Date(subDateStr) : null;
-      const isActive = endDate ? endDate > new Date() : false;
-      return {
-        type: 'individual',
-        title: 'Bireysel Premium',
-        subtitle: 'Tüm özellikler aktif',
-        endDate: endDate ? endDate.toLocaleDateString('tr-TR') : 'Belirtilmemiş',
-        status: isActive ? 'active' : 'inactive',
-        color: isActive
-          ? 'from-blue-600 to-cyan-600'
-          : 'from-gray-500 to-gray-600',
-      };
     }
 
     // Normal Üye

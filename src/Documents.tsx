@@ -365,8 +365,11 @@ const getOrCreateDriveFolder = async (
       if (!error) {
         const isOwner = role === 'premium_corporate';
         const isChief = role === 'corporate_chief';
+        const isPlainOrgMember = role === 'normal' && !!myOrgId;
         const canViewTeam =
-          isOwner || (isChief && profile?.permissions?.can_view_team_docs);
+          isOwner ||
+          isPlainOrgMember ||
+          (isChief && profile?.permissions?.can_view_team_docs);
         const finalDocs = (data || []).filter((doc) => {
           if (role === 'admin') return true;
           const isMyDoc = doc.uploader_id === session.user.id;
@@ -777,7 +780,7 @@ const getOrCreateDriveFolder = async (
           >
             <Plus size={20} /> Yeni Belge Ekle
           </Link>
-          {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff') && (
+          {(userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff' || userRole === 'premium_individual') && (
             <Link
               to="/consultant/opinions/add"
               className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg hover:bg-purple-700 transition"

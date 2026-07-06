@@ -30,7 +30,6 @@ import {
   Moon
 } from 'lucide-react';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
-import { EK1_ARTICLES, EK2_ARTICLES } from './permitArticles';
 
 const getContractStatus = (startDateStr: string) => {
   const serviceStartDate = new Date(startDateStr);
@@ -58,6 +57,7 @@ export default function ClientPanel() {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<any>(null);
   const [clientDetails, setClientDetails] = useState<any>(null);
+  const [permitCategories, setPermitCategories] = useState<{ stage: string; code: string; title: string }[]>([]);
   const [documents, setDocuments] = useState<any[]>([]);
   const [actions, setActions] = useState<any[]>([]);
   const [completingActionId, setCompletingActionId] = useState<string | null>(null);
@@ -203,6 +203,12 @@ export default function ClientPanel() {
         throw new Error('Müşteri firma detayları bulunamadı.');
       }
       setClientDetails(client);
+
+      const { data: permitCats } = await supabase
+        .from('environmental_permit_categories')
+        .select('stage, code, title')
+        .order('sort_order', { ascending: true });
+      setPermitCategories(permitCats || []);
 
       // Taşıyıcı / gönderilen firma listesi (danışmanın tanımladığı ortak liste)
       if (client.consultant_company_id) {
@@ -1328,7 +1334,7 @@ export default function ClientPanel() {
                         ? JSON.parse(clientDetails.permit_articles || '[]')
                         : [];
                     if (articlesArray.length === 0) return null;
-                    const source = clientDetails.permit_stage === 'ek1' ? EK1_ARTICLES : EK2_ARTICLES;
+                    const source = permitCategories.filter((c) => c.stage === clientDetails.permit_stage);
                     return (
                       <div className="mt-2 space-y-1.5">
                         {articlesArray.map((code) => {

@@ -41,7 +41,7 @@ export default function OpinionLetterForm() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('id, full_name, role, organization_id, extra_permissions')
+        .select('id, full_name, role, organization_id, extra_permissions, subscription_end_date')
         .eq('id', session.user.id)
         .single();
 
@@ -51,6 +51,10 @@ export default function OpinionLetterForm() {
 
       if (profile.role === 'admin' || profile.role === 'system_admin') {
         setIsPremiumActive(true);
+      } else if (profile.role === 'premium_individual') {
+        // Bireysel premium hesabın aboneliği kendi profilinde tutulur, kişisel
+        // organizasyonun subscription_end_date'i hiç set edilmez.
+        setIsPremiumActive(!!profile.subscription_end_date && new Date(profile.subscription_end_date) > new Date());
       } else if (profile.organization_id) {
         const { data: org } = await supabase
           .from('organizations')
@@ -132,6 +136,10 @@ export default function OpinionLetterForm() {
       let sequenceNo = 1;
       while (usedNumbers.has(sequenceNo)) sequenceNo++;
 
+      // Bireysel premium hesap kendi şirketinin sahibi gibidir, üstünde
+      // onay verecek bir yönetici/şef yoktur - görüş otomatik onaylanır.
+      const isSelfApproving = userProfile?.role === 'premium_individual';
+
       const { data, error } = await supabase
         .from('opinion_letters')
         .insert({
@@ -143,7 +151,9 @@ export default function OpinionLetterForm() {
           institution_name: institutionName.trim(),
           content: content.trim(),
           created_by: userProfile?.id,
-          status: 'pending',
+          status: isSelfApproving ? 'approved' : 'pending',
+          reviewed_by: isSelfApproving ? userProfile?.id : null,
+          reviewed_at: isSelfApproving ? new Date().toISOString() : null,
         })
         .select('id')
         .single();
