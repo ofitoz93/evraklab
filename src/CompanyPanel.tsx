@@ -2220,6 +2220,11 @@ export default function CompanyPanel() {
   const usagePercent = Math.min(100, (totalUsed / maxLimit) * 100);
   const isFull = totalUsed >= maxLimit;
 
+  const premiumSeatLimit = myOrg?.premium_seat_limit ?? null;
+  const premiumActiveCount = teamMembers.filter(
+    (m) => m.role !== 'normal' && m.premium_seat_active !== false
+  ).length;
+
   // --- 1. E-POSTA İLE DAVET (Geri Eklendi) ---
   const handleSendEmailInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2366,6 +2371,24 @@ export default function CompanyPanel() {
         m.id === member.id
           ? { ...m, role: newRole, permissions: defaultPerms }
           : m
+      )
+    );
+  };
+
+  const handleTogglePremiumSeat = async (member: any) => {
+    if (!isCorporateAdmin) return;
+    const newValue = member.premium_seat_active === false;
+    const { error } = await supabase
+      .from('profiles')
+      .update({ premium_seat_active: newValue })
+      .eq('id', member.id);
+    if (error) {
+      alert('Hata: ' + error.message);
+      return;
+    }
+    setTeamMembers((prev) =>
+      prev.map((m) =>
+        m.id === member.id ? { ...m, premium_seat_active: newValue } : m
       )
     );
   };
@@ -2897,12 +2920,32 @@ export default function CompanyPanel() {
               <Users size={20} /> Ekip ve Bekleyen Kodlar
             </h3>
 
+            <div className="flex flex-wrap gap-2 mb-4">
+              <span className="text-xs font-bold px-3 py-1.5 rounded-lg border bg-slate-50 text-slate-600 border-slate-200">
+                Kota: {totalUsed}/{maxLimit}
+              </span>
+              <span
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg border flex items-center gap-1 ${
+                  premiumSeatLimit !== null
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-gray-50 text-gray-400 border-gray-200'
+                }`}
+              >
+                <Crown size={12} />
+                Premium Kota: {premiumSeatLimit !== null ? `${premiumActiveCount}/${premiumSeatLimit}` : 'Sınırsız'}
+              </span>
+            </div>
+
             <div className="space-y-4">
               {/* Mevcut Üyeler */}
               {teamMembers.map((member) => (
                 <div
                   key={member.id}
-                  className="p-4 rounded-lg border bg-white flex flex-col gap-3"
+                  className={`p-4 rounded-lg border flex flex-col gap-3 ${
+                    member.role !== 'normal' && member.premium_seat_active === false
+                      ? 'bg-gray-50 grayscale opacity-70'
+                      : 'bg-white'
+                  }`}
                 >
                   <div className="flex justify-between items-start">
                     <div className="flex items-center gap-3">
@@ -2932,6 +2975,17 @@ export default function CompanyPanel() {
                           >
                             {roleLabels[member.role] || member.role}
                           </span>
+                          {member.role !== 'normal' && (
+                            member.premium_seat_active === false ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded border uppercase bg-gray-100 text-gray-500 border-gray-200 flex items-center gap-1">
+                                <XCircle size={11} /> Premium Yok
+                              </span>
+                            ) : (
+                              <span className="text-[10px] px-2 py-0.5 rounded border uppercase bg-emerald-50 text-emerald-700 border-emerald-200 flex items-center gap-1">
+                                <Crown size={11} /> Premium
+                              </span>
+                            )
+                          )}
                         </div>
                         <div className="text-xs text-gray-500">
                           {member.email}
@@ -2987,6 +3041,17 @@ export default function CompanyPanel() {
                     {/* Yönetici Butonları */}
                     {isCorporateAdmin && member.role !== 'premium_corporate' && (
                       <div className="flex gap-2">
+                        <button
+                          onClick={() => handleTogglePremiumSeat(member)}
+                          className={`text-xs px-2 py-1 rounded border flex items-center gap-1 transition ${
+                            member.premium_seat_active === false
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
+                          title={member.premium_seat_active === false ? 'Premium Ver' : 'Premium Al'}
+                        >
+                          <Crown size={12} /> {member.premium_seat_active === false ? 'Premium Ver' : 'Premium Al'}
+                        </button>
                         <button
                           onClick={() => handleToggleRole(member)}
                           className="text-xs bg-gray-100 px-2 py-1 rounded border hover:bg-gray-200 flex items-center gap-1 transition"

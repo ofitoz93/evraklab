@@ -369,7 +369,8 @@ const getOrCreateDriveFolder = async (
         const canViewTeam =
           isOwner ||
           isPlainOrgMember ||
-          (isChief && profile?.permissions?.can_view_team_docs);
+          (isChief && profile?.permissions?.can_view_team_docs) ||
+          (isRestrictedRole && perms.can_view_all_clients);
         const finalDocs = (data || []).filter((doc) => {
           if (role === 'admin') return true;
           const isMyDoc = doc.uploader_id === session.user.id;

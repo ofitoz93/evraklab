@@ -757,7 +757,7 @@ function AppContent() {
       // Profili doğrudan çek (join kullanmadan - veritabanında FK tanımlanmamış)
       let { data: profile, error } = await supabase
         .from('profiles')
-        .select('full_name, phone, role, organization_id, client_id, subscription_end_date, extra_permissions')
+        .select('full_name, phone, role, organization_id, client_id, subscription_end_date, extra_permissions, premium_seat_active')
         .eq('id', userId)
         .single();
 
@@ -787,7 +787,7 @@ function AppContent() {
         console.warn('Profil çekilemedi, temel sorgu deneniyor:', error.message);
         let { data: basic, error: e2 } = await supabase
           .from('profiles')
-          .select('full_name, phone, role, organization_id, client_id, subscription_end_date, extra_permissions')
+          .select('full_name, phone, role, organization_id, client_id, subscription_end_date, extra_permissions, premium_seat_active')
           .eq('id', userId)
           .single();
         
@@ -817,7 +817,9 @@ function AppContent() {
           const now = new Date();
           let active = false;
           if (role === 'admin' || role === 'system_admin') active = true;
-          else if (basic.subscription_end_date && new Date(basic.subscription_end_date) > now) active = true;
+          else if (basic.subscription_end_date && new Date(basic.subscription_end_date) > now) {
+            active = basic.premium_seat_active !== false;
+          }
           setIsPremium(active);
           setSubEndDate(basic.subscription_end_date);
 
@@ -877,7 +879,7 @@ function AppContent() {
         if (role === 'admin' || role === 'system_admin') {
           active = true;
         } else if (finalDate && new Date(finalDate) > now) {
-          active = true;
+          active = (profile as any).premium_seat_active !== false;
         }
         setIsPremium(active);
 
@@ -996,7 +998,16 @@ function AppContent() {
                 <Route path="/documents/edit/:id" element={<EditDocument />} />
 
                 <Route path="/chat" element={<TeamChat />} />
-                <Route path="/pricing" element={<Pricing />} />
+                <Route
+                  path="/pricing"
+                  element={
+                    (userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
+                      <Navigate to="/settings" />
+                    ) : (
+                      <Pricing />
+                    )
+                  }
+                />
                 <Route path="/settings" element={<Settings session={session} />} />
                 <Route path="/notifications" element={<Notifications />} />
                 <Route path="/support" element={<Support />} />

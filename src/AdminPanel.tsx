@@ -35,6 +35,9 @@ import {
   CreditCard,
   Printer,
   TrendingUp,
+  Gift,
+  Copy,
+  Ban,
 } from 'lucide-react';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
@@ -44,7 +47,7 @@ import WasteManagement from './WasteManagement';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste' | 'ced_categories' | 'permit_categories' | 'payments'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste' | 'ced_categories' | 'permit_categories' | 'payments' | 'gift_codes'
   >('tickets');
 
   const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
@@ -442,6 +445,8 @@ export default function AdminPanel() {
       fetchPermitCategories();
     } else if (activeTab === 'payments') {
       fetchPayments();
+    } else if (activeTab === 'gift_codes') {
+      fetchGiftCodes();
     }
   }, [activeTab]);
 
@@ -958,6 +963,70 @@ export default function AdminPanel() {
     } finally {
       setSavingInvoice(false);
     }
+  };
+
+  // --- HEDİYE KODLARI (Premium redemption kodları) ---
+  const [giftCodes, setGiftCodes] = useState<any[]>([]);
+  const [loadingGiftCodes, setLoadingGiftCodes] = useState(false);
+  const [newGiftType, setNewGiftType] = useState<'individual' | 'corporate'>('individual');
+  const [newGiftDuration, setNewGiftDuration] = useState(1);
+  const [newGiftSeats, setNewGiftSeats] = useState(3);
+  const [newGiftNote, setNewGiftNote] = useState('');
+  const [creatingGiftCode, setCreatingGiftCode] = useState(false);
+
+  const fetchGiftCodes = async () => {
+    setLoadingGiftCodes(true);
+    const { data, error } = await supabase
+      .from('premium_gift_codes')
+      .select('*, redeemer:profiles!redeemed_by(full_name, email), organization:organizations(name)')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('Hediye kodları çekilirken hata:', error.message);
+    } else {
+      setGiftCodes(data || []);
+    }
+    setLoadingGiftCodes(false);
+  };
+
+  const handleCreateGiftCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreatingGiftCode(true);
+    try {
+      const code = crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase();
+      const { error } = await supabase.from('premium_gift_codes').insert([
+        {
+          code,
+          type: newGiftType,
+          duration_months: newGiftDuration,
+          seats: newGiftType === 'corporate' ? newGiftSeats : null,
+          note: newGiftNote.trim() || null,
+          created_by: (await supabase.auth.getSession()).data.session?.user.id,
+        },
+      ]);
+      if (error) throw error;
+      alert(`✅ Kod Oluşturuldu: ${code}`);
+      setNewGiftNote('');
+      fetchGiftCodes();
+    } catch (err: any) {
+      alert('Kod oluşturulamadı: ' + err.message);
+    } finally {
+      setCreatingGiftCode(false);
+    }
+  };
+
+  const handleRevokeGiftCode = async (id: string) => {
+    if (!window.confirm('Bu kodu iptal etmek istediğinize emin misiniz?')) return;
+    const { error } = await supabase
+      .from('premium_gift_codes')
+      .update({ status: 'revoked' })
+      .eq('id', id);
+    if (error) return alert('İptal edilemedi: ' + error.message);
+    fetchGiftCodes();
+  };
+
+  const copyGiftCode = (code: string) => {
+    navigator.clipboard.writeText(code);
+    alert('Kopyalandı: ' + code);
   };
 
   const fetchTickets = async () => {
@@ -1618,6 +1687,17 @@ export default function AdminPanel() {
                 <CreditCard size={18} />
                 <span>Ödemeler & Faturalar</span>
               </button>
+              <button
+                onClick={() => setActiveTab('gift_codes')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'gift_codes'
+                    ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <Gift size={18} />
+                <span>Hediye Kodları</span>
+              </button>
             </nav>
           </div>
 
@@ -2150,6 +2230,126 @@ export default function AdminPanel() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {activeTab === 'gift_codes' && (
+          <div className="animate-fadeIn space-y-4">
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
+              <h2 className="text-lg font-bold text-gray-800 dark:text-white mb-4">Hediye Kodu Oluştur</h2>
+              <form onSubmit={handleCreateGiftCode} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Tip</label>
+                  <select
+                    value={newGiftType}
+                    onChange={(e) => setNewGiftType(e.target.value as 'individual' | 'corporate')}
+                    className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                  >
+                    <option value="individual">Bireysel Premium</option>
+                    <option value="corporate">Kurumsal Premium</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Süre</label>
+                  <select
+                    value={newGiftDuration}
+                    onChange={(e) => setNewGiftDuration(Number(e.target.value))}
+                    className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                  >
+                    <option value={1}>1 Ay</option>
+                    <option value={3}>3 Ay</option>
+                    <option value={6}>6 Ay</option>
+                    <option value={12}>12 Ay</option>
+                  </select>
+                </div>
+                {newGiftType === 'corporate' && (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Kişi Sayısı</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={newGiftSeats}
+                      onChange={(e) => setNewGiftSeats(Number(e.target.value))}
+                      className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                    />
+                  </div>
+                )}
+                <div className={newGiftType === 'corporate' ? '' : 'sm:col-span-2'}>
+                  <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Not (opsiyonel)</label>
+                  <input
+                    type="text"
+                    value={newGiftNote}
+                    onChange={(e) => setNewGiftNote(e.target.value)}
+                    placeholder="Örn: Yılbaşı çekilişi"
+                    className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                  />
+                </div>
+                <button
+                  disabled={creatingGiftCode}
+                  className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg p-2.5 text-sm font-bold flex items-center justify-center gap-2"
+                >
+                  {creatingGiftCode ? <Loader size={14} className="animate-spin" /> : <Gift size={14} />}
+                  Kod Oluştur
+                </button>
+              </form>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
+              <h2 className="text-lg font-bold text-gray-800 dark:text-white mb-4">Oluşturulan Kodlar</h2>
+              {loadingGiftCodes ? (
+                <div className="py-12 text-center text-gray-400 text-sm">Yükleniyor...</div>
+              ) : (
+                <div className="space-y-2">
+                  {giftCodes.map((g) => (
+                    <div
+                      key={g.id}
+                      className="flex flex-wrap items-center justify-between gap-3 border-2 border-dashed border-amber-200 bg-amber-50 dark:bg-slate-900 dark:border-slate-700 rounded-lg p-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] font-bold bg-white px-2 py-0.5 rounded border border-amber-200 text-amber-700 font-mono tracking-wider dark:bg-slate-800">
+                          {g.code}
+                        </span>
+                        <div className="text-xs text-gray-600 dark:text-gray-300">
+                          <div className="font-bold">
+                            {g.type === 'individual' ? 'Bireysel' : `Kurumsal · ${g.seats} Kişilik`} · {g.duration_months} Ay
+                          </div>
+                          {g.note && <div className="text-gray-400">{g.note}</div>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-1 rounded-full ${
+                            g.status === 'unused'
+                              ? 'bg-blue-100 text-blue-700'
+                              : g.status === 'redeemed'
+                              ? 'bg-green-100 text-green-700'
+                              : 'bg-gray-200 text-gray-500'
+                          }`}
+                        >
+                          {g.status === 'unused' ? 'Kullanılmadı' : g.status === 'redeemed' ? 'Kullanıldı' : 'İptal Edildi'}
+                        </span>
+                        {g.status === 'redeemed' && (
+                          <span className="text-[11px] text-gray-500">
+                            {g.redeemer?.full_name || g.redeemer?.email} {g.organization?.name ? `(${g.organization.name})` : ''}
+                          </span>
+                        )}
+                        <button onClick={() => copyGiftCode(g.code)} className="text-amber-600 hover:bg-amber-100 p-1.5 rounded">
+                          <Copy size={16} />
+                        </button>
+                        {g.status === 'unused' && (
+                          <button onClick={() => handleRevokeGiftCode(g.id)} className="text-red-500 hover:bg-red-50 p-1.5 rounded">
+                            <Ban size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {giftCodes.length === 0 && (
+                    <div className="py-12 text-center text-gray-400 text-sm">Henüz kod oluşturulmadı.</div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

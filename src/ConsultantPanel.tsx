@@ -27,6 +27,7 @@ import {
   ChevronRight,
   Check,
   XCircle,
+  Crown,
   PlusCircle,
   Bell,
   QrCode,
@@ -561,6 +562,7 @@ export default function ConsultantPanel() {
   const [staffRequests, setStaffRequests] = useState<any[]>([]);
   const [legSubTab, setLegSubTab] = useState<'pool' | 'assignments' | 'calendar' | 'tracking'>('pool');
   const [selectedClientForLegTracking, setSelectedClientForLegTracking] = useState<any>(null);
+  const [selfTrackingClient, setSelfTrackingClient] = useState<any>(null);
 
   // --- FİNANS & MALİYET MODÜLÜ STATE'LERİ ---
   const [financePayments, setFinancePayments] = useState<any[]>([]);
@@ -942,6 +944,8 @@ export default function ConsultantPanel() {
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [orgData, setOrgData] = useState<any>(null);
   const [mySubEndDate, setMySubEndDate] = useState<string | null>(null);
+  const [premiumSeatActive, setPremiumSeatActive] = useState(true);
+  const [previousRole, setPreviousRole] = useState<string | null>(null);
   const [savingOrg, setSavingOrg] = useState(false);
   const [showEditClient, setShowEditClient] = useState(false);
   const [editingClient, setEditingClient] = useState<any>(null);
@@ -1274,7 +1278,7 @@ export default function ConsultantPanel() {
   const fetchTeamMembers = async () => {
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email, role, extra_permissions, experience_years')
+      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active')
       .eq('organization_id', orgId);
     
     const sortedMembers = (members || []).sort((a, b) => {
@@ -1885,6 +1889,27 @@ export default function ConsultantPanel() {
     }
   };
 
+  const handleTogglePremiumSeat = async (member: any) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+    const newValue = member.premium_seat_active === false;
+    const { error } = await supabase
+      .from('profiles')
+      .update({ premium_seat_active: newValue })
+      .eq('id', member.id);
+    if (error) {
+      alert('Hata: ' + error.message);
+      return;
+    }
+    setTeamMembers((prev) =>
+      prev.map((m) =>
+        m.id === member.id ? { ...m, premium_seat_active: newValue } : m
+      )
+    );
+  };
+
   const handleUpdateRole = async (memberId: string, role: string) => {
     if (userRole !== 'premium_corporate') {
       alert('Bu işlem için yetkiniz bulunmamaktadır.');
@@ -2093,7 +2118,7 @@ export default function ConsultantPanel() {
     // Fetch team members of the consultant company
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email, role, extra_permissions, experience_years')
+      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active')
       .eq('organization_id', orgId);
     setTeamMembers(members || []);
 
@@ -2220,7 +2245,7 @@ export default function ConsultantPanel() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role, organization_id, extra_permissions, subscription_end_date')
+        .select('role, organization_id, extra_permissions, subscription_end_date, premium_seat_active, previous_role')
         .eq('id', session.user.id)
         .single();
 
@@ -2228,6 +2253,8 @@ export default function ConsultantPanel() {
         setUserRole(profile.role);
         setOrgId(profile.organization_id);
         setMySubEndDate(profile.subscription_end_date || null);
+        setPremiumSeatActive(profile.premium_seat_active !== false);
+        setPreviousRole(profile.previous_role || null);
         const perms = profile.extra_permissions || {};
         setCurrentUserPerms(perms);
 
@@ -2307,6 +2334,36 @@ export default function ConsultantPanel() {
         clientIds = assigns?.map((a: any) => a.client_id) || [];
       } else {
         clientIds = clients.map((c: any) => c.id);
+      }
+
+      // Bireysel premium hesap, mevzuatları belirli bir lokasyon/işletmeye
+      // bağlamadan "Kendim İçin" de takip edebilsin diye, kendi org'una özel,
+      // gizli (normal İşletme/Lokasyon listelerinde hiç görünmeyen) bir
+      // consultant_clients kaydı burada gerektiğinde oluşturulur/bulunur.
+      let selfClient = selfTrackingClient;
+      if (userRole === 'premium_individual' && orgId) {
+        if (!selfClient) {
+          const { data: existingSelf } = await supabase
+            .from('consultant_clients')
+            .select('*')
+            .eq('consultant_company_id', orgId)
+            .eq('is_self_tracking', true)
+            .maybeSingle();
+          if (existingSelf) {
+            selfClient = existingSelf;
+          } else {
+            const { data: newSelf, error: selfErr } = await supabase
+              .from('consultant_clients')
+              .insert({ consultant_company_id: orgId, name: 'Kendim İçin', is_self_tracking: true })
+              .select()
+              .single();
+            if (!selfErr) selfClient = newSelf;
+          }
+          if (selfClient) setSelfTrackingClient(selfClient);
+        }
+        if (selfClient && !clientIds.includes(selfClient.id)) {
+          clientIds = [...clientIds, selfClient.id];
+        }
       }
 
       if (clientIds.length > 0) {
@@ -3106,7 +3163,7 @@ export default function ConsultantPanel() {
         .select('user_id')
         .eq('client_id', selectedClientRegulation?.client_id);
 
-      if (userRole === 'corporate_staff') {
+      if (userRole === 'corporate_staff' || userRole === 'premium_individual') {
         setReqNotesAssigneeId(userId);
       } else if (assignments && assignments.length > 0) {
         setReqNotesAssigneeId(assignments[0].user_id);
@@ -3115,7 +3172,7 @@ export default function ConsultantPanel() {
       }
     } catch (err) {
       console.error('Error fetching assignments:', err);
-      if (userRole === 'corporate_staff') {
+      if (userRole === 'corporate_staff' || userRole === 'premium_individual') {
         setReqNotesAssigneeId(userId);
       }
     }
@@ -3158,7 +3215,7 @@ export default function ConsultantPanel() {
         .select('user_id')
         .eq('client_id', selectedClientRegulation?.client_id);
       
-      if (userRole === 'corporate_staff') {
+      if (userRole === 'corporate_staff' || userRole === 'premium_individual') {
         setNewActionAssigneeId(userId);
       } else if (assignments && assignments.length > 0) {
         setNewActionAssigneeId(assignments[0].user_id);
@@ -3167,7 +3224,7 @@ export default function ConsultantPanel() {
       }
     } catch (err) {
       console.error('Error fetching assignments:', err);
-      if (userRole === 'corporate_staff') {
+      if (userRole === 'corporate_staff' || userRole === 'premium_individual') {
         setNewActionAssigneeId(userId);
       }
     }
@@ -3242,6 +3299,21 @@ export default function ConsultantPanel() {
       console.error('Görüşler yüklenirken hata:', err.message);
     } finally {
       setLoadingOpinions(false);
+    }
+  };
+
+  const handleDeleteOpinion = async (opinionId: string) => {
+    if (!window.confirm('Bu görüş yazısını silmek istediğinizden emin misiniz?')) return;
+    try {
+      const { error } = await supabase
+        .from('opinion_letters')
+        .delete()
+        .eq('id', opinionId);
+      if (error) throw error;
+      await fetchOpinionLetters();
+      alert('Görüş yazısı silindi.');
+    } catch (err: any) {
+      alert('Görüş silinirken hata: ' + err.message);
     }
   };
 
@@ -4715,7 +4787,7 @@ export default function ConsultantPanel() {
   const canAssignClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_assign_clients);
   const canDeleteClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
   const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
-  const canViewTeam = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
+  const canViewTeam = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
 
 
 
@@ -4827,7 +4899,7 @@ export default function ConsultantPanel() {
     },
     {
       id: 'hr',
-      label: 'İK & Performans',
+      label: 'İnsan Kaynakları',
       icon: <Users size={18} />,
       tabs: [
         { id: 'team', label: 'Ekip Yönetimi', icon: <Users size={14} />, show: canViewTeam },
@@ -4994,29 +5066,55 @@ export default function ConsultantPanel() {
     );
   };
 
+  const isOrgDateValid = !!orgData?.subscription_end_date && new Date(orgData.subscription_end_date) > new Date();
   const isPremiumActive = userRole === 'admin' || userRole === 'system_admin' ||
     (userRole === 'premium_individual'
       ? (!!mySubEndDate && new Date(mySubEndDate) > new Date())
-      : (!!orgData?.subscription_end_date && new Date(orgData.subscription_end_date) > new Date()));
+      : (isOrgDateValid && premiumSeatActive));
+  const seatInactive = !isPremiumActive && isOrgDateValid && !premiumSeatActive;
+  // Şirket aboneliği tamamen sona erince check_and_downgrade_subscriptions()
+  // sahibin rolünü de 'normal'a düşürüyor (previous_role'da saklıyor). Yenileme
+  // linkini/mesajını hâlâ gerçek sahibe göstermek için "eski rol"ü de sayıyoruz.
+  const isOwnerEffective =
+    userRole === 'premium_corporate' ||
+    (userRole === 'normal' && previousRole === 'premium_corporate');
 
   return (
     <div className="space-y-6">
       {!isPremiumActive && orgData && (
-        <div className="print-hidden bg-gradient-to-r from-rose-600 to-orange-500 text-white p-4 rounded-xl shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <AlertCircle size={22} className="shrink-0" />
-            <div>
-              <p className="font-bold text-sm">Premium süresi doldu!</p>
-              <p className="text-xs text-white/90">Lütfen paket yenilemesi yapın. Yenileme yapılmadan yeni belge, rapor veya görüş oluşturamazsınız.</p>
+        seatInactive ? (
+          <div className="print-hidden bg-gradient-to-r from-gray-600 to-slate-500 text-white p-4 rounded-xl shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <AlertCircle size={22} className="shrink-0" />
+              <div>
+                <p className="font-bold text-sm">Premiumsuz Hesap</p>
+                <p className="text-xs text-white/90">Kota sayısı uygun değil. Hesabınızın premium erişimi firma sahibiniz tarafından pasif hale getirildi. Lütfen firma sahibinizle iletişime geçiniz.</p>
+              </div>
             </div>
           </div>
-          <Link
-            to="/pricing"
-            className="bg-white text-rose-700 px-4 py-2 rounded-lg font-bold text-xs whitespace-nowrap hover:bg-rose-50 transition shrink-0"
-          >
-            Paketi Yenile
-          </Link>
-        </div>
+        ) : (
+          <div className="print-hidden bg-gradient-to-r from-rose-600 to-orange-500 text-white p-4 rounded-xl shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <AlertCircle size={22} className="shrink-0" />
+              <div>
+                <p className="font-bold text-sm">Premium süresi doldu!</p>
+                <p className="text-xs text-white/90">
+                  {isOwnerEffective
+                    ? 'Lütfen paket yenilemesi yapın. Yenileme yapılmadan yeni belge, rapor veya görüş oluşturamazsınız.'
+                    : 'Yenileme yapılmadan yeni belge, rapor veya görüş oluşturamazsınız. Lütfen firma sahibinizle iletişime geçiniz.'}
+                </p>
+              </div>
+            </div>
+            {isOwnerEffective && (
+              <Link
+                to="/pricing"
+                className="bg-white text-rose-700 px-4 py-2 rounded-lg font-bold text-xs whitespace-nowrap hover:bg-rose-50 transition shrink-0"
+              >
+                Paketi Yenile
+              </Link>
+            )}
+          </div>
+        )
       )}
 
       {/* Premium süresi dolduysa panelin geri kalanı bulanık ve etkileşimsiz gösterilir */}
@@ -5804,11 +5902,37 @@ export default function ConsultantPanel() {
               <h3 className="font-bold text-gray-700 dark:text-white mb-4 flex items-center gap-2 text-lg">
                 <Users className="text-blue-600" /> Ekip ve Bekleyen Kodlar
               </h3>
-              
+
+              <div className="flex flex-wrap gap-2 mb-4">
+                <span className="text-xs font-bold px-3 py-1.5 rounded-lg border bg-slate-50 text-slate-600 border-slate-200 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-300">
+                  Kota: {teamMembers.length}/{orgData?.member_limit || 5}
+                </span>
+                <span
+                  className={`text-xs font-bold px-3 py-1.5 rounded-lg border flex items-center gap-1 ${
+                    orgData?.premium_seat_limit != null
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900'
+                      : 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-slate-900 dark:border-slate-700'
+                  }`}
+                >
+                  <Crown size={12} />
+                  Premium Kota:{' '}
+                  {orgData?.premium_seat_limit != null
+                    ? `${teamMembers.filter((m) => m.role !== 'normal' && m.premium_seat_active !== false).length}/${orgData.premium_seat_limit}`
+                    : 'Sınırsız'}
+                </span>
+              </div>
+
               <div className="space-y-4">
                 {/* Üyeler */}
                 {teamMembers.map((member) => (
-                  <div key={member.id} className="p-4 rounded-xl border border-gray-100 dark:border-slate-700 bg-white dark:bg-slate-800/50 flex flex-col gap-3 hover:shadow-sm transition">
+                  <div
+                    key={member.id}
+                    className={`p-4 rounded-xl border flex flex-col gap-3 hover:shadow-sm transition ${
+                      member.role !== 'normal' && member.premium_seat_active === false
+                        ? 'border-gray-100 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 grayscale opacity-70'
+                        : 'border-gray-100 dark:border-slate-700 bg-white dark:bg-slate-800/50'
+                    }`}
+                  >
                     <div className="flex justify-between items-start">
                       <div className="flex items-center gap-3">
                         <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs uppercase ${
@@ -5828,19 +5952,43 @@ export default function ConsultantPanel() {
                             }`}>
                               {roleLabels[member.role] || member.role}
                             </span>
+                            {member.role !== 'normal' && (
+                              member.premium_seat_active === false ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded border uppercase bg-gray-100 text-gray-500 border-gray-200 dark:bg-slate-900 dark:border-slate-700 flex items-center gap-1">
+                                  <XCircle size={11} /> Premium Yok
+                                </span>
+                              ) : (
+                                <span className="text-[10px] px-2 py-0.5 rounded border uppercase bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900 flex items-center gap-1">
+                                  <Crown size={11} /> Premium
+                                </span>
+                              )
+                            )}
                           </div>
                           <div className="text-xs text-gray-500 dark:text-gray-400">{member.email}</div>
                         </div>
                       </div>
                       
                       {userRole === 'premium_corporate' && member.id !== userId && (
-                        <button
-                          onClick={() => handleKick(member.id, member.role)}
-                          className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-100 hover:bg-red-100 transition dark:bg-red-950/20 dark:border-red-900"
-                          title="Çıkar"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleTogglePremiumSeat(member)}
+                            className={`text-xs px-2 py-2 rounded border flex items-center gap-1 transition ${
+                              member.premium_seat_active === false
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/20 dark:border-emerald-900'
+                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-slate-900 dark:border-slate-700'
+                            }`}
+                            title={member.premium_seat_active === false ? 'Premium Ver' : 'Premium Al'}
+                          >
+                            <Crown size={14} />
+                          </button>
+                          <button
+                            onClick={() => handleKick(member.id, member.role)}
+                            className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-100 hover:bg-red-100 transition dark:bg-red-950/20 dark:border-red-900"
+                            title="Çıkar"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       )}
                     </div>
 
@@ -6685,12 +6833,23 @@ export default function ConsultantPanel() {
                           Hazırlayan: {letter.creator?.full_name || 'Bilinmeyen'} · Tarih: {new Date(letter.letter_date).toLocaleDateString('tr-TR')}
                         </div>
                       </div>
-                      <Link
-                        to={`/consultant/opinions/${letter.id}`}
-                        className="text-xs font-bold text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/20 border border-purple-200 px-3 py-1.5 rounded-lg transition whitespace-nowrap"
-                      >
-                        Görüntüle
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <Link
+                          to={`/consultant/opinions/${letter.id}`}
+                          className="text-xs font-bold text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/20 border border-purple-200 px-3 py-1.5 rounded-lg transition whitespace-nowrap"
+                        >
+                          Görüntüle
+                        </Link>
+                        {(isManager || letter.created_by === userId) && (
+                          <button
+                            onClick={() => handleDeleteOpinion(letter.id)}
+                            className="text-red-500 hover:text-red-700 cursor-pointer transition p-1.5"
+                            title="Sil"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -6964,6 +7123,9 @@ export default function ConsultantPanel() {
                       {clients.map(c => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
+                      {selfTrackingClient && (
+                        <option value={selfTrackingClient.id}>👤 Kendim İçin</option>
+                      )}
                     </select>
                   </div>
 
@@ -6987,7 +7149,7 @@ export default function ConsultantPanel() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-bold text-sm text-gray-850 dark:text-gray-200">{cr.title}</span>
                               <span className="bg-teal-50 dark:bg-teal-950/20 text-teal-700 dark:text-teal-400 text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase border border-teal-100 dark:border-teal-900">
-                                {cr.client?.name || 'Bilinmeyen İşletme'}
+                                {cr.client_id === selfTrackingClient?.id ? '👤 Kendim İçin' : (cr.client?.name || 'Bilinmeyen İşletme')}
                               </span>
                             </div>
                             {cr.description && (
@@ -7027,12 +7189,13 @@ export default function ConsultantPanel() {
                   </h3>
                   
                   <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-                    {clients.length === 0 ? (
+                    {clients.length === 0 && !selfTrackingClient ? (
                       <p className="text-center py-6 text-xs text-gray-400 italic">
                         Atanmış işletmeniz bulunmuyor.
                       </p>
                     ) : (
-                      clients.map((c) => (
+                      <>
+                      {clients.map((c) => (
                         <button
                           key={c.id}
                           onClick={() => {
@@ -7058,7 +7221,31 @@ export default function ConsultantPanel() {
                           </div>
                           <ChevronRight size={14} className={selectedClientForLegTracking?.id === c.id ? 'text-teal-600' : 'text-gray-400'} />
                         </button>
-                      ))
+                      ))}
+                      {selfTrackingClient && (
+                        <button
+                          key={selfTrackingClient.id}
+                          onClick={() => {
+                            setSelectedClientForLegTracking(selfTrackingClient);
+                            setSelectedClientRegulation(null);
+                            setSelectedClientRegulationArticles([]);
+                          }}
+                          className={`w-full text-left p-3.5 rounded-xl border transition-all flex items-center justify-between cursor-pointer ${
+                            selectedClientForLegTracking?.id === selfTrackingClient.id
+                              ? 'bg-teal-50/50 border-teal-500 dark:bg-teal-950/20 text-teal-800 dark:text-teal-400 font-bold shadow-sm'
+                              : 'bg-slate-50/50 border-slate-200 hover:bg-slate-100/50 dark:bg-slate-900/30 dark:border-slate-800 dark:hover:bg-slate-900/50 text-slate-700 dark:text-slate-350'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded bg-purple-100 dark:bg-purple-950/40 flex items-center justify-center text-purple-500">
+                              <User size={14} />
+                            </div>
+                            <span className="text-xs truncate max-w-[150px] font-bold">Kendim İçin</span>
+                          </div>
+                          <ChevronRight size={14} className={selectedClientForLegTracking?.id === selfTrackingClient.id ? 'text-teal-600' : 'text-gray-400'} />
+                        </button>
+                      )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -7928,6 +8115,7 @@ export default function ConsultantPanel() {
                   setNewActionTitle('');
                   setNewActionDesc('');
                   setNewActionClientId('');
+                  setNewActionAssigneeId(userRole === 'premium_individual' ? userId : '');
                   setReqNotesAssigneeId('');
                   setReqNotesDueDate('');
                   setReqNotesArticleId('');
@@ -10123,6 +10311,9 @@ export default function ConsultantPanel() {
                       {c.name}
                     </option>
                   ))}
+                  {selfTrackingClient && (
+                    <option value={selfTrackingClient.id}>👤 Kendim İçin (Lokasyon Bağımsız)</option>
+                  )}
                 </select>
               </div>
 

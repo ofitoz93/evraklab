@@ -20,6 +20,8 @@ import {
   Ticket,
   Send,
   Clock,
+  Gift,
+  Users,
 } from 'lucide-react';
 
 export default function Settings({ session }: { session: any }) {
@@ -38,6 +40,14 @@ export default function Settings({ session }: { session: any }) {
   const [inviteCode, setInviteCode] = useState('');
   const [joining, setJoining] = useState(false);
   const [pendingRequest, setPendingRequest] = useState<any>(null);
+
+  // Hediye Kodu
+  const [giftCode, setGiftCode] = useState('');
+  const [checkingGiftCode, setCheckingGiftCode] = useState(false);
+  const [redeemingGiftCode, setRedeemingGiftCode] = useState(false);
+  const [giftPreview, setGiftPreview] = useState<any>(null);
+  const [giftCompanyName, setGiftCompanyName] = useState('');
+  const [giftSelectedSeats, setGiftSelectedSeats] = useState<string[]>([]);
 
   // Şifre Değiştirme
   const [newPassword, setNewPassword] = useState('');
@@ -356,6 +366,73 @@ export default function Settings({ session }: { session: any }) {
     }
   };
 
+  const resetGiftCodeState = () => {
+    setGiftCode('');
+    setGiftPreview(null);
+    setGiftCompanyName('');
+    setGiftSelectedSeats([]);
+  };
+
+  const handleCheckGiftCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!giftCode.trim()) return alert('Lütfen kod girin.');
+
+    setCheckingGiftCode(true);
+    try {
+      const { data, error } = await supabase.rpc('preview_gift_code', {
+        code_input: giftCode.trim(),
+      });
+      if (error) throw error;
+
+      setGiftPreview(data);
+      if (data.action === 'needs_seat_selection') {
+        const ownerId = data.members.find((m: any) => m.id === profile.id)?.id;
+        setGiftSelectedSeats(ownerId ? [ownerId] : []);
+      }
+
+      if (data.action === 'direct') {
+        await handleRedeemGiftCode();
+      }
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+      resetGiftCodeState();
+    } finally {
+      setCheckingGiftCode(false);
+    }
+  };
+
+  const handleRedeemGiftCode = async (
+    companyName?: string,
+    seatIds?: string[]
+  ) => {
+    setRedeemingGiftCode(true);
+    try {
+      const { data, error } = await supabase.rpc('redeem_gift_code', {
+        code_input: giftCode.trim(),
+        new_company_name: companyName ?? null,
+        selected_seat_ids: seatIds ?? null,
+      });
+      if (error) throw error;
+
+      alert('✅ Kod başarıyla kullanıldı! Üyeliğiniz güncellendi.');
+      resetGiftCodeState();
+      fetchProfile();
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setRedeemingGiftCode(false);
+    }
+  };
+
+  const toggleGiftSeat = (memberId: string) => {
+    if (memberId === profile.id) return; // sahip her zaman seçili kalır
+    setGiftSelectedSeats((prev) =>
+      prev.includes(memberId)
+        ? prev.filter((id) => id !== memberId)
+        : [...prev, memberId]
+    );
+  };
+
   const handleCancelRequest = async () => {
     if (!pendingRequest) return;
     const confirmed = window.confirm("Katılım talebinizi iptal etmek istediğinize emin misiniz?");
@@ -499,11 +576,23 @@ export default function Settings({ session }: { session: any }) {
         const subDateStr = profile.organization.subscription_end_date;
         const endDate = subDateStr ? new Date(subDateStr) : null;
         const isActive = endDate ? endDate > new Date() : false;
-        
+        const seatInactive = isActive && profile.premium_seat_active === false;
+
         let roleTitle = 'Kurumsal Üyelik';
         if (role === 'premium_corporate') roleTitle = 'Şirket Yöneticisi (Kurumsal)';
         else if (role === 'corporate_chief') roleTitle = 'Departman Şefi (Kurumsal)';
         else if (role === 'corporate_staff') roleTitle = 'Kurumsal Personel';
+
+        if (seatInactive) {
+          return {
+            type: 'corporate_seat_inactive',
+            title: roleTitle,
+            subtitle: `Premiumsuz Hesap · ${orgName}`,
+            endDate: endDate!.toLocaleDateString('tr-TR'),
+            status: 'seat_inactive',
+            color: 'from-gray-500 to-gray-700',
+          };
+        }
 
         return {
           type: isActive ? 'corporate' : 'corporate_expired',
@@ -735,6 +824,11 @@ export default function Settings({ session }: { session: any }) {
                         <Calendar size={14} /> {subDetails?.type === 'admin' ? 'Geçerlilik: Süresiz' : `Bitiş Tarihi: ${subDetails?.endDate}`}
                       </div>
                     )}
+                    {subDetails?.status === 'seat_inactive' && (
+                      <div className="mt-4 bg-white/20 backdrop-blur-sm px-3 py-2 rounded-lg text-xs font-medium max-w-md">
+                        Kota sayısı uygun değil. Hesabınızın premium erişimi firma sahibiniz tarafından pasif hale getirildi. Lütfen firma sahibinizle iletişime geçiniz.
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-col gap-2">
                     {(profile?.role === 'premium_individual' ||
@@ -759,6 +853,150 @@ export default function Settings({ session }: { session: any }) {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* HEDİYE KODU KARTI */}
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 p-6 rounded-2xl border border-amber-100 shadow-sm">
+            <h3 className="font-bold text-amber-800 mb-3 flex items-center gap-2">
+              <Gift size={18} /> Hediye Kodu Kullan
+            </h3>
+            <p className="text-xs text-amber-700 mb-4">
+              Size verilen premium hediye kodunu girerek üyeliğinizi
+              uzatabilirsiniz.
+            </p>
+
+            {!giftPreview && (
+              <form
+                onSubmit={handleCheckGiftCode}
+                className="flex flex-col sm:flex-row gap-2"
+              >
+                <input
+                  type="text"
+                  placeholder="KOD GİRİN"
+                  className="flex-1 p-2 border border-amber-200 rounded text-center font-mono uppercase tracking-widest outline-none focus:border-amber-500"
+                  value={giftCode}
+                  onChange={(e) => setGiftCode(e.target.value)}
+                />
+                <button
+                  disabled={checkingGiftCode}
+                  className="bg-amber-600 text-white px-5 py-2 rounded font-bold text-sm hover:bg-amber-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {checkingGiftCode ? (
+                    <Loader size={14} className="animate-spin" />
+                  ) : (
+                    <Gift size={14} />
+                  )}
+                  Kodu Kullan
+                </button>
+              </form>
+            )}
+
+            {giftPreview?.action === 'direct' && (
+              <div className="flex items-center gap-2 text-sm text-amber-700 p-3">
+                <Loader size={14} className="animate-spin" /> Kod
+                uygulanıyor...
+              </div>
+            )}
+
+            {giftPreview?.action === 'needs_company_name' && (
+              <div className="space-y-2 mt-2">
+                <p className="text-xs text-amber-700 bg-white/60 p-3 rounded-lg border border-amber-100">
+                  Bu kod <b>{giftPreview.seats} kişilik</b>,{' '}
+                  <b>{giftPreview.duration_months} aylık</b> kurumsal premium
+                  sağlıyor. Devam etmek için yeni şirketinizin adını girin.
+                </p>
+                <input
+                  type="text"
+                  placeholder="Şirket Adı"
+                  className="w-full p-2 border border-amber-200 rounded outline-none focus:border-amber-500"
+                  value={giftCompanyName}
+                  onChange={(e) => setGiftCompanyName(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleRedeemGiftCode(giftCompanyName)}
+                    disabled={redeemingGiftCode || !giftCompanyName.trim()}
+                    className="flex-1 bg-amber-600 text-white py-2 rounded font-bold text-sm hover:bg-amber-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {redeemingGiftCode ? (
+                      <Loader size={14} className="animate-spin" />
+                    ) : (
+                      <Building size={14} />
+                    )}
+                    Şirketi Oluştur ve Kullan
+                  </button>
+                  <button
+                    onClick={resetGiftCodeState}
+                    className="px-4 py-2 rounded text-sm text-amber-700 hover:bg-amber-100"
+                  >
+                    Vazgeç
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {giftPreview?.action === 'needs_seat_selection' && (
+              <div className="space-y-2 mt-2">
+                <p className="text-xs text-amber-700 bg-white/60 p-3 rounded-lg border border-amber-100">
+                  Bu kod <b>{giftPreview.seats} kişilik</b>. Şirketinizde{' '}
+                  {giftPreview.members.length} kişi var, bu yüzden premium'un
+                  kimlerde devam edeceğini seçmelisiniz (
+                  {giftSelectedSeats.length}/{giftPreview.seats} seçildi).
+                  Seçilmeyenlerin premium'u sona erer.
+                </p>
+                <div className="space-y-1 max-h-56 overflow-y-auto">
+                  {giftPreview.members.map((m: any) => (
+                    <label
+                      key={m.id}
+                      className={`flex items-center gap-2 p-2 rounded-lg border text-sm cursor-pointer ${
+                        giftSelectedSeats.includes(m.id)
+                          ? 'bg-amber-100 border-amber-300'
+                          : 'bg-white border-gray-200'
+                      } ${m.id === profile.id ? 'opacity-70 cursor-not-allowed' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={giftSelectedSeats.includes(m.id)}
+                        onChange={() => toggleGiftSeat(m.id)}
+                        disabled={
+                          m.id === profile.id ||
+                          (!giftSelectedSeats.includes(m.id) &&
+                            giftSelectedSeats.length >= giftPreview.seats)
+                        }
+                      />
+                      <Users size={14} className="text-gray-400" />
+                      <span className="flex-1">
+                        {m.full_name || m.email}
+                        {m.id === profile.id ? ' (Siz - Sahip)' : ''}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleRedeemGiftCode(undefined, giftSelectedSeats)}
+                    disabled={
+                      redeemingGiftCode ||
+                      giftSelectedSeats.length !== giftPreview.seats
+                    }
+                    className="flex-1 bg-amber-600 text-white py-2 rounded font-bold text-sm hover:bg-amber-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {redeemingGiftCode ? (
+                      <Loader size={14} className="animate-spin" />
+                    ) : (
+                      <Gift size={14} />
+                    )}
+                    Seçimi Onayla ve Kullan
+                  </button>
+                  <button
+                    onClick={resetGiftCodeState}
+                    className="px-4 py-2 rounded text-sm text-amber-700 hover:bg-amber-100"
+                  >
+                    Vazgeç
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* KİŞİSEL BİLGİLER FORMU */}

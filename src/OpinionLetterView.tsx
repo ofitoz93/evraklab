@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle } from 'docx';
 import { supabase } from './supabaseClient';
-import { Printer, ArrowLeft, Check, XCircle, Loader } from 'lucide-react';
+import { Printer, FileDown, ArrowLeft, Check, XCircle } from 'lucide-react';
 
 export default function OpinionLetterView() {
   const { id } = useParams();
@@ -84,7 +85,7 @@ export default function OpinionLetterView() {
   if (loading) return <div className="p-8 text-center">Görüş yükleniyor...</div>;
   if (!letter) return <div className="p-8 text-center">Görüş bulunamadı.</div>;
 
-  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief';
+  const isManager = userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual';
   const statusLabel = letter.status === 'approved' ? 'Onaylandı' : letter.status === 'rejected' ? 'Reddedildi' : 'Onay Bekliyor';
   const statusColor = letter.status === 'approved'
     ? 'bg-green-50 text-green-700 border-green-200'
@@ -98,6 +99,86 @@ export default function OpinionLetterView() {
     : letter.sequence_no
     ? `${letterYear}-${String(letter.sequence_no).padStart(2, '0')}`
     : String(letterYear);
+
+  const handleDownloadWord = async () => {
+    const dateLabel = new Date(letter.letter_date).toLocaleDateString('tr-TR');
+    const BLUE_700 = '1D4ED8';
+    const BLUE_200 = 'BFDBFE';
+    const BLUE_100 = 'DBEAFE';
+    const GRAY_900 = '111827';
+    const GRAY_800 = '1F2937';
+
+    const doc = new Document({
+      sections: [{
+        children: [
+          // Üstteki renkli çerçeve (h-3 bg-gradient-to-r from-blue-700 via-sky-500 to-blue-700)
+          new Paragraph({
+            border: { bottom: { style: BorderStyle.SINGLE, size: 24, color: BLUE_700 } },
+            spacing: { after: 200 },
+            children: [],
+          }),
+          new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            children: [
+              new TextRun({ text: 'Sayı: ', bold: true, color: BLUE_700 }),
+              new TextRun({ text: sayiNo, color: GRAY_800 }),
+            ],
+          }),
+          new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            spacing: { after: 100 },
+            children: [
+              new TextRun({ text: 'Tarih: ', bold: true, color: BLUE_700 }),
+              new TextRun({ text: dateLabel, color: GRAY_800 }),
+            ],
+          }),
+          new Paragraph({
+            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: BLUE_100 } },
+            spacing: { after: 300 },
+            children: [
+              new TextRun({ text: 'Konu: ', bold: true, color: BLUE_700 }),
+              new TextRun({ text: letter.subject, color: GRAY_800 }),
+            ],
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 300 },
+            children: [new TextRun({ text: letter.institution_name?.toUpperCase() || '', bold: true, color: GRAY_900 })],
+          }),
+          ...String(letter.content || '').split('\n').map((line: string) =>
+            new Paragraph({
+              alignment: AlignmentType.JUSTIFIED,
+              children: [new TextRun({ text: line, color: GRAY_900 })],
+            })
+          ),
+          new Paragraph({ text: '' }),
+          new Paragraph({ text: '' }),
+          new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            children: [new TextRun({ text: (letter.client?.name || '').toUpperCase(), bold: true, color: GRAY_800 })],
+          }),
+          new Paragraph({ text: '' }),
+          new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            border: { top: { style: BorderStyle.SINGLE, size: 12, color: BLUE_200 } },
+            spacing: { before: 200 },
+            children: [new TextRun({ text: 'İMZA / KAŞE', bold: true, color: BLUE_700 })],
+          }),
+        ],
+      }],
+    });
+
+    const blob = await Packer.toBlob(doc);
+    const filename = `Gorus_${(letter?.client?.name || '').replace(/\s+/g, '_')}_${letter?.letter_date || ''}.docx`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="flex flex-col items-center w-full space-y-6">
@@ -123,23 +204,29 @@ export default function OpinionLetterView() {
           >
             <Printer size={16} /> Yazdır / PDF İndir
           </button>
-          {letter.status === 'pending' && isManager && (
-            <>
-              <button
-                onClick={() => handleAnswer(true)}
-                disabled={answering}
-                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg transition font-bold text-sm"
-              >
-                <Check size={16} /> Onayla
-              </button>
-              <button
-                onClick={() => handleAnswer(false)}
-                disabled={answering}
-                className="flex items-center gap-2 px-4 py-2 border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 rounded-lg transition font-bold text-sm"
-              >
-                <XCircle size={16} /> Reddet
-              </button>
-            </>
+          <button
+            onClick={handleDownloadWord}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-bold text-sm"
+          >
+            <FileDown size={16} /> Word İndir
+          </button>
+          {isManager && letter.status !== 'approved' && (
+            <button
+              onClick={() => handleAnswer(true)}
+              disabled={answering}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg transition font-bold text-sm"
+            >
+              <Check size={16} /> Onayla
+            </button>
+          )}
+          {isManager && letter.status !== 'rejected' && (
+            <button
+              onClick={() => handleAnswer(false)}
+              disabled={answering}
+              className="flex items-center gap-2 px-4 py-2 border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 rounded-lg transition font-bold text-sm"
+            >
+              <XCircle size={16} /> Reddet
+            </button>
           )}
         </div>
       </div>
