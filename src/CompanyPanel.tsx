@@ -1841,7 +1841,12 @@ export default function CompanyPanel() {
         const clientIds = assignedClients.map(c => c.id);
         if (clientIds.length > 0) {
           if (myProfile?.role === 'corporate_staff') {
-            query = query.or(`assigned_to.eq.${myProfile.id},client_id.in.(${clientIds.join(',')})`);
+            // Kendisine atanmış aksiyonlar + atandığı müşteriler için "firma geneli"
+            // (assigned_to = null) aksiyonlar. Aynı müşteride BAŞKA bir personele
+            // özel atanmış aksiyonları görmemeli.
+            query = query.or(
+              `assigned_to.eq.${myProfile.id},and(assigned_to.is.null,client_id.in.(${clientIds.join(',')}))`
+            );
           } else {
             query = query.in('client_id', clientIds);
           }
@@ -1850,7 +1855,13 @@ export default function CompanyPanel() {
         }
       } else {
         if (clientRecId) {
+          const isManager = ['premium_corporate', 'corporate_chief'].includes(myProfile?.role);
           query = query.eq('client_id', clientRecId);
+          if (!isManager) {
+            // Kendisine atanmış aksiyonlar + firma geneli (assigned_to = null)
+            // aksiyonlar; başka bir çalışana özel atanmış aksiyonları görmemeli.
+            query = query.or(`assigned_to.eq.${myProfile?.id},assigned_to.is.null`);
+          }
         } else {
           setComplianceActions([]);
           setLoadingActions(false);
@@ -1918,10 +1929,13 @@ export default function CompanyPanel() {
     const title = newActionTitle.trim();
     const desc = newActionDesc.trim();
     const cId = isConsultant ? newActionClientId : clientRecId;
-    const aId = newActionAssigneeId || myProfile?.id;
+    const rawAssignee = newActionAssigneeId || myProfile?.id;
+    // 'COMPANY_WIDE' seçilirse aksiyon belirli bir kişiye değil, firmanın
+    // geneline açılır (assigned_to = null) - o firmadaki herkes görebilir.
+    const aId = rawAssignee === 'COMPANY_WIDE' ? null : rawAssignee;
     const dDate = newActionDueDate;
 
-    if (!title || !cId || !aId || !dDate || !desc) {
+    if (!title || !cId || !rawAssignee || !dDate || !desc) {
       alert('Lütfen tüm zorunlu alanları doldurun. Açıklama yazmadan aksiyon açılamaz.');
       return;
     }
@@ -2226,6 +2240,42 @@ export default function CompanyPanel() {
   ).length;
 
   // --- 1. E-POSTA İLE DAVET (Geri Eklendi) ---
+  // E-posta ile ekip daveti gönderir (Google Apps Script üzerinden). Kişi sisteme
+  // kayıtlıysa "davetiniz var, bildirimlerinizi kontrol edin" maili; kayıtlı
+  // değilse tıklayınca kayıt olup otomatik şirkete katılacağı bir bağlantı gider.
+  const sendTeamInviteEmail = async (
+    targetEmail: string,
+    orgName: string,
+    loginLink: string,
+    isNewUser: boolean
+  ) => {
+    try {
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      const actualScriptUrl = scriptSetting?.value;
+      if (!actualScriptUrl) {
+        console.warn('Davet e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return;
+      }
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: isNewUser ? 'team_invite_register' : 'team_invite',
+          email: targetEmail,
+          orgName,
+          loginLink,
+        }),
+      });
+    } catch (err) {
+      console.error('Davet e-postası gönderim hatası:', err);
+    }
+  };
+
   const handleSendEmailInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (totalUsed >= maxLimit)
@@ -2249,19 +2299,14 @@ export default function CompanyPanel() {
         return;
       }
 
-      // Kullanıcıyı Bul
-      const { data: targetUser, error: userError } = await supabase
+      // Kullanıcıyı Bul (sistemde kayıtlı mı, değil mi?)
+      const { data: targetUser } = await supabase
         .from('profiles')
         .select('id, full_name, organization_id')
         .eq('email', inviteEmail)
-        .single();
+        .maybeSingle();
 
-      if (userError || !targetUser) {
-        alert('❌ Kullanıcı Bulunamadı! (Sisteme kayıtlı olması gerekir)');
-        setSendingEmail(false);
-        return;
-      }
-      if (targetUser.organization_id) {
+      if (targetUser?.organization_id) {
         alert('⚠️ Bu kullanıcı zaten bir şirkette.');
         setSendingEmail(false);
         return;
@@ -2275,22 +2320,30 @@ export default function CompanyPanel() {
 
       if (inviteError) throw inviteError;
 
-      // Bildirim Gönder
-      await supabase.from('notifications').insert([
-        {
-          user_id: targetUser.id,
-          title: 'Şirket Daveti',
-          message: `${myOrg.name} şirketi sizi ekibine katılmaya davet etti.`,
-          type: 'invite',
-          metadata: {
-            org_id: myOrg.id,
-            org_name: myOrg.name,
-            invite_code: code,
+      if (targetUser) {
+        // Sisteme kayıtlı kullanıcı: uygulama içi bildirim + bilgilendirme e-postası
+        await supabase.from('notifications').insert([
+          {
+            user_id: targetUser.id,
+            title: 'Şirket Daveti',
+            message: `${myOrg.name} şirketi sizi ekibine katılmaya davet etti.`,
+            type: 'invite',
+            metadata: {
+              org_id: myOrg.id,
+              org_name: myOrg.name,
+              invite_code: code,
+            },
           },
-        },
-      ]);
+        ]);
+        await sendTeamInviteEmail(inviteEmail, myOrg.name, `${window.location.origin}/notifications`, false);
+        alert('✅ Davet Gönderildi! Kullanıcıya uygulama içi bildirim ve e-posta iletildi.');
+      } else {
+        // Sistemde kayıtlı olmayan kullanıcı: kayıt olunca otomatik katılacağı bağlantı
+        const registerLink = `${window.location.origin}/register?invite_org=${myOrg.id}&invite_code=${code}&invite_email=${encodeURIComponent(inviteEmail)}`;
+        await sendTeamInviteEmail(inviteEmail, myOrg.name, registerLink, true);
+        alert('✅ Davet Gönderildi! Bu e-posta sistemde kayıtlı olmadığı için kayıt bağlantısı içeren bir davet e-postası gönderildi. Kayıt olduğunda otomatik olarak şirkete katılacak.');
+      }
 
-      alert(`✅ Davet Gönderildi!`);
       setInviteEmail('');
       fetchCompanyData();
     } catch (error: any) {
@@ -2337,6 +2390,7 @@ export default function CompanyPanel() {
         .from('profiles')
         .update({ organization_id: null, role: 'normal' })
         .eq('id', id);
+      await supabase.rpc('clear_membership_notifications', { target_user_id: id });
       setTeamMembers((prev) => prev.filter((m) => m.id !== id));
     }
   };
@@ -3100,6 +3154,35 @@ export default function CompanyPanel() {
                             {permLabels[p] || p}
                           </button>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Personel Yetkileri - atanan personel belgeleri zaten otomatik
+                      görüntüleyip/düzenleyip/yenileyebiliyor; silme yetkisi ise
+                      varsayılan olarak sadece şefte/sahipte - sahip isterse burada
+                      bir personele de verebilir. */}
+                  {isCorporateAdmin && member.role === 'corporate_staff' && (
+                    <div className="mt-2 pt-2 border-t ml-12">
+                      <span className="text-[10px] font-bold text-gray-400 block mb-1">
+                        PERSONEL YETKİLERİ
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleTogglePermission(member, 'can_delete_team_docs')}
+                          className={`text-[10px] px-2 py-1 rounded border flex items-center gap-1 transition ${
+                            member.permissions?.can_delete_team_docs
+                              ? 'bg-green-50 text-green-700 border-green-200'
+                              : 'bg-gray-55 text-gray-400 hover:bg-gray-100'
+                          }`}
+                        >
+                          {member.permissions?.can_delete_team_docs ? (
+                            <CheckSquare size={10} />
+                          ) : (
+                            <Square size={10} />
+                          )}{' '}
+                          {permLabels['can_delete_team_docs']}
+                        </button>
                       </div>
                     </div>
                   )}
@@ -4172,7 +4255,7 @@ export default function CompanyPanel() {
                           )}
 
                           <div className="text-[10px] text-gray-400 space-y-0.5 pt-1 border-t border-slate-100 dark:border-slate-800/80">
-                            <div>Sorumlu: <b>{act.assignee?.full_name || 'Atanmamış'}</b></div>
+                            <div>Sorumlu: <b>{act.assignee?.full_name || (act.assigned_to ? 'Atanmamış' : '🏢 Tüm Ekip / Firma Geneli')}</b></div>
                             <div>Oluşturan: <b>{act.creator?.full_name || 'Bilinmeyen'}</b></div>
                           </div>
                         </div>
@@ -5238,6 +5321,7 @@ export default function CompanyPanel() {
                   ) : (
                     <>
                       <option value="">-- Personel Seçin --</option>
+                      <option value="COMPANY_WIDE">🏢 Tüm Ekip / Firma Geneli</option>
                       <option value={myProfile?.id}>
                         {myProfile?.full_name} (Kendime Atayım)
                       </option>
@@ -5249,6 +5333,11 @@ export default function CompanyPanel() {
                     </>
                   )}
                 </select>
+                {newActionAssigneeId === 'COMPANY_WIDE' && (
+                  <p className="text-[10px] text-purple-600 mt-1 font-medium">
+                    Bu aksiyon belirli bir kişiye değil, firmadaki herkese açık olacak.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -5522,7 +5611,8 @@ export default function CompanyPanel() {
                 <div>
                   <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Sorumlu Personel</span>
                   <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                    {selectedActionDetails.assignee?.full_name || 'Atanmamış'}
+                    {selectedActionDetails.assignee?.full_name ||
+                      (selectedActionDetails.assigned_to ? 'Atanmamış' : '🏢 Tüm Ekip / Firma Geneli')}
                   </span>
                 </div>
                 <div>

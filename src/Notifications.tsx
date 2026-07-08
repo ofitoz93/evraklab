@@ -46,21 +46,16 @@ export default function Notifications() {
     }
   }
 
+  // Organizasyonda birden fazla yönetici varsa, aynı katılım talebi HER yöneticiye
+  // ayrı bir notifications satırı olarak gönderilir (bkz. Settings.tsx handleJoinCompany).
+  // Normal bir RLS'e tabi silme işlemi, onaylayan/reddeden yöneticinin SADECE KENDİ
+  // satırını silebilir - diğer yöneticilerin kopyaları kalıntı olarak kalır ve talep
+  // eden kişi bunları (özel RLS istisnası sayesinde) hâlâ görmeye devam eder. Bu yüzden
+  // tüm kopyaları RLS'e takılmadan silen bir SECURITY DEFINER fonksiyon kullanıyoruz.
   const deleteRelatedNotifications = async (invitationId: string) => {
     try {
-      const { data: relatedNotifs } = await supabase
-        .from('notifications')
-        .select('id, metadata')
-        .eq('type', 'join_request');
-      
-      const idsToDelete = (relatedNotifs || [])
-        .filter((n: any) => n.metadata?.invitation_id === invitationId)
-        .map((n: any) => n.id);
-        
-      if (idsToDelete.length > 0) {
-        await supabase.from('notifications').delete().in('id', idsToDelete);
-        setNotifications(prev => prev.filter(n => !idsToDelete.includes(n.id)));
-      }
+      await supabase.rpc('clear_join_request_notifications', { target_invitation_id: invitationId });
+      setNotifications(prev => prev.filter(n => n.metadata?.invitation_id !== invitationId));
     } catch (err) {
       console.error("Related notifications delete failed:", err);
     }
@@ -110,6 +105,38 @@ export default function Notifications() {
     } catch (error:any) {
         alert("Hata: " + error.message);
     }
+  };
+
+  // --- E-POSTA İLE DAVET: KABUL ET ---
+  const handleAcceptInvite = async (notification: any) => {
+    const { org_id, invite_code } = notification.metadata || {};
+    if (!org_id || !invite_code) {
+      alert('Davet bilgileri eksik, lütfen yöneticinizden yeni bir davet isteyin.');
+      return;
+    }
+    try {
+      const { error } = await supabase.rpc('accept_email_invitation', {
+        target_org_id: org_id,
+        invite_code,
+      });
+      if (error) throw error;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await supabase.rpc('clear_membership_notifications', { target_user_id: session.user.id });
+      }
+
+      alert('Şirkete katıldınız! Sayfa yenileniyor...');
+      window.location.href = '/';
+    } catch (error: any) {
+      alert('Hata: ' + error.message);
+    }
+  };
+
+  // --- E-POSTA İLE DAVET: REDDET ---
+  const handleDeclineInvite = async (notification: any) => {
+    if (!window.confirm('Bu daveti reddetmek istediğinize emin misiniz?')) return;
+    await deleteNotification(notification.id);
   };
 
   // --- RED İŞLEMİ ---
@@ -171,22 +198,25 @@ export default function Notifications() {
             notifications.map(n => {
                 const isAdminMsg = n.type === 'admin_announcement' || n.type === 'admin_msg';
                 const isJoinRequest = n.type === 'join_request';
+                const isInvite = n.type === 'invite';
                 const isWarning = n.type === 'warning';
-                
+                const hasActions = isJoinRequest || isInvite;
+
                 return (
-                    <div 
-                        key={n.id} 
-                        className={`relative p-5 rounded-xl border transition group 
+                    <div
+                        key={n.id}
+                        onClick={() => !n.is_read && markAsRead(n.id)}
+                        className={`relative p-5 rounded-xl border transition group cursor-pointer
                         ${n.is_read ? 'bg-white dark:bg-slate-800 border-gray-200 dark:border-slate-700' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'}
-                        ${isJoinRequest ? 'border-l-4 border-l-purple-500' : ''}
+                        ${hasActions ? 'border-l-4 border-l-purple-500' : ''}
                         `}
                     >
                         <div className="flex items-start gap-4">
-                            <div className={`mt-1 p-2 rounded-full flex-shrink-0 
-                                ${isAdminMsg ? 'bg-red-100 text-red-600' : isJoinRequest ? 'bg-purple-100 text-purple-600' : isWarning ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
-                                {isAdminMsg ? <Shield size={20}/> : isJoinRequest ? <UserPlus size={20}/> : isWarning ? <AlertTriangle size={20}/> : <Info size={20}/>}
+                            <div className={`mt-1 p-2 rounded-full flex-shrink-0
+                                ${isAdminMsg ? 'bg-red-100 text-red-600' : hasActions ? 'bg-purple-100 text-purple-600' : isWarning ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
+                                {isAdminMsg ? <Shield size={20}/> : hasActions ? <UserPlus size={20}/> : isWarning ? <AlertTriangle size={20}/> : <Info size={20}/>}
                             </div>
-                            
+
                             <div className="flex-1">
                                 <div className="flex justify-between items-start">
                                     <h4 className="font-bold text-gray-800 dark:text-gray-200 text-md flex items-center gap-2">
@@ -196,18 +226,36 @@ export default function Notifications() {
                                     <span className="text-xs text-gray-400">{new Date(n.created_at).toLocaleDateString()} {new Date(n.created_at).toLocaleTimeString().slice(0,5)}</span>
                                 </div>
                                 <p className="text-gray-600 dark:text-gray-400 text-sm mt-1 leading-relaxed">{n.message}</p>
-                                
+
                                 {/* KATILIM İSTEĞİ BUTONLARI */}
                                 {isJoinRequest && (
                                     <div className="mt-4 flex gap-3">
-                                        <button 
-                                            onClick={() => handleApproveJoin(n)}
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleApproveJoin(n); }}
                                             className="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-700 flex items-center gap-1 shadow-sm"
                                         >
                                             <CheckCircle size={14} /> Onayla
                                         </button>
-                                        <button 
-                                            onClick={() => handleRejectJoin(n)}
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleRejectJoin(n); }}
+                                            className="bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-100 flex items-center gap-1"
+                                        >
+                                            <XCircle size={14} /> Reddet
+                                        </button>
+                                    </div>
+                                )}
+
+                                {/* DAVET (E-POSTA İLE) BUTONLARI */}
+                                {isInvite && (
+                                    <div className="mt-4 flex gap-3">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleAcceptInvite(n); }}
+                                            className="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-700 flex items-center gap-1 shadow-sm"
+                                        >
+                                            <CheckCircle size={14} /> Onayla
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleDeclineInvite(n); }}
                                             className="bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-100 flex items-center gap-1"
                                         >
                                             <XCircle size={14} /> Reddet
@@ -217,14 +265,14 @@ export default function Notifications() {
                             </div>
                         </div>
 
-                        {!isJoinRequest && ( // İstek bildirimlerinde sil butonu kafa karıştırmasın diye gizledim
+                        {!hasActions && ( // İstek/davet bildirimlerinde sil butonu kafa karıştırmasın diye gizledim
                             <div className="absolute bottom-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                 {!n.is_read && (
-                                    <button onClick={() => markAsRead(n.id)} className="p-2 bg-white dark:bg-slate-700 border dark:border-slate-600 rounded-lg text-green-600 hover:bg-green-50 shadow-sm" title="Okundu İşaretle">
+                                    <button onClick={(e) => { e.stopPropagation(); markAsRead(n.id); }} className="p-2 bg-white dark:bg-slate-700 border dark:border-slate-600 rounded-lg text-green-600 hover:bg-green-50 shadow-sm" title="Okundu İşaretle">
                                         <CheckCircle size={16}/>
                                     </button>
                                 )}
-                                <button onClick={() => deleteNotification(n.id)} className="p-2 bg-white dark:bg-slate-700 border dark:border-slate-600 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 shadow-sm" title="Sil">
+                                <button onClick={(e) => { e.stopPropagation(); deleteNotification(n.id); }} className="p-2 bg-white dark:bg-slate-700 border dark:border-slate-600 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 shadow-sm" title="Sil">
                                     <Trash2 size={16}/>
                                 </button>
                             </div>

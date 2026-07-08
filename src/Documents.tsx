@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FileText,
   Plus,
@@ -30,6 +30,7 @@ import {
 
 export default function Documents() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [docs, setDocs] = useState<any[]>([]);
   const [filteredDocs, setFilteredDocs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,6 +67,10 @@ export default function Documents() {
   const [userId, setUserId] = useState('');
   const [userRole, setUserRole] = useState('');
   const [myPermissions, setMyPermissions] = useState<any>({});
+  // Kullanıcının consultant_assignments üzerinden atandığı müşteri/firma adları
+  // (küçük harf, trim'lenmiş) - atanmış personelin o firmanın belgelerini
+  // otomatik görüntüleyip düzenleyebilmesi/yenileyebilmesi için kullanılır.
+  const [assignedClientNamesState, setAssignedClientNamesState] = useState<string[]>([]);
 
   const [isPremium, setIsPremium] = useState(false);
   const [isEnvConsultant, setIsEnvConsultant] = useState(false);
@@ -204,6 +209,21 @@ const getOrCreateDriveFolder = async (
     checkInvites();
   }, []);
 
+  // AddDocument.tsx'te aynı firma/tür için zaten aktif bir belge bulunduğunda,
+  // kullanıcı "yenilemek ister misiniz?" sorusuna evet derse buraya
+  // ?renew=<docId> ile yönlendiriliyor - o belgenin Yenile modalını otomatik açar.
+  useEffect(() => {
+    const renewId = searchParams.get('renew');
+    if (renewId && docs.length > 0) {
+      const target = docs.find((d) => d.id === renewId);
+      if (target) {
+        handleOpenRenew(target);
+      }
+      searchParams.delete('renew');
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [docs]);
+
   const checkInvites = async () => {
     const {
       data: { session },
@@ -337,8 +357,11 @@ const getOrCreateDriveFolder = async (
           .from('consultant_assignments')
           .select('client:client_id(name)')
           .eq('user_id', session.user.id);
-        assignedClientNames = assigns?.map((a: any) => a.client?.name).filter(Boolean) || [];
+        assignedClientNames = assigns
+          ?.map((a: any) => a.client?.name?.trim().toLowerCase())
+          .filter(Boolean) || [];
       }
+      setAssignedClientNamesState(assignedClientNames);
 
       let query = supabase
         .from('documents')
@@ -381,7 +404,7 @@ const getOrCreateDriveFolder = async (
             
             // Restrict visibility for chiefs/staff if they don't have can_view_all_clients
             if (isRestrictedRole && !perms.can_view_all_clients) {
-              const docLocLabel = doc.location_def?.label;
+              const docLocLabel = doc.location_def?.label?.trim().toLowerCase();
               const isAssigned = docLocLabel && assignedClientNames.includes(docLocLabel);
               return isMyDoc || isAssigned;
             }
@@ -1013,13 +1036,32 @@ const getOrCreateDriveFolder = async (
                 const daysLeft = getDaysLeft(doc.application_deadline);
                 const isCorporate = !!doc.organization_id;
                 const isOwner = doc.uploader_id === userId;
+                const docLocLabelLower = doc.location_def?.label?.trim().toLowerCase();
+                const isAssignedToDoc =
+                  isCorporate &&
+                  !!docLocLabelLower &&
+                  assignedClientNamesState.includes(docLocLabelLower);
                 const canEdit =
                   isOwner ||
                   userRole === 'admin' ||
                   (userRole === 'premium_corporate' && isCorporate) ||
                   (userRole === 'corporate_chief' &&
                     myPermissions?.can_edit_team_docs &&
-                    isCorporate);
+                    isCorporate) ||
+                  // Atanmış personel (consultant_assignments), atandığı firmanın
+                  // belgelerini otomatik olarak görüntüleyebilir/düzenleyebilir/yenileyebilir.
+                  ((userRole === 'corporate_staff' || userRole === 'corporate_chief') &&
+                    isAssignedToDoc);
+                const canDelete =
+                  isOwner ||
+                  userRole === 'admin' ||
+                  (userRole === 'premium_corporate' && isCorporate) ||
+                  (userRole === 'corporate_chief' && isCorporate) ||
+                  // Silme varsayılan olarak sadece şef/sahip/admin'de - firma sahibi
+                  // isterse bir personele bu yetkiyi ayrıca verebilir.
+                  (userRole === 'corporate_staff' &&
+                    isCorporate &&
+                    !!myPermissions?.can_delete_team_docs);
 
                 let statusBadge;
                 if (doc.is_indefinite)
@@ -1210,7 +1252,7 @@ const getOrCreateDriveFolder = async (
                             <Edit size={16} />
                           </Link>
                         )}
-                        {canEdit && (
+                        {canDelete && (
                           <button
                             onClick={() => handleDelete(doc.id)}
                             className="p-2 bg-gray-100 hover:bg-red-100 text-red-600 rounded transition"
@@ -1257,13 +1299,21 @@ const getOrCreateDriveFolder = async (
                       const isReport = !!arc.env_report_id;
                       const isWetSigned = !!arc.env_report?.wet_signature_url;
                       const arcIsCorporate = !!arc.organization_id;
+                      // arc sorgusu location_def'i join'lemiyor ama zaten aynı
+                      // location_def_id ile filtrelendiği için, açılışta seçilen
+                      // aktif belgenin (selectedDocForArchive) lokasyon etiketi kullanılabilir.
+                      const arcLocLabelLower = selectedDocForArchive?.location_def?.label?.trim().toLowerCase();
                       const canEditArc =
                         arc.uploader_id === userId ||
                         userRole === 'admin' ||
                         (userRole === 'premium_corporate' && arcIsCorporate) ||
                         (userRole === 'corporate_chief' &&
                           myPermissions?.can_edit_team_docs &&
-                          arcIsCorporate);
+                          arcIsCorporate) ||
+                        ((userRole === 'corporate_staff' || userRole === 'corporate_chief') &&
+                          arcIsCorporate &&
+                          !!arcLocLabelLower &&
+                          assignedClientNamesState.includes(arcLocLabelLower));
                       return (
                         <tr key={arc.id} className="border-b border-gray-100 hover:bg-gray-50/50">
                           <td className="p-3">

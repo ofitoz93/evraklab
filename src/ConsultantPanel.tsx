@@ -1762,6 +1762,42 @@ export default function ConsultantPanel() {
     }
   };
 
+  // E-posta ile ekip daveti gönderir (Google Apps Script üzerinden). Kişi sisteme
+  // kayıtlıysa "davetiniz var, bildirimlerinizi kontrol edin" maili; kayıtlı
+  // değilse tıklayınca kayıt olup otomatik firmaya katılacağı bir bağlantı gider.
+  const sendTeamInviteEmail = async (
+    targetEmail: string,
+    orgName: string,
+    loginLink: string,
+    isNewUser: boolean
+  ) => {
+    try {
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      const actualScriptUrl = scriptSetting?.value;
+      if (!actualScriptUrl) {
+        console.warn('Davet e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return;
+      }
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: isNewUser ? 'team_invite_register' : 'team_invite',
+          email: targetEmail,
+          orgName,
+          loginLink,
+        }),
+      });
+    } catch (err) {
+      console.error('Davet e-postası gönderim hatası:', err);
+    }
+  };
+
   const handleSendEmailInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (userRole !== 'premium_corporate') {
@@ -1786,18 +1822,14 @@ export default function ConsultantPanel() {
         return;
       }
 
-      const { data: targetUser, error: userError } = await supabase
+      // Kullanıcıyı Bul (sistemde kayıtlı mı, değil mi?)
+      const { data: targetUser } = await supabase
         .from('profiles')
         .select('id, full_name, organization_id')
         .eq('email', inviteEmail)
-        .single();
+        .maybeSingle();
 
-      if (userError || !targetUser) {
-        alert('❌ Kullanıcı Bulunamadı! (Sisteme kayıtlı olması gerekir)');
-        setSendingEmail(false);
-        return;
-      }
-      if (targetUser.organization_id) {
+      if (targetUser?.organization_id) {
         alert('⚠️ Bu kullanıcı zaten bir şirkete/firmaya bağlı.');
         setSendingEmail(false);
         return;
@@ -1810,21 +1842,32 @@ export default function ConsultantPanel() {
 
       if (inviteError) throw inviteError;
 
-      await supabase.from('notifications').insert([
-        {
-          user_id: targetUser.id,
-          title: 'Danışmanlık Firması Daveti',
-          message: `${orgData?.name || 'Danışmanlık Firması'} sizi ekibine katılmaya davet etti.`,
-          type: 'invite',
-          metadata: {
-            org_id: orgId,
-            org_name: orgData?.name,
-            invite_code: code,
-          },
-        },
-      ]);
+      const orgNameForMail = orgData?.name || 'Danışmanlık Firması';
 
-      alert(`✅ Davet başarıyla gönderildi!`);
+      if (targetUser) {
+        // Sisteme kayıtlı kullanıcı: uygulama içi bildirim + bilgilendirme e-postası
+        await supabase.from('notifications').insert([
+          {
+            user_id: targetUser.id,
+            title: 'Danışmanlık Firması Daveti',
+            message: `${orgNameForMail} sizi ekibine katılmaya davet etti.`,
+            type: 'invite',
+            metadata: {
+              org_id: orgId,
+              org_name: orgData?.name,
+              invite_code: code,
+            },
+          },
+        ]);
+        await sendTeamInviteEmail(inviteEmail, orgNameForMail, `${window.location.origin}/notifications`, false);
+        alert('✅ Davet başarıyla gönderildi! Kullanıcıya uygulama içi bildirim ve e-posta iletildi.');
+      } else {
+        // Sistemde kayıtlı olmayan kullanıcı: kayıt olunca otomatik katılacağı bağlantı
+        const registerLink = `${window.location.origin}/register?invite_org=${orgId}&invite_code=${code}&invite_email=${encodeURIComponent(inviteEmail)}`;
+        await sendTeamInviteEmail(inviteEmail, orgNameForMail, registerLink, true);
+        alert('✅ Davet başarıyla gönderildi! Bu e-posta sistemde kayıtlı olmadığı için kayıt bağlantısı içeren bir davet e-postası gönderildi. Kayıt olduğunda otomatik olarak firmaya katılacak.');
+      }
+
       setInviteEmail('');
       fetchInvitations();
     } catch (error: any) {
@@ -1882,6 +1925,7 @@ export default function ConsultantPanel() {
           .update({ organization_id: null, role: 'normal' })
           .eq('id', id);
         if (error) throw error;
+        await supabase.rpc('clear_membership_notifications', { target_user_id: id });
         setTeamMembers((prev) => prev.filter((m) => m.id !== id));
       } catch (err: any) {
         alert('Çıkarılırken hata oluştu: ' + err.message);
@@ -3252,7 +3296,12 @@ export default function ConsultantPanel() {
         const cIds = assignments?.map((a) => a.client_id) || [];
         
         if (cIds.length > 0) {
-          query = query.or(`assigned_to.eq.${userId},client_id.in.(${cIds.join(',')})`);
+          // Kendisine atanmış aksiyonlar + atandığı müşteriler için "firma geneli"
+          // (assigned_to = null) aksiyonlar. Aynı müşteride BAŞKA bir personele
+          // özel atanmış aksiyonları görmemeli.
+          query = query.or(
+            `assigned_to.eq.${userId},and(assigned_to.is.null,client_id.in.(${cIds.join(',')}))`
+          );
         } else {
           query = query.eq('assigned_to', userId);
         }
@@ -8311,7 +8360,7 @@ export default function ConsultantPanel() {
                       {/* Bottom action bar & metadata */}
                       <div className="mt-4 pt-3 border-t border-gray-100 dark:border-slate-700 flex flex-wrap justify-between items-center gap-2">
                         <div className="text-[10px] text-gray-400 dark:text-gray-500 space-y-0.5">
-                          <div>Sorumlu: <b>{act.assignee?.full_name || 'Bilinmeyen'}</b></div>
+                          <div>Sorumlu: <b>{act.assignee?.full_name || (act.assigned_to ? 'Bilinmeyen' : '🏢 Tüm Ekip / Firma Geneli')}</b></div>
                           <div>Atayan: <b>{act.creator?.full_name || 'Yönetici'}</b></div>
                           <div>Son Gün: <b className={act.status !== 'approved' && new Date(act.due_date) < new Date() ? 'text-red-500 font-bold' : ''}>{new Date(act.due_date).toLocaleDateString('tr-TR')}</b></div>
                         </div>
@@ -12081,7 +12130,8 @@ export default function ConsultantPanel() {
                 <div>
                   <span className="text-[10px] text-gray-400 uppercase tracking-wide block">Sorumlu Personel</span>
                   <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                    {selectedActionDetails.assignee?.full_name || 'Atanmamış'}
+                    {selectedActionDetails.assignee?.full_name ||
+                      (selectedActionDetails.assigned_to ? 'Atanmamış' : '🏢 Tüm Ekip / Firma Geneli')}
                   </span>
                 </div>
                 <div>

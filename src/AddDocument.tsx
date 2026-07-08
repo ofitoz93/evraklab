@@ -666,6 +666,31 @@ const getOrCreateDriveFolder = async (
 
     if (docsToUpload.length === 0) return alert('Yüklenecek belge bulunamadı.');
 
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
+    const finalOrgId = canUploadCorporate && docScope === 'corporate' ? myOrgId : null;
+
+    // Bir isimle eşleşen mevcut "lokasyon" (user_definitions, category='location')
+    // tanımını arar (oluşturmaz). CLIENT_NAME: ve NEW_LOC dallarının ikisi de bunu
+    // kullanır ki aynı firma adı elle veya listeden seçilerek girildiğinde HER
+    // SEFERİNDE yeni/ayrı bir lokasyon kaydı oluşup "aynı firma" belgelerinin
+    // farklı location_def_id'lere bölünmesi engellensin.
+    const findExistingLocationId = async (name: string): Promise<string | null> => {
+      let q = supabase
+        .from('user_definitions')
+        .select('id')
+        .eq('category', 'location')
+        .ilike('label', name.trim());
+      if (docScope === 'corporate' && myOrgId) {
+        q = q.eq('organization_id', myOrgId);
+      } else {
+        q = q.is('organization_id', null).eq('user_id', session.user.id);
+      }
+      const { data } = await q.limit(1);
+      return data && data.length > 0 ? data[0].id : null;
+    };
+
     // Zorunlu Alan Kontrolü (Toplu Yükleme için)
     for (const doc of docsToUpload) {
       const typeId = doc.selectedTypeId || selectedTypeId;
@@ -679,12 +704,53 @@ const getOrCreateDriveFolder = async (
       }
     }
 
+    // Aynı firma (lokasyon) için aynı türde zaten AKTİF bir belge var mı kontrolü.
+    // Örn: CAN Varil firması için "Sıfır Atık Belgesi" zaten yüklenmişse, o firmaya
+    // atanmış Ahmet ya da Mehmet fark etmeksizin ikinci bir tane eklenemez - sadece
+    // mevcut belge yenilenebilir (bkz. Documents.tsx "Yenile" akışı).
+    for (const doc of docsToUpload) {
+      const typeId = doc.selectedTypeId || selectedTypeId;
+      const docLocId = doc.selectedLocId || selectedLocId;
+      if (!docLocId) continue;
+
+      let existingLocId: string | null = null;
+      if (docLocId.startsWith('CLIENT_NAME:')) {
+        existingLocId = await findExistingLocationId(docLocId.replace('CLIENT_NAME:', ''));
+      } else if (docLocId === 'NEW_LOC') {
+        const manualLocName = doc.manualLoc || (window as any).tempManualLoc;
+        if (manualLocName) existingLocId = await findExistingLocationId(manualLocName);
+      } else {
+        existingLocId = docLocId;
+      }
+
+      // Bu lokasyon için daha önce hiç tanım yoksa, çakışan bir belge de olamaz.
+      if (!existingLocId) continue;
+
+      let dupQuery = supabase
+        .from('documents')
+        .select('id, title')
+        .eq('type_def_id', typeId)
+        .eq('location_def_id', existingLocId)
+        .eq('is_archived', false);
+      dupQuery = finalOrgId ? dupQuery.eq('organization_id', finalOrgId) : dupQuery.is('organization_id', null);
+      const { data: existingDocs } = await dupQuery.limit(1);
+
+      if (existingDocs && existingDocs.length > 0) {
+        const typeName = typeOptions.find((t) => t.id === typeId)?.label || 'Bu belge türü';
+        const wantsRenew = window.confirm(
+          `⚠️ "${typeName}" için bu firmaya ait zaten aktif bir belge var ("${existingDocs[0].title}").\n\n` +
+          `Aynı firmaya aynı türde ikinci bir belge eklenemez, sadece mevcut belge yenilenebilir.\n\n` +
+          `Mevcut belgeyi şimdi yenilemek ister misiniz?`
+        );
+        if (wantsRenew) {
+          navigate(`/documents?renew=${existingDocs[0].id}`);
+        }
+        return;
+      }
+    }
+
     setUploading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const finalOrgId = canUploadCorporate && docScope === 'corporate' ? myOrgId : null;
 
       for (const doc of docsToUpload) {
         let publicUrl = null;
@@ -819,17 +885,26 @@ const getOrCreateDriveFolder = async (
           const manualLocName = doc.manualLoc || (window as any).tempManualLoc;
           const canCreateLoc = docScope === 'personal' || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'admin' || userRole === 'premium_individual';
           if (manualLocName && canCreateLoc) {
-            const { data: newLoc } = await supabase
-              .from('user_definitions')
-              .insert([{ 
-                user_id: session.user.id, 
-                category: 'location', 
-                label: manualLocName,
-                organization_id: docScope === 'corporate' ? myOrgId : null,
-              }])
-              .select()
-              .single();
-            if (newLoc) finalLocId = newLoc.id;
+            // Aynı isimde bir lokasyon zaten varsa (örn. aynı firma adı elle
+            // tekrar yazıldıysa), yeni bir tane oluşturmak yerine mevcut olanı
+            // kullan - aksi halde "aynı firma" belgeleri farklı location_def_id'lere
+            // bölünür ve mükerrer belge kontrolü de bunları eşleştiremez.
+            const existingId = await findExistingLocationId(manualLocName);
+            if (existingId) {
+              finalLocId = existingId;
+            } else {
+              const { data: newLoc } = await supabase
+                .from('user_definitions')
+                .insert([{
+                  user_id: session.user.id,
+                  category: 'location',
+                  label: manualLocName,
+                  organization_id: docScope === 'corporate' ? myOrgId : null,
+                }])
+                .select()
+                .single();
+              if (newLoc) finalLocId = newLoc.id;
+            }
           }
         }
 

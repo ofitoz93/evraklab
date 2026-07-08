@@ -14,6 +14,9 @@ import {
   Eye,
   FileText,
   Lock,
+  Pin,
+  PinOff,
+  X,
 } from 'lucide-react';
 
 export default function TeamChat() {
@@ -85,6 +88,23 @@ export default function TeamChat() {
               [targetKey]: (prev[targetKey] || 0) + 1,
             }));
           }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'company_messages',
+          filter: `organization_id=eq.${currentUser.organization_id}`,
+        },
+        (payload) => {
+          const updated = payload.new;
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === updated.id ? { ...msg, is_pinned: updated.is_pinned } : msg
+            )
+          );
         }
       )
       .on(
@@ -183,6 +203,10 @@ export default function TeamChat() {
       )
       .eq('organization_id', currentUser.organization_id)
       .order('created_at', { ascending: true });
+    // Yeni katılan bir üye, kendisinden ÖNCEKİ sohbet geçmişini görmesin.
+    if (currentUser.org_joined_at) {
+      query = query.gte('created_at', currentUser.org_joined_at);
+    }
     if (activeChannel === 'general') query = query.is('receiver_id', null);
     else
       query = query.or(
@@ -268,6 +292,28 @@ export default function TeamChat() {
         { onConflict: 'user_id, target_id' }
       );
     setIsMuted(newStatus);
+  };
+
+  // --- SABİTLEME (yalnızca şirket sahibi, genel sohbette, tek mesaj) ---
+  const canPin = currentUser?.role === 'premium_corporate' && activeChannel === 'general';
+  const pinnedMessage = messages.find((m) => m.is_pinned);
+
+  const togglePinMessage = async (msg: any) => {
+    try {
+      if (msg.is_pinned) {
+        await supabase.rpc('unpin_company_message', {
+          target_organization_id: currentUser.organization_id,
+        });
+        setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, is_pinned: false } : m)));
+      } else {
+        await supabase.rpc('pin_company_message', { target_message_id: msg.id });
+        setMessages((prev) =>
+          prev.map((m) => ({ ...m, is_pinned: m.id === msg.id }))
+        );
+      }
+    } catch (err: any) {
+      alert('Sabitleme işlemi başarısız: ' + err.message);
+    }
   };
 
   // --- YENİ: BELGE GÖRME YETKİSİ KONTROLÜ ---
@@ -379,6 +425,26 @@ export default function TeamChat() {
             {isMuted ? 'Sessizden Çıkar' : 'Sessize Al'}
           </button>
         </div>
+        {activeChannel === 'general' && pinnedMessage && (
+          <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 flex items-center gap-3">
+            <Pin size={16} className="text-amber-600 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase block">
+                Sabitlenmiş Mesaj — {pinnedMessage.sender?.full_name}
+              </span>
+              <p className="text-xs text-amber-800 dark:text-amber-300 truncate">{pinnedMessage.message}</p>
+            </div>
+            {canPin && (
+              <button
+                onClick={() => togglePinMessage(pinnedMessage)}
+                className="p-1.5 text-amber-600 hover:bg-amber-100 dark:hover:bg-amber-900/40 rounded-lg flex-shrink-0"
+                title="Sabitlemeyi Kaldır"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50 dark:bg-slate-900/50">
           {messages.map((msg, index) => {
             const isMe = msg.sender_id === currentUser.id;
@@ -391,8 +457,19 @@ export default function TeamChat() {
             return (
               <div
                 key={msg.id}
-                className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+                className={`group flex items-center gap-1.5 ${isMe ? 'justify-end' : 'justify-start'}`}
               >
+                {canPin && (
+                  <button
+                    onClick={() => togglePinMessage(msg)}
+                    className={`p-1.5 rounded-lg transition opacity-0 group-hover:opacity-100 flex-shrink-0 ${
+                      msg.is_pinned ? '!opacity-100 text-amber-600' : 'text-gray-400 hover:text-amber-600'
+                    }`}
+                    title={msg.is_pinned ? 'Sabitlemeyi Kaldır' : 'Mesajı Sabitle'}
+                  >
+                    {msg.is_pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                  </button>
+                )}
                 <div
                   className={`flex flex-col max-w-[70%] ${
                     isMe ? 'items-end' : 'items-start'

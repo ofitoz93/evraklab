@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   UserPlus,
   Mail,
@@ -15,9 +15,16 @@ import {
 
 export default function Register() {
   const navigate = useNavigate();
-  
+  const [searchParams] = useSearchParams();
+
+  // E-posta ile ekip daveti üzerinden gelinmişse (bkz. CompanyPanel.tsx /
+  // ConsultantPanel.tsx handleSendEmailInvite), kayıt tamamlanınca kullanıcı
+  // otomatik olarak bu şirkete katılır.
+  const inviteOrgId = searchParams.get('invite_org');
+  const inviteCode = searchParams.get('invite_code');
+
   // Form State'leri
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(searchParams.get('invite_email') || '');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -78,6 +85,23 @@ export default function Register() {
           email: email,
           updated_at: new Date(),
         });
+
+        // Bir e-posta daveti üzerinden kayıt olunduysa, şirkete otomatik katıl
+        if (inviteOrgId && inviteCode) {
+          const { error: acceptErr } = await supabase.rpc('accept_email_invitation', {
+            target_org_id: inviteOrgId,
+            invite_code: inviteCode,
+          });
+          if (acceptErr) {
+            console.error('Davet otomatik kabul edilemedi:', acceptErr.message);
+            alert('✅ Kayıt başarılı! Ancak davet bağlantısının süresi dolmuş görünüyor, şirkete otomatik katılamadınız. Yöneticinizden yeni bir davet isteyebilirsiniz.');
+            navigate('/');
+            return;
+          }
+          alert('✅ Kayıt başarılı! Firmaya otomatik olarak katıldınız.');
+          navigate('/');
+          return;
+        }
       }
 
       alert('✅ Kayıt başarılı! Giriş yapabilirsiniz.');
@@ -208,6 +232,12 @@ export default function Register() {
           </h2>
           <p className="text-gray-500 text-sm mt-2">Hemen aramıza katılın</p>
         </div>
+
+        {inviteOrgId && inviteCode && (
+          <div className="mb-6 bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold rounded-xl px-4 py-3 text-center">
+            Bir ekip daveti ile geldiniz — kayıt tamamlanınca firmaya otomatik olarak katılacaksınız.
+          </div>
+        )}
 
         {/* Google Login Butonu */}
         <button

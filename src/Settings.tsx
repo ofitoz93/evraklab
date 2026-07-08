@@ -473,6 +473,7 @@ export default function Settings({ session }: { session: any }) {
           .from('profiles')
           .update({ organization_id: null, role: 'normal' })
           .eq('id', profile.id);
+        await supabase.rpc('clear_membership_notifications', { target_user_id: profile.id });
         alert('Ayrıldınız.');
         window.location.reload();
       } catch (err: any) {

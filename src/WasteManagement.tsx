@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import {
   Building,
@@ -123,6 +123,14 @@ export default function WasteManagement() {
   const [wasteSearchQuery, setWasteSearchQuery] = useState('');
   const [wasteFilterType, setWasteFilterType] = useState<'all' | 'recovery' | 'disposal'>('all');
 
+  // Atık kodları kataloğu artık custom_waste_codes tablosunda tutuluyor (admin
+  // panelinden düzenlenebilir); statik WASTE_CODES sadece tablo yüklenene kadar
+  // (veya bir ağ hatası durumunda) anlık bir yedek olarak kullanılıyor. Tablo
+  // yüklendikten sonra admin'in yaptığı ekleme/düzenleme/silme işlemleri
+  // gerçekten yansısın diye statik listeyle birleştirilmiyor.
+  const [customWasteCodes, setCustomWasteCodes] = useState<{ code: string; name: string; desc?: string }[] | null>(null);
+  const ALL_WASTE_CODES = useMemo(() => customWasteCodes ?? WASTE_CODES, [customWasteCodes]);
+
   // Report Modal states
   const [showReportModal, setShowReportModal] = useState(false);
   const [selectedReportClientId, setSelectedReportClientId] = useState('');
@@ -142,7 +150,17 @@ export default function WasteManagement() {
 
   useEffect(() => {
     fetchProfileAndData();
+    fetchCustomWasteCodes();
   }, []);
+
+  const fetchCustomWasteCodes = async () => {
+    const { data, error } = await supabase
+      .from('custom_waste_codes')
+      .select('code, name, description');
+    if (!error && data) {
+      setCustomWasteCodes(data.map((d: any) => ({ code: d.code, name: d.name, desc: d.description || '' })));
+    }
+  };
 
   useEffect(() => {
     if (selectedClientId) {
@@ -547,7 +565,7 @@ export default function WasteManagement() {
         else nonHazardousQty += qty;
 
         // Group by Code
-        const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+        const wasteDef = ALL_WASTE_CODES.find(w => w.code === rec.waste_code);
         const name = wasteDef ? wasteDef.name : 'Diğer/Özel Atık';
         if (!codeQuantities[rec.waste_code]) {
           codeQuantities[rec.waste_code] = { name, isHazardous: isHaz, total: 0 };
@@ -582,7 +600,7 @@ export default function WasteManagement() {
       `).join('');
 
       const detailedRowsHtml = reportRecords.map(rec => {
-        const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+        const wasteDef = ALL_WASTE_CODES.find(w => w.code === rec.waste_code);
         const name = wasteDef ? wasteDef.name : 'Diğer/Özel Atık';
         const dateStr = new Date(rec.exit_date).toLocaleDateString('tr-TR');
         const transporterName = rec.transporter_company?.name || rec.transporter || '-';
@@ -960,7 +978,7 @@ export default function WasteManagement() {
                   if (wasteSearchQuery) {
                     const query = wasteSearchQuery.toLowerCase();
                     const codeMatch = rec.waste_code.toLowerCase().includes(query);
-                    const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+                    const wasteDef = ALL_WASTE_CODES.find(w => w.code === rec.waste_code);
                     const nameMatch = wasteDef ? wasteDef.name.toLowerCase().includes(query) : false;
                     const descMatch = rec.description ? rec.description.toLowerCase().includes(query) : false;
                     const transporterMatch = rec.transporter_company?.name.toLowerCase().includes(query) || rec.transporter?.toLowerCase().includes(query);
@@ -1000,7 +1018,7 @@ export default function WasteManagement() {
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-100">
                           {filtered.map(rec => {
-                            const wasteDef = WASTE_CODES.find(w => w.code === rec.waste_code);
+                            const wasteDef = ALL_WASTE_CODES.find(w => w.code === rec.waste_code);
                             const transporterName = rec.transporter_company?.name || rec.transporter || '-';
                             const destinationName = rec.destination_company?.name || rec.destination || '-';
 
@@ -1132,10 +1150,10 @@ export default function WasteManagement() {
                   onChange={(e) => setNewWasteCode(e.target.value)}
                   className="w-full border p-2.5 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-[#2ca58d] font-mono font-bold text-slate-850"
                 />
-                {newWasteCode.trim().length > 0 && !WASTE_CODES.some(w => w.code === newWasteCode) && (
+                {newWasteCode.trim().length > 0 && !ALL_WASTE_CODES.some(w => w.code === newWasteCode) && (
                   <div className="absolute left-0 right-0 mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 py-1 text-xs">
-                    {WASTE_CODES.filter(w => 
-                      w.code.includes(newWasteCode) || 
+                    {ALL_WASTE_CODES.filter(w =>
+                      w.code.includes(newWasteCode) ||
                       w.name.toLowerCase().includes(newWasteCode.toLowerCase())
                     ).slice(0, 15).map(w => (
                       <button
@@ -1148,8 +1166,8 @@ export default function WasteManagement() {
                         <span className="text-gray-600 text-[11px]">{w.name}</span>
                       </button>
                     ))}
-                    {WASTE_CODES.filter(w => 
-                      w.code.includes(newWasteCode) || 
+                    {ALL_WASTE_CODES.filter(w =>
+                      w.code.includes(newWasteCode) ||
                       w.name.toLowerCase().includes(newWasteCode.toLowerCase())
                     ).length === 0 && (
                       <div className="px-3 py-2 text-gray-400 italic text-[11px]">
@@ -1393,10 +1411,10 @@ export default function WasteManagement() {
                   onChange={(e) => setEditWasteCode(e.target.value)}
                   className="w-full border p-2.5 rounded-xl text-xs bg-white outline-none focus:ring-1 focus:ring-blue-600 font-mono font-bold text-slate-850"
                 />
-                {editWasteCode.trim().length > 0 && !WASTE_CODES.some(w => w.code === editWasteCode) && (
+                {editWasteCode.trim().length > 0 && !ALL_WASTE_CODES.some(w => w.code === editWasteCode) && (
                   <div className="absolute left-0 right-0 mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 py-1 text-xs">
-                    {WASTE_CODES.filter(w => 
-                      w.code.includes(editWasteCode) || 
+                    {ALL_WASTE_CODES.filter(w =>
+                      w.code.includes(editWasteCode) ||
                       w.name.toLowerCase().includes(editWasteCode.toLowerCase())
                     ).slice(0, 15).map(w => (
                       <button

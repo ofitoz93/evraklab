@@ -43,11 +43,10 @@ import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
 
 import GOOGLE_SCRIPT_CODE from '../google_script_mail_template.js?raw';
-import WasteManagement from './WasteManagement';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'waste' | 'ced_categories' | 'permit_categories' | 'payments' | 'gift_codes'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'ced_categories' | 'permit_categories' | 'waste_codes' | 'payments' | 'gift_codes' | 'pricing'
   >('tickets');
 
   const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
@@ -115,6 +114,150 @@ export default function AdminPanel() {
   // --- YENİ: E-Posta & Sistem Ayarları State'leri ---
   const [systemLogoUrl, setSystemLogoUrl] = useState('');
   const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  // --- YENİ: Fiyatlandırma Ayarları State'leri ---
+  const DEFAULT_SUBSCRIPTION_PLANS = {
+    individual_standard: {
+      '1': { old: 250, price: 99, label: 'Aylık' },
+      '3': { old: 750, price: 279, label: '3 Aylık' },
+      '6': { old: 1500, price: 499, label: '6 Aylık' },
+      '12': { old: 3000, price: 849, label: '1 Yıllık' },
+    },
+    individual_renewal: {
+      '1': { old: 99, price: 79, label: 'Aylık Uzatma' },
+      '3': { old: 279, price: 207, label: '3 Aylık Uzatma' },
+      '6': { old: 499, price: 354, label: '6 Aylık Uzatma' },
+      '12': { old: 849, price: 588, label: '1 Yıllık Uzatma' },
+    },
+    corporate: {
+      '1': { old: 500, price: 199, label: 'Aylık' },
+      '3': { old: 1500, price: 567, label: '3 Aylık' },
+      '6': { old: 3000, price: 1074, label: '6 Aylık' },
+      '12': { old: 6000, price: 1788, label: '1 Yıllık' },
+    },
+  };
+  const DEFAULT_STORAGE_PRICING = {
+    supabase_cost_usd_per_gb: 0.021,
+    usd_try_rate: 46.84,
+    profit_margin_percent: 100,
+    packages: [
+      { size_gb: 0.5, label: '500 MB Ekstra', override_price: 50 },
+      { size_gb: 1, label: '1 GB Ekstra', override_price: 90 },
+    ],
+  };
+  const [subscriptionPlans, setSubscriptionPlans] = useState<any>(DEFAULT_SUBSCRIPTION_PLANS);
+  const [storagePricing, setStoragePricing] = useState<any>(DEFAULT_STORAGE_PRICING);
+  const [fetchingPricing, setFetchingPricing] = useState(false);
+  const [savingPricing, setSavingPricing] = useState(false);
+  const PLAN_LABELS: Record<string, string> = {
+    individual_standard: 'Bireysel Premium (Yeni Üyelik)',
+    individual_renewal: 'Bireysel Premium (Yenileme)',
+    corporate: 'Kurumsal Premium',
+  };
+  const DURATIONS = [1, 3, 6, 12];
+
+  const fetchPricingSettings = async () => {
+    setFetchingPricing(true);
+    try {
+      const { data, error } = await supabase.from('pricing_settings').select('*');
+      if (error) throw error;
+      data?.forEach((row: any) => {
+        if (row.key === 'subscription_plans') setSubscriptionPlans(row.value);
+        if (row.key === 'storage_pricing') setStoragePricing(row.value);
+      });
+    } catch (err: any) {
+      console.error('Fiyatlandırma ayarları yüklenemedi:', err.message);
+    } finally {
+      setFetchingPricing(false);
+    }
+  };
+
+  const updatePlanField = (
+    planKey: string,
+    duration: number,
+    field: 'old' | 'price',
+    value: string
+  ) => {
+    setSubscriptionPlans((prev: any) => ({
+      ...prev,
+      [planKey]: {
+        ...prev[planKey],
+        [duration]: {
+          ...prev[planKey]?.[duration],
+          [field]: value === '' ? '' : Number(value),
+        },
+      },
+    }));
+  };
+
+  const handleSaveSubscriptionPlans = async () => {
+    setSavingPricing(true);
+    try {
+      const { error } = await supabase
+        .from('pricing_settings')
+        .upsert({ key: 'subscription_plans', value: subscriptionPlans, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      alert('Üyelik fiyatları başarıyla kaydedildi!');
+    } catch (err: any) {
+      alert('Kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingPricing(false);
+    }
+  };
+
+  const calcStoragePackagePrice = (pkg: any) => {
+    if (pkg.override_price !== null && pkg.override_price !== undefined && pkg.override_price !== '') {
+      return Number(pkg.override_price);
+    }
+    const cost = Number(storagePricing.supabase_cost_usd_per_gb) || 0;
+    const rate = Number(storagePricing.usd_try_rate) || 0;
+    const margin = Number(storagePricing.profit_margin_percent) || 0;
+    return Math.round(Number(pkg.size_gb) * cost * rate * (1 + margin / 100) * 100) / 100;
+  };
+
+  const updateStorageSetting = (field: string, value: string) => {
+    setStoragePricing((prev: any) => ({ ...prev, [field]: value === '' ? '' : Number(value) }));
+  };
+
+  const updateStoragePackage = (index: number, field: string, value: string) => {
+    setStoragePricing((prev: any) => {
+      const packages = [...prev.packages];
+      packages[index] = {
+        ...packages[index],
+        [field]: field === 'label' ? value : value === '' ? null : Number(value),
+      };
+      return { ...prev, packages };
+    });
+  };
+
+  const addStoragePackage = () => {
+    setStoragePricing((prev: any) => ({
+      ...prev,
+      packages: [...prev.packages, { size_gb: 1, label: 'Yeni Paket', override_price: null }],
+    }));
+  };
+
+  const removeStoragePackage = (index: number) => {
+    setStoragePricing((prev: any) => ({
+      ...prev,
+      packages: prev.packages.filter((_: any, i: number) => i !== index),
+    }));
+  };
+
+  const handleSaveStoragePricing = async () => {
+    setSavingPricing(true);
+    try {
+      const { error } = await supabase
+        .from('pricing_settings')
+        .upsert({ key: 'storage_pricing', value: storagePricing, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      alert('Depolama fiyatlandırması başarıyla kaydedildi!');
+    } catch (err: any) {
+      alert('Kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingPricing(false);
+    }
+  };
 
   // --- Kullanıcı ve Şirket State'leri ---
   const [userQuotaMB, setUserQuotaMB] = useState(0);
@@ -435,12 +578,16 @@ export default function AdminPanel() {
       fetchEmailLogs();
     } else if (activeTab === 'system_settings') {
       fetchSystemLogoSettings();
+    } else if (activeTab === 'pricing') {
+      fetchPricingSettings();
     } else if (activeTab === 'legislations') {
       fetchGlobalLegislations();
       fetchLegislationRequests();
       fetchCompanies();
     } else if (activeTab === 'ced_categories') {
       fetchCedCategories();
+    } else if (activeTab === 'waste_codes') {
+      fetchCustomWasteCodes();
     } else if (activeTab === 'permit_categories') {
       fetchPermitCategories();
     } else if (activeTab === 'payments') {
@@ -735,6 +882,91 @@ export default function AdminPanel() {
       return;
     }
     await fetchCedCategories();
+  };
+
+  // --- ATIK KODLARI KATALOĞU YÖNETİMİ ---
+  // Atık Yönetimi ekranındaki (WasteManagement.tsx) statik Avrupa Atık Kataloğu
+  // listesinde (wasteCodes.ts) olmayan bir kod girildiğinde, admin bunu buradan
+  // kalıcı olarak katalogla ekleyebilir; eklenen kod tüm kullanıcılara görünür.
+  const [customWasteCodes, setCustomWasteCodes] = useState<any[]>([]);
+  const [loadingWasteCodes, setLoadingWasteCodes] = useState(false);
+  const [wasteCodeSearch, setWasteCodeSearch] = useState('');
+  const [editingWasteCodeItem, setEditingWasteCodeItem] = useState<any>(null);
+  const [wasteCodeFormCode, setWasteCodeFormCode] = useState('');
+  const [wasteCodeFormName, setWasteCodeFormName] = useState('');
+  const [wasteCodeFormDesc, setWasteCodeFormDesc] = useState('');
+  const [savingWasteCode, setSavingWasteCode] = useState(false);
+
+  const fetchCustomWasteCodes = async () => {
+    setLoadingWasteCodes(true);
+    const { data, error } = await supabase
+      .from('custom_waste_codes')
+      .select('*')
+      .order('code', { ascending: true });
+    if (error) {
+      console.error('Atık kodları çekilirken hata:', error.message);
+    } else {
+      setCustomWasteCodes(data || []);
+    }
+    setLoadingWasteCodes(false);
+  };
+
+  const openWasteCodeModal = (item?: any) => {
+    if (item) {
+      setEditingWasteCodeItem(item);
+      setWasteCodeFormCode(item.code);
+      setWasteCodeFormName(item.name);
+      setWasteCodeFormDesc(item.description || '');
+    } else {
+      setEditingWasteCodeItem({ id: 'new' });
+      setWasteCodeFormCode('');
+      setWasteCodeFormName('');
+      setWasteCodeFormDesc('');
+    }
+  };
+
+  const handleSaveWasteCode = async () => {
+    if (!wasteCodeFormCode.trim() || !wasteCodeFormName.trim()) {
+      alert('Kod ve ad alanları zorunludur.');
+      return;
+    }
+    setSavingWasteCode(true);
+    try {
+      if (editingWasteCodeItem.id === 'new') {
+        const { error } = await supabase.from('custom_waste_codes').insert({
+          code: wasteCodeFormCode.trim(),
+          name: wasteCodeFormName.trim(),
+          description: wasteCodeFormDesc.trim() || null,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('custom_waste_codes')
+          .update({
+            code: wasteCodeFormCode.trim(),
+            name: wasteCodeFormName.trim(),
+            description: wasteCodeFormDesc.trim() || null,
+          })
+          .eq('id', editingWasteCodeItem.id);
+        if (error) throw error;
+      }
+      setEditingWasteCodeItem(null);
+      await fetchCustomWasteCodes();
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingWasteCode(false);
+    }
+  };
+
+  const handleDeleteWasteCode = async (id: string) => {
+    if (!window.confirm('Bu atık kodunu silmek istediğinize emin misiniz? Bu kodu zaten kullanmış kayıtlardan otomatik kaldırılmaz, sadece yeni seçim listesinden çıkar.')) return;
+    const { error } = await supabase.from('custom_waste_codes').delete().eq('id', id);
+    if (error) {
+      alert('Silinirken hata: ' + error.message);
+      return;
+    }
+    await fetchCustomWasteCodes();
   };
 
   // --- ÇEVRE İZİN VE LİSANS (EK-1 / EK-2) FAALİYET LİSTESİ YÖNETİMİ ---
@@ -1169,6 +1401,7 @@ export default function AdminPanel() {
       .from('profiles')
       .update({ organization_id: null, role: 'normal' })
       .eq('id', userId);
+    await supabase.rpc('clear_membership_notifications', { target_user_id: userId });
     const { data } = await supabase
       .from('profiles')
       .select('*')
@@ -1277,11 +1510,11 @@ export default function AdminPanel() {
           targetOrgId = newOrg.id;
         } else if (selectedOrgId) {
           targetOrgId = selectedOrgId;
-          if (finalDate)
-            await supabase
-              .from('companies')
-              .update({ subscription_end_date: finalDate })
-              .eq('id', targetOrgId);
+          const { error: orgDateErr } = await supabase
+            .from('companies')
+            .update({ subscription_end_date: finalDate })
+            .eq('id', targetOrgId);
+          if (orgDateErr) throw orgDateErr;
         } else return alert('Şirket seçmelisiniz.');
       }
 
@@ -1297,7 +1530,7 @@ export default function AdminPanel() {
         updates.subscription_end_date = finalDate;
       } else {
         updates.organization_id = null;
-        updates.subscription_end_date = null;
+        updates.subscription_end_date = finalDate;
       }
 
       const { error } = await supabase
@@ -1380,7 +1613,7 @@ export default function AdminPanel() {
         updates.subscription_end_date = finalDate;
       } else {
         updates.organization_id = null;
-        updates.subscription_end_date = null;
+        updates.subscription_end_date = finalDate;
       }
 
       const { error: profileUpdateErr } = await supabase
@@ -1516,6 +1749,7 @@ export default function AdminPanel() {
     )
       return;
     try {
+      await supabase.rpc('clear_org_membership_notifications', { target_org_id: orgId });
       await supabase
         .from('profiles')
         .update({ organization_id: null, role: 'normal', org_role: 'staff' })
@@ -1592,17 +1826,6 @@ export default function AdminPanel() {
                 <span>Şirketler</span>
               </button>
               <button
-                onClick={() => setActiveTab('waste')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
-                  activeTab === 'waste'
-                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
-                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
-                }`}
-              >
-                <Trash2 size={18} />
-                <span>Atık Yönetimi</span>
-              </button>
-              <button
                 onClick={() => setActiveTab('tickets')}
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-bold transition ${
                   activeTab === 'tickets'
@@ -1669,6 +1892,17 @@ export default function AdminPanel() {
                 <Shield size={18} />
                 <span>Çevre İzin Listesi</span>
               </button>
+              <button
+                onClick={() => setActiveTab('waste_codes')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'waste_codes'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <Trash2 size={18} />
+                <span>Atık Kodları</span>
+              </button>
 
             </nav>
           </div>
@@ -1697,6 +1931,17 @@ export default function AdminPanel() {
               >
                 <Gift size={18} />
                 <span>Hediye Kodları</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('pricing')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'pricing'
+                    ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <TrendingUp size={18} />
+                <span>Fiyatlandırma</span>
               </button>
             </nav>
           </div>
@@ -1743,7 +1988,7 @@ export default function AdminPanel() {
 
         {/* Sağ İçerik Alanı */}
         <main className="flex-1 w-full bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 min-h-[500px] space-y-4">
-        {activeTab !== 'tickets' && activeTab !== 'notifications' && activeTab !== 'email_settings' && activeTab !== 'system_settings' && (
+        {activeTab !== 'tickets' && activeTab !== 'notifications' && activeTab !== 'email_settings' && activeTab !== 'system_settings' && activeTab !== 'pricing' && (
           <div className="flex items-center gap-2 bg-gray-50 p-2 rounded border">
             <Search className="text-gray-400" />
             <input
@@ -1757,12 +2002,6 @@ export default function AdminPanel() {
         )}
 
         {/* WASTE TAB */}
-        {activeTab === 'waste' && (
-          <div className="animate-fadeIn">
-            <WasteManagement />
-          </div>
-        )}
-
         {/* ÇED PROJE LİSTESİ TAB */}
         {activeTab === 'ced_categories' && (
           <div className="animate-fadeIn bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
@@ -2043,6 +2282,142 @@ export default function AdminPanel() {
                       className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg text-sm font-bold"
                     >
                       {savingPermit ? 'Kaydediliyor...' : 'Kaydet'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ATIK KODLARI TAB */}
+        {activeTab === 'waste_codes' && (
+          <div className="animate-fadeIn bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800 dark:text-white">Atık Kodları Kataloğu</h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Atık Yönetimi ekranındaki resmi Avrupa Atık Kataloğu listesinde bulunmayan yeni bir atık kodu
+                  gerektiğinde buradan ekleyebilirsiniz. Eklenen kodlar tüm kullanıcılara otomatik olarak görünür.
+                </p>
+              </div>
+              <button
+                onClick={() => openWasteCodeModal()}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition"
+              >
+                <Plus size={16} /> Yeni Atık Kodu Ekle
+              </button>
+            </div>
+
+            <input
+              type="text"
+              placeholder="Kod veya ad içinde ara..."
+              value={wasteCodeSearch}
+              onChange={(e) => setWasteCodeSearch(e.target.value)}
+              className="w-full border rounded-lg p-2 text-sm mb-4 dark:bg-slate-900 dark:border-slate-700"
+            />
+
+            {loadingWasteCodes ? (
+              <div className="py-12 text-center text-gray-400 text-sm">Yükleniyor...</div>
+            ) : (
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                {customWasteCodes
+                  .filter(
+                    (c) =>
+                      c.code.toLowerCase().includes(wasteCodeSearch.toLowerCase()) ||
+                      c.name.toLowerCase().includes(wasteCodeSearch.toLowerCase())
+                  )
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-start justify-between gap-3 p-3 rounded-lg border border-gray-100 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-900/50 transition"
+                    >
+                      <div className="text-sm">
+                        <span className="font-bold text-indigo-700 dark:text-indigo-400 mr-2 font-mono">{item.code}</span>
+                        <span className="text-gray-700 dark:text-gray-300">{item.name}</span>
+                        {item.description && (
+                          <div className="text-xs text-gray-400 mt-0.5">{item.description}</div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => openWasteCodeModal(item)}
+                          className="p-1.5 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30 rounded"
+                          title="Düzenle"
+                        >
+                          <Edit size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteWasteCode(item.id)}
+                          className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded"
+                          title="Sil"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                {customWasteCodes.length === 0 && (
+                  <div className="py-12 text-center text-gray-400 text-sm">Henüz eklenmiş bir atık kodu yok.</div>
+                )}
+              </div>
+            )}
+
+            {editingWasteCodeItem && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-md shadow-2xl">
+                  <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+                    <h3 className="font-bold text-gray-800 dark:text-white">
+                      {editingWasteCodeItem.id === 'new' ? 'Yeni Atık Kodu' : 'Atık Kodunu Düzenle'}
+                    </h3>
+                    <button onClick={() => setEditingWasteCodeItem(null)} className="text-gray-400 hover:text-gray-600">
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Kod</label>
+                      <input
+                        type="text"
+                        value={wasteCodeFormCode}
+                        onChange={(e) => setWasteCodeFormCode(e.target.value)}
+                        placeholder="örn: 15 01 02"
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Ad / Tanım</label>
+                      <textarea
+                        value={wasteCodeFormName}
+                        onChange={(e) => setWasteCodeFormName(e.target.value)}
+                        rows={3}
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Açıklama (opsiyonel)</label>
+                      <input
+                        type="text"
+                        value={wasteCodeFormDesc}
+                        onChange={(e) => setWasteCodeFormDesc(e.target.value)}
+                        placeholder="örn: Tehlikeli atık ise 'M' / 'A' notu"
+                        className="w-full border rounded-lg p-2 text-sm dark:bg-slate-900 dark:border-slate-700"
+                      />
+                    </div>
+                  </div>
+                  <div className="p-5 border-t border-gray-100 dark:border-slate-700 flex justify-end gap-2">
+                    <button
+                      onClick={() => setEditingWasteCodeItem(null)}
+                      className="px-4 py-2 border rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-slate-700"
+                    >
+                      İptal
+                    </button>
+                    <button
+                      onClick={handleSaveWasteCode}
+                      disabled={savingWasteCode}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg text-sm font-bold"
+                    >
+                      {savingWasteCode ? 'Kaydediliyor...' : 'Kaydet'}
                     </button>
                   </div>
                 </div>
@@ -3367,6 +3742,213 @@ export default function AdminPanel() {
           </div>
         )}
 
+        {/* --- PRICING TAB --- */}
+        {activeTab === 'pricing' && (
+          <div className="animate-fadeIn space-y-6">
+            <div className="bg-gradient-to-r from-green-800 to-green-700 p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-lg">
+              <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2 mb-1">
+                  <TrendingUp className="text-green-300" size={22} /> Fiyatlandırma Ayarları
+                </h2>
+                <p className="text-green-100 text-sm">
+                  Üyelik paket fiyatlarını ve depolama ücretlerini buradan yönetebilirsiniz.
+                </p>
+              </div>
+            </div>
+
+            {fetchingPricing ? (
+              <div className="flex items-center justify-center p-8 text-gray-500 gap-2">
+                <Loader className="animate-spin" size={18} /> Yükleniyor...
+              </div>
+            ) : (
+              <>
+                {/* Üyelik Planları */}
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-6">
+                  <h3 className="font-bold text-gray-800 text-base border-b pb-3 flex items-center gap-2">
+                    <CreditCard size={16} className="text-green-600" /> Üyelik Paket Fiyatları
+                  </h3>
+                  {Object.keys(subscriptionPlans).map((planKey) => (
+                    <div key={planKey}>
+                      <h4 className="text-sm font-bold text-gray-700 mb-2">{PLAN_LABELS[planKey] || planKey}</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">
+                          <thead>
+                            <tr className="text-left text-gray-500 text-xs uppercase">
+                              <th className="py-2 pr-4">Süre</th>
+                              <th className="py-2 pr-4">Eski Fiyat (TL)</th>
+                              <th className="py-2 pr-4">Fiyat (TL)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {DURATIONS.map((d) => {
+                              const info = subscriptionPlans[planKey]?.[d] || {};
+                              return (
+                                <tr key={d} className="border-t">
+                                  <td className="py-2 pr-4 font-semibold text-gray-600">{info.label || `${d} Ay`}</td>
+                                  <td className="py-2 pr-4">
+                                    <input
+                                      type="number"
+                                      className="w-28 p-2 rounded-lg border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                                      value={info.old ?? ''}
+                                      onChange={(e) => updatePlanField(planKey, d, 'old', e.target.value)}
+                                    />
+                                  </td>
+                                  <td className="py-2 pr-4">
+                                    <input
+                                      type="number"
+                                      className="w-28 p-2 rounded-lg border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm font-bold"
+                                      value={info.price ?? ''}
+                                      onChange={(e) => updatePlanField(planKey, d, 'price', e.target.value)}
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    onClick={handleSaveSubscriptionPlans}
+                    disabled={savingPricing}
+                    className="w-full sm:w-auto bg-green-700 hover:bg-green-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition shadow-lg disabled:opacity-50"
+                  >
+                    {savingPricing ? <Loader className="animate-spin" size={16} /> : <Save size={16} />}
+                    {savingPricing ? 'Kaydediliyor...' : 'Üyelik Fiyatlarını Kaydet'}
+                  </button>
+                </div>
+
+                {/* Depolama Fiyatlandırma */}
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-6">
+                  <h3 className="font-bold text-gray-800 text-base border-b pb-3 flex items-center gap-2">
+                    <Database size={16} className="text-green-600" /> Ekstra Depolama Fiyatlandırma
+                  </h3>
+                  <p className="text-xs text-gray-500 -mt-4">
+                    Fiyat, Supabase'in gerçek depolama maliyeti (USD/GB/Ay) × Dolar Kuru × (1 + Kar Marjı) formülüyle otomatik hesaplanır.
+                    Bir pakete "Manuel Fiyat" girilirse, o paket için otomatik hesaplama yerine bu sabit fiyat kullanılır.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                        Supabase Maliyeti (USD / GB / Ay)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.001"
+                        className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                        value={storagePricing.supabase_cost_usd_per_gb ?? ''}
+                        onChange={(e) => updateStorageSetting('supabase_cost_usd_per_gb', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                        USD / TL Kuru
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                        value={storagePricing.usd_try_rate ?? ''}
+                        onChange={(e) => updateStorageSetting('usd_try_rate', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                        Kar Marjı (%)
+                      </label>
+                      <input
+                        type="number"
+                        step="1"
+                        className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                        value={storagePricing.profit_margin_percent ?? ''}
+                        onChange={(e) => updateStorageSetting('profit_margin_percent', e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="text-left text-gray-500 text-xs uppercase">
+                          <th className="py-2 pr-4">Etiket</th>
+                          <th className="py-2 pr-4">Boyut (GB)</th>
+                          <th className="py-2 pr-4">Manuel Fiyat (TL)</th>
+                          <th className="py-2 pr-4">Uygulanacak Fiyat</th>
+                          <th className="py-2 pr-4"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {storagePricing.packages.map((pkg: any, index: number) => (
+                          <tr key={index} className="border-t">
+                            <td className="py-2 pr-4">
+                              <input
+                                type="text"
+                                className="w-40 p-2 rounded-lg border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                                value={pkg.label ?? ''}
+                                onChange={(e) => updateStoragePackage(index, 'label', e.target.value)}
+                              />
+                            </td>
+                            <td className="py-2 pr-4">
+                              <input
+                                type="number"
+                                step="0.1"
+                                className="w-24 p-2 rounded-lg border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                                value={pkg.size_gb ?? ''}
+                                onChange={(e) => updateStoragePackage(index, 'size_gb', e.target.value)}
+                              />
+                            </td>
+                            <td className="py-2 pr-4">
+                              <input
+                                type="number"
+                                placeholder="Otomatik"
+                                className="w-28 p-2 rounded-lg border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm"
+                                value={pkg.override_price ?? ''}
+                                onChange={(e) => updateStoragePackage(index, 'override_price', e.target.value)}
+                              />
+                            </td>
+                            <td className="py-2 pr-4 font-bold text-green-700">
+                              {calcStoragePackagePrice(pkg)} TL
+                              {(pkg.override_price === null || pkg.override_price === undefined || pkg.override_price === '') && (
+                                <span className="ml-1 text-[10px] font-normal text-gray-400">(otomatik)</span>
+                              )}
+                            </td>
+                            <td className="py-2 pr-4">
+                              <button
+                                onClick={() => removeStoragePackage(index)}
+                                className="text-red-500 hover:text-red-700"
+                                title="Paketi Sil"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <button
+                    onClick={addStoragePackage}
+                    className="flex items-center gap-2 text-sm font-bold text-green-700 hover:text-green-900"
+                  >
+                    <Plus size={16} /> Yeni Depolama Paketi Ekle
+                  </button>
+
+                  <button
+                    onClick={handleSaveStoragePricing}
+                    disabled={savingPricing}
+                    className="w-full sm:w-auto bg-green-700 hover:bg-green-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition shadow-lg disabled:opacity-50"
+                  >
+                    {savingPricing ? <Loader className="animate-spin" size={16} /> : <Save size={16} />}
+                    {savingPricing ? 'Kaydediliyor...' : 'Depolama Fiyatlandırmasını Kaydet'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* --- TICKETS TAB --- */}
         {activeTab === 'tickets' && (
           <div className="flex h-[600px] border rounded-xl overflow-hidden bg-white">
@@ -3723,31 +4305,29 @@ export default function AdminPanel() {
                 </div>
               )}
 
-              {(createRole.includes('premium') || isCorporateRole(createRole)) && (
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider flex items-center gap-1">
-                    <Calendar size={14} className="text-slate-500" />
-                    Abonelik Bitiş Tarihi
-                    {isCorporateRole(createRole) && (
-                      <span className="text-[9px] text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded font-bold uppercase ml-auto">
-                        Şirket Ayarı
-                      </span>
-                    )}
-                  </label>
-                  <input
-                    type="date"
-                    disabled={isCorporateRole(createRole)}
-                    className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium bg-white disabled:bg-slate-100 disabled:text-slate-400"
-                    value={createEndDate}
-                    onChange={(e) => setCreateEndDate(e.target.value)}
-                  />
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider flex items-center gap-1">
+                  <Calendar size={14} className="text-slate-500" />
+                  Abonelik / Üyelik Bitiş Tarihi
                   {isCorporateRole(createRole) && (
-                    <p className="text-[10px] text-purple-600 mt-1 italic font-medium">
-                      * Kurumsal üyelerin aboneliği, bağlı oldukları şirketin abonelik bitiş tarihi ile eşleşir.
-                    </p>
+                    <span className="text-[9px] text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded font-bold uppercase ml-auto">
+                      Şirket Ayarı
+                    </span>
                   )}
-                </div>
-              )}
+                </label>
+                <input
+                  type="date"
+                  disabled={isCorporateRole(createRole)}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium bg-white disabled:bg-slate-100 disabled:text-slate-400"
+                  value={createEndDate}
+                  onChange={(e) => setCreateEndDate(e.target.value)}
+                />
+                {isCorporateRole(createRole) && (
+                  <p className="text-[10px] text-purple-600 mt-1 italic font-medium">
+                    * Kurumsal üyelerin aboneliği, bağlı oldukları şirketin abonelik bitiş tarihi ile eşleşir.
+                  </p>
+                )}
+              </div>
 
               <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
                 <label className="block text-xs font-bold text-blue-900 mb-1.5 uppercase tracking-wider flex items-center gap-1.5">
@@ -3900,30 +4480,28 @@ export default function AdminPanel() {
                 </div>
               )}
 
-              {(newRole.includes('premium') || isCorporateRole(newRole)) && (
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider flex items-center gap-1">
-                    <Calendar size={14} className="text-slate-500" />
-                    Abonelik Bitiş Tarihi
-                    {isCorporateRole(newRole) && (
-                      <span className="text-[9px] text-red-600 bg-red-50 border border-red-150 px-1.5 py-0.5 rounded font-bold uppercase ml-auto flex items-center gap-0.5">
-                        <AlertTriangle size={10} /> Şirketi Etkiler
-                      </span>
-                    )}
-                  </label>
-                  <input
-                    type="date"
-                    className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium bg-white"
-                    value={newEndDate}
-                    onChange={(e) => setNewEndDate(e.target.value)}
-                  />
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider flex items-center gap-1">
+                  <Calendar size={14} className="text-slate-500" />
+                  Abonelik / Üyelik Bitiş Tarihi
                   {isCorporateRole(newRole) && (
-                    <p className="text-[10px] text-red-500 mt-1.5 font-medium leading-relaxed">
-                      * Dikkat: Kurumsal yöneticilerin bitiş tarihi değiştirildiğinde tüm şirket çalışanlarının abonelik bitişi de senkronize olarak güncellenir.
-                    </p>
+                    <span className="text-[9px] text-red-600 bg-red-50 border border-red-150 px-1.5 py-0.5 rounded font-bold uppercase ml-auto flex items-center gap-0.5">
+                      <AlertTriangle size={10} /> Şirketi Etkiler
+                    </span>
                   )}
-                </div>
-              )}
+                </label>
+                <input
+                  type="date"
+                  className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-medium bg-white"
+                  value={newEndDate}
+                  onChange={(e) => setNewEndDate(e.target.value)}
+                />
+                {isCorporateRole(newRole) && (
+                  <p className="text-[10px] text-red-500 mt-1.5 font-medium leading-relaxed">
+                    * Dikkat: Kurumsal yöneticilerin bitiş tarihi değiştirildiğinde tüm şirket çalışanlarının abonelik bitişi de senkronize olarak güncellenir.
+                  </p>
+                )}
+              </div>
 
               <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
                 <label className="block text-xs font-bold text-blue-900 mb-1.5 uppercase tracking-wider flex items-center gap-1.5">

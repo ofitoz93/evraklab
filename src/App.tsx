@@ -6,6 +6,7 @@ import {
   Link,
   Navigate,
   useLocation,
+  useNavigate,
 } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import {
@@ -116,6 +117,7 @@ function NavBarContent({
   userClientId,
 }: any) {
   const location = useLocation();
+  const navigate = useNavigate();
   const [unreadCount, setUnreadCount] = useState(0);
   const [unreadTicketCount, setUnreadTicketCount] = useState(0);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
@@ -472,6 +474,7 @@ function NavBarContent({
                                 fetchRecentNotifications();
                               }
                               setIsNotifOpen(false);
+                              navigate('/notifications');
                             }}
                             className={`px-4 py-3 border-b border-gray-55 dark:border-slate-700/50 last:border-0 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors ${
                               !n.is_read ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''

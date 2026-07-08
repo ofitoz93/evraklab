@@ -21,7 +21,10 @@ import {
 import { formatBytes } from './utils'; // Utils dosyasını oluşturduysan import et, yoksa aşağıya fonksiyonu ekle
 
 // --- FİYATLANDIRMA AYARLARI ---
-const PRICING_CONFIG = {
+// Bu değerler artık admin panelinden ("Fiyatlandırma" sekmesi) `pricing_settings`
+// tablosu üzerinden yönetiliyor. Aşağıdaki sabitler, veri henüz yüklenmeden veya
+// tablo boşken kullanılan varsayılan/yedek (fallback) değerlerdir.
+const DEFAULT_SUBSCRIPTION_PLANS = {
   individual_standard: {
     1: { old: 250, price: 99, label: 'Aylık' },
     3: { old: 750, price: 279, label: '3 Aylık' },
@@ -40,11 +43,28 @@ const PRICING_CONFIG = {
     6: { old: 3000, price: 1074, label: '6 Aylık' },
     12: { old: 6000, price: 1788, label: '1 Yıllık' },
   },
-  // YENİ: Depolama Paketleri
-  storage: [
-    { size_gb: 0.5, bytes: 524288000, price: 50, label: '500 MB Ekstra' },
-    { size_gb: 1, bytes: 1073741824, price: 90, label: '1 GB Ekstra' },
+};
+
+// Depolama fiyatı = Supabase maliyeti (USD/GB/Ay) × Dolar Kuru × (1 + Kar Marjı).
+// Bir pakette override_price tanımlıysa otomatik hesaplama yerine o sabit fiyat kullanılır.
+const DEFAULT_STORAGE_PRICING = {
+  supabase_cost_usd_per_gb: 0.021,
+  usd_try_rate: 46.84,
+  profit_margin_percent: 100,
+  packages: [
+    { size_gb: 0.5, label: '500 MB Ekstra', override_price: 50 },
+    { size_gb: 1, label: '1 GB Ekstra', override_price: 90 },
   ],
+};
+
+const calcStoragePackagePrice = (pkg: any, storagePricing: any) => {
+  if (pkg.override_price !== null && pkg.override_price !== undefined && pkg.override_price !== '') {
+    return Number(pkg.override_price);
+  }
+  const cost = Number(storagePricing.supabase_cost_usd_per_gb) || 0;
+  const rate = Number(storagePricing.usd_try_rate) || 0;
+  const margin = Number(storagePricing.profit_margin_percent) || 0;
+  return Math.round(Number(pkg.size_gb) * cost * rate * (1 + margin / 100) * 100) / 100;
 };
 
 export default function Pricing() {
@@ -55,6 +75,9 @@ export default function Pricing() {
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
   const [activeMembersCount, setActiveMembersCount] = useState(1);
+
+  const [subscriptionPlans, setSubscriptionPlans] = useState<any>(DEFAULT_SUBSCRIPTION_PLANS);
+  const [storagePricing, setStoragePricing] = useState<any>(DEFAULT_STORAGE_PRICING);
 
   // Görünüm Modları: 'subscription' (Süre) veya 'storage' (Depolama)
   const [purchaseType, setPurchaseType] = useState<'subscription' | 'storage'>(
@@ -83,7 +106,21 @@ export default function Pricing() {
 
   useEffect(() => {
     fetchUserData();
+    fetchPricingConfig();
   }, []);
+
+  const fetchPricingConfig = async () => {
+    try {
+      const { data, error } = await supabase.from('pricing_settings').select('*');
+      if (error) throw error;
+      data?.forEach((row: any) => {
+        if (row.key === 'subscription_plans') setSubscriptionPlans(row.value);
+        if (row.key === 'storage_pricing') setStoragePricing(row.value);
+      });
+    } catch (err: any) {
+      console.error('Fiyatlandırma ayarları yüklenemedi, varsayılan fiyatlar kullanılıyor:', err.message);
+    }
+  };
 
   const fetchUserData = async () => {
     const {
@@ -136,7 +173,7 @@ export default function Pricing() {
   };
 
   const getCurrentPricingTable = () => {
-    if (selectedPlan === 'corporate') return PRICING_CONFIG.corporate;
+    if (selectedPlan === 'corporate') return subscriptionPlans.corporate;
     const isPremium = profile?.role === 'premium_individual';
     const subEnd = profile?.subscription_end_date
       ? new Date(profile.subscription_end_date)
@@ -144,16 +181,16 @@ export default function Pricing() {
     const hasTimeLeft = subEnd > new Date();
 
     if (viewMode === 'dashboard' && isPremium && hasTimeLeft) {
-      return PRICING_CONFIG.individual_renewal;
+      return subscriptionPlans.individual_renewal;
     }
-    return PRICING_CONFIG.individual_standard;
+    return subscriptionPlans.individual_standard;
   };
 
   const calculateTotal = () => {
     // Depolama Modu
     if (purchaseType === 'storage') {
-      const pack = PRICING_CONFIG.storage[selectedStorageIndex];
-      return pack.price * storageQuantity;
+      const pack = storagePricing.packages[selectedStorageIndex];
+      return calcStoragePackagePrice(pack, storagePricing) * storageQuantity;
     }
 
     // Abonelik Modu
@@ -209,8 +246,8 @@ export default function Pricing() {
 
     try {
       if (purchaseType === 'storage') {
-        const pack = PRICING_CONFIG.storage[selectedStorageIndex];
-        const totalBytesToAdd = pack.bytes * storageQuantity;
+        const pack = storagePricing.packages[selectedStorageIndex];
+        const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
         const targetId = profile?.organization_id || user.id;
         const isCorporate = !!profile?.organization_id;
 
@@ -635,7 +672,7 @@ export default function Pricing() {
             /* --- DEPOLAMA SATIN ALMA EKRANI --- */
             <div className="animate-fadeIn">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto mb-8">
-                {PRICING_CONFIG.storage.map((pack, index) => (
+                {storagePricing.packages.map((pack: any, index: number) => (
                   <div
                     key={index}
                     onClick={() => setSelectedStorageIndex(index)}
@@ -668,7 +705,7 @@ export default function Pricing() {
                     </div>
                     <div className="text-right">
                       <div className="text-2xl font-black text-gray-900">
-                        {pack.price} TL
+                        {calcStoragePackagePrice(pack, storagePricing)} TL
                       </div>
                     </div>
                   </div>
@@ -701,7 +738,7 @@ export default function Pricing() {
                 <div className="mt-4 text-sm text-gray-600">
                   Toplamda{' '}
                   <b>
-                    {PRICING_CONFIG.storage[selectedStorageIndex].size_gb *
+                    {storagePricing.packages[selectedStorageIndex].size_gb *
                       storageQuantity}{' '}
                     GB
                   </b>{' '}
