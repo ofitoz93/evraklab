@@ -10,7 +10,6 @@ import {
   CheckCircle,
   Clock,
   AlertCircle,
-  Copy,
   PlusCircle,
   ChevronRight,
   TrendingUp,
@@ -20,6 +19,7 @@ import {
   ArrowRight,
   ClipboardList,
   MessageSquare,
+  X,
 } from 'lucide-react';
 
 interface Period {
@@ -58,6 +58,7 @@ interface Profile {
 interface Client {
   id: string;
   name: string;
+  email?: string | null;
 }
 
 interface ClientToken {
@@ -167,7 +168,6 @@ export default function EvaluationPanel() {
   // Client Token Form fields
   const [tokenStaffId, setTokenStaffId] = useState('');
   const [tokenClientId, setTokenClientId] = useState('');
-  const [generatedLink, setGeneratedLink] = useState('');
 
   // Selected Employee Card Modal/Details state
   const [selectedEmployeeCard, setSelectedEmployeeCard] = useState<string | null>(null);
@@ -237,7 +237,7 @@ export default function EvaluationPanel() {
       // 3. Fetch clients
       const { data: clientsData } = await supabase
         .from('consultant_clients')
-        .select('id, name')
+        .select('id, name, email')
         .order('name');
       setClients(clientsData || []);
 
@@ -405,12 +405,64 @@ export default function EvaluationPanel() {
     }
   };
 
+  // bkz. ConsultantPanel.tsx sendActionNotificationEmail: aynı Google Apps
+  // Script webhook deseni (email_settings.script_url) kullanılıyor.
+  const sendEvaluationInviteEmail = async (email: string, staffName: string, clientName: string, link: string): Promise<boolean> => {
+    try {
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      const actualScriptUrl = scriptSetting?.value;
+      if (!actualScriptUrl) {
+        console.warn('Değerlendirme daveti e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return false;
+      }
+
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'evaluation_invite',
+          email,
+          staffName,
+          clientName,
+          evaluationLink: link,
+        }),
+      });
+      return true;
+    } catch (err) {
+      console.error('Değerlendirme daveti e-postası gönderilemedi:', err);
+      return false;
+    }
+  };
+
   const handleGenerateToken = async (e: React.FormEvent) => {
     e.preventDefault();
     const activePeriod = periods.find(p => p.status === 'active');
     if (!activePeriod) return alert('Müşteri anketi oluşturmak için aktif bir değerlendirme dönemi olmalıdır.');
     if (!tokenStaffId) return alert('Lütfen değerlendirilecek danışman personeli seçin.');
     if (!tokenClientId) return alert('Lütfen değerlendirecek müşteri firmayı seçin.');
+
+    const client = clients.find(c => c.id === tokenClientId);
+    if (!client) return;
+
+    // Anket, artik token linki yerine musteri portali panelinden (kimlik
+    // dogrulamali) doldurulacagi icin davet, o firmanin gercek portal giris
+    // hesabi/hesaplarina (profiles.role='client', client_id=X) gonderilir.
+    const { data: clientLogins, error: loginErr } = await supabase
+      .from('profiles')
+      .select('email')
+      .eq('client_id', tokenClientId)
+      .eq('role', 'client');
+
+    if (loginErr) return alert('Müşteri portalı hesapları sorgulanırken hata: ' + loginErr.message);
+    if (!clientLogins || clientLogins.length === 0) {
+      alert('Bu işletme için henüz bir müşteri portalı girişi (kullanıcı hesabı) tanımlanmamış. Önce İşletmeler sayfasından "Müşteri Girişi Oluştur" ile bir hesap açmanız gerekiyor.');
+      return;
+    }
 
     try {
       const randToken = Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 12);
@@ -430,19 +482,28 @@ export default function EvaluationPanel() {
 
       if (error) throw error;
 
-      const link = `${window.location.origin}/evaluate-client/${randToken}`;
-      setGeneratedLink(link);
+      // Not: eskiden tekil, kimlik dogrulamasiz bir anket linkine gidiyordu;
+      // artik musteri kendi hesabiyla giris yapip panelindeki "Danisman
+      // Degerlendirme" sekmesinden dolduruyor.
+      const link = `${window.location.origin}/client-panel`;
+      const staffName = members.find(m => m.id === tokenStaffId)?.full_name || '';
+      const results = await Promise.all(
+        clientLogins.map((acc) => sendEvaluationInviteEmail(acc.email, staffName, client.name, link))
+      );
+      const sentCount = results.filter(Boolean).length;
+
       setTokenStaffId('');
       setTokenClientId('');
       fetchData();
-    } catch (err: any) {
-      alert('Link oluşturulurken hata: ' + err.message);
-    }
-  };
 
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(generatedLink);
-    alert('Link panoya kopyalandı!');
+      if (sentCount > 0) {
+        alert(`Değerlendirme daveti ${sentCount} müşteri portalı hesabına gönderildi.`);
+      } else {
+        alert('Değerlendirme talebi oluşturuldu ancak e-posta gönderilemedi (e-posta ayarları yapılandırılmamış olabilir). Lütfen sistem yöneticinize başvurun.');
+      }
+    } catch (err: any) {
+      alert('Değerlendirme daveti oluşturulurken hata: ' + err.message);
+    }
   };
 
   const handleReopenToken = async (tokenId: string) => {
@@ -1030,27 +1091,12 @@ export default function EvaluationPanel() {
                   type="submit"
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 transition"
                 >
-                  <PlusCircle size={14} /> Anket Linki Oluştur
+                  <PlusCircle size={14} /> Anket Daveti Gönder
                 </button>
               </form>
-
-              {generatedLink && (
-                <div className="p-4 bg-gray-55 dark:bg-slate-800 rounded-xl border border-gray-150 dark:border-slate-700 space-y-2 mt-4">
-                  <div className="text-[10px] font-bold text-gray-400 uppercase">Oluşturulan Link (Tek Kullanımlık):</div>
-                  <input
-                    type="text"
-                    value={generatedLink}
-                    readOnly
-                    className="w-full text-xs bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded p-1.5 text-blue-600 select-all"
-                  />
-                  <button
-                    onClick={handleCopyLink}
-                    className="w-full bg-indigo-50 dark:bg-indigo-950/30 hover:bg-indigo-100 text-indigo-750 dark:text-indigo-400 py-1.5 text-xs font-bold rounded-lg border border-indigo-200/50 dark:border-indigo-900/30 flex items-center justify-center gap-1"
-                  >
-                    <Copy size={12} /> Linki Kopyala
-                  </button>
-                </div>
-              )}
+              <p className="text-[10px] text-gray-400 mt-2">
+                Değerlendirme bağlantısı, seçilen işletmenin kayıtlı e-posta adresine otomatik olarak gönderilir.
+              </p>
             </div>
           ) : (
             <div className="bg-white dark:bg-slate-850 p-6 rounded-xl border border-gray-200 dark:border-slate-800 shadow-sm lg:col-span-1 text-center text-xs text-red-500 font-bold">

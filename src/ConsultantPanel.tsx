@@ -9,6 +9,7 @@ import {
   FileText,
   Search,
   Upload,
+  Download,
   AlertCircle,
   CheckCircle,
   Clock,
@@ -64,7 +65,9 @@ interface Client {
   address: string;
   tax_no: string;
   phone: string;
+  email?: string;
   logo_url: string;
+  monthly_fee?: number;
   created_by?: string;
   created_at?: string;
   service_start_date?: string;
@@ -826,6 +829,13 @@ export default function ConsultantPanel() {
   const [selectedChangeRequestForRejection, setSelectedChangeRequestForRejection] = useState<any>(null);
   const [changeRejectionReason, setChangeRejectionReason] = useState('');
   const [showChangeRejectionModal, setShowChangeRejectionModal] = useState(false);
+
+  // Personel unvan degisikligi talepleri (staff_role_change_requests)
+  const [staffRoleChangeRequests, setStaffRoleChangeRequests] = useState<any[]>([]);
+  const [showRoleChangeRequestModal, setShowRoleChangeRequestModal] = useState(false);
+  const [roleChangeRequestTo, setRoleChangeRequestTo] = useState('corporate_chief');
+  const [roleChangeRequestReason, setRoleChangeRequestReason] = useState('');
+  const [submittingRoleChangeRequest, setSubmittingRoleChangeRequest] = useState(false);
 
   // Required documents states
   const [defSubTab, setDefSubTab] = useState<'standard' | 'required'>('standard');
@@ -2158,20 +2168,30 @@ export default function ConsultantPanel() {
     }
     setSelectedClient(client);
     setShowAssignModal(true);
-    
-    // Fetch team members of the consultant company
-    const { data: members } = await supabase
-      .from('profiles')
-      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active')
-      .eq('organization_id', orgId);
-    setTeamMembers(members || []);
 
-    // Fetch current assignments for this client
-    const { data: assigns } = await supabase
-      .from('consultant_assignments')
-      .select('user_id')
-      .eq('client_id', client.id);
-    setCurrentAssignments(assigns?.map(a => a.user_id) || []);
+    try {
+      // Fetch team members of the consultant company
+      const { data: members, error: membersErr } = await supabase
+        .from('profiles')
+        .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active')
+        .eq('organization_id', orgId);
+      if (membersErr) throw membersErr;
+      setTeamMembers(members || []);
+
+      // Fetch current assignments for this client
+      const { data: assigns, error: assignsErr } = await supabase
+        .from('consultant_assignments')
+        .select('user_id')
+        .eq('client_id', client.id);
+      if (assignsErr) throw assignsErr;
+      setCurrentAssignments(assigns?.map(a => a.user_id) || []);
+    } catch (err: any) {
+      // Önceden hata sessizce yutuluyordu: sorgu başarısız olduğunda modal
+      // boş bir "ekip üyesi yok" ekranıyla açılıyor, kullanıcıya "sayfa
+      // açılmıyor" gibi görünüyordu. Artık hata görünür ve tekrar denenebilir.
+      alert('Ekip/atama bilgileri yüklenirken hata oluştu: ' + err.message + '\nLütfen tekrar deneyin.');
+      setShowAssignModal(false);
+    }
   };
 
   const handleToggleAssign = async (uId: string) => {
@@ -2192,7 +2212,11 @@ export default function ConsultantPanel() {
         setAllAssignments(prev => prev.filter(a => !(a.client_id === selectedClient.id && a.user_id === uId)));
       } else {
         // Add assignment
-        if (selectedClient?.permit_stage === 'ek1') {
+        // Hem Çevre İzin hem ÇED tarafında EK-1 kapsamı aynı 3 yıl deneyim
+        // şartına tabidir (bkz. mevzuat: EK-1 kapsamındaki tesisler daha
+        // yüksek çevresel risk taşır); önceden sadece permit_stage kontrol
+        // ediliyordu, ced_status='ek1' olan firmalar bu şarttan kaçıyordu.
+        if (selectedClient?.permit_stage === 'ek1' || selectedClient?.ced_status === 'ek1') {
           const member = teamMembers.find(m => m.id === uId);
           const experience = member ? (member.experience_years || 0) : 0;
           if (experience < 3) {
@@ -2874,6 +2898,7 @@ export default function ConsultantPanel() {
         if (err3) throw err3;
       }
 
+      let assignBlockedMsg = '';
       if (selectedStaffIdForLeg) {
         const { data: existingAssign } = await supabase
           .from('consultant_assignments')
@@ -2883,16 +2908,28 @@ export default function ConsultantPanel() {
           .maybeSingle();
 
         if (!existingAssign) {
-          await supabase
-             .from('consultant_assignments')
-             .insert({
-               client_id: selectedClientIdForLeg,
-               user_id: selectedStaffIdForLeg
-             });
+          // bkz. handleToggleAssign: EK-1 kapsamındaki işletmelere atanacak
+          // personel en az 3 yıl tecrübeye sahip olmalı; bu akış (mevzuat
+          // atarken personel seçme) aynı kontrolden muaf tutulmamalı.
+          const legClient = clients.find(c => c.id === selectedClientIdForLeg);
+          const requiresExperience = legClient?.permit_stage === 'ek1' || legClient?.ced_status === 'ek1';
+          const member = teamMembers.find(m => m.id === selectedStaffIdForLeg);
+          const experience = member ? (member.experience_years || 0) : 0;
+
+          if (requiresExperience && experience < 3) {
+            assignBlockedMsg = `\n\nUyarı: Personel ataması yapılmadı — EK-1 kapsamındaki işletmelere en az 3 yıl tecrübeli personel atanabilir (seçilen personelin deneyimi: ${experience} yıl).`;
+          } else {
+            await supabase
+              .from('consultant_assignments')
+              .insert({
+                client_id: selectedClientIdForLeg,
+                user_id: selectedStaffIdForLeg
+              });
+          }
         }
       }
 
-      alert('Mevzuat işletmeye başarıyla atandı ve maddeler kopyalandı!');
+      alert('Mevzuat işletmeye başarıyla atandı ve maddeler kopyalandı!' + assignBlockedMsg);
       setShowAssignClientLegModal(false);
       setAssigningGlobalLeg(null);
       setSelectedClientIdForLeg('');
@@ -3955,14 +3992,30 @@ export default function ConsultantPanel() {
           .from('consultant_clients')
           .update(updateData)
           .eq('id', req.client_id);
-        
+
         if (updateClientError) throw updateClientError;
+
+        // bkz. handleUpdateClient: isim değiştiyse zorunlu belge matrisinin
+        // eşleşen location tanımı da güncellenmeli.
+        if (req.new_name) {
+          const oldName = clients.find((c) => c.id === req.client_id)?.name;
+          const newName = req.new_name.trim();
+          if (oldName && oldName.trim().toLowerCase() !== newName.toLowerCase()) {
+            const matchingLocDef = rawDefs.find(
+              (l) => l.category === 'location' && l.label && l.label.trim().toLowerCase() === oldName.trim().toLowerCase()
+            );
+            if (matchingLocDef) {
+              await supabase.from('user_definitions').update({ label: newName }).eq('id', matchingLocDef.id);
+              await fetchDefinitionsTab();
+            }
+          }
+        }
       }
 
       alert('Değişiklik talebi başarıyla onaylandı ve firma bilgileri güncellendi.');
       fetchChangeRequests();
       // Also refresh the client list to show updated names
-      fetchClients();
+      fetchClients(orgId, userRole, userId);
     } catch (err: any) {
       alert('Hata oluştu: ' + err.message);
     } finally {
@@ -4003,6 +4056,98 @@ export default function ConsultantPanel() {
     }
   };
 
+  // Personel unvan degisikligi talepleri: ayni "Degisiklik Talepleri"
+  // sekmesinde musteri unvan/adres talepleriyle birlikte gosterilir.
+  const fetchStaffRoleChangeRequests = async (oId?: string) => {
+    const currentOrgId = oId || orgId;
+    if (!currentOrgId) return;
+    try {
+      const { data, error } = await supabase
+        .from('staff_role_change_requests')
+        .select('*, requester:requested_by(full_name, email)')
+        .eq('organization_id', currentOrgId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setStaffRoleChangeRequests(data || []);
+    } catch (err: any) {
+      console.error('Ünvan değişikliği talepleri alınamadı:', err);
+    }
+  };
+
+  const handleSubmitRoleChangeRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (userRole === 'premium_corporate') {
+      alert('Firma sahibi kendi ünvanı için talep oluşturamaz, doğrudan Ekip sekmesinden değiştirebilirsiniz.');
+      return;
+    }
+    setSubmittingRoleChangeRequest(true);
+    try {
+      const { error } = await supabase.from('staff_role_change_requests').insert({
+        organization_id: orgId,
+        requested_by: userId,
+        from_role: userRole,
+        to_role: roleChangeRequestTo,
+        reason: roleChangeRequestReason.trim() || null,
+        status: 'pending',
+      });
+      if (error) throw error;
+      alert('Ünvan değişikliği talebiniz firma sahibine iletildi.');
+      setShowRoleChangeRequestModal(false);
+      setRoleChangeRequestReason('');
+      fetchStaffRoleChangeRequests();
+    } catch (err: any) {
+      alert('Talep gönderilirken hata: ' + err.message);
+    } finally {
+      setSubmittingRoleChangeRequest(false);
+    }
+  };
+
+  const handleApproveRoleChangeRequest = async (req: any) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+    if (!window.confirm(`"${req.requester?.full_name}" kullanıcısının ünvanını "${roleLabels[req.to_role] || req.to_role}" olarak değiştirmek istiyor musunuz?`)) return;
+    try {
+      const { error: profErr } = await supabase
+        .from('profiles')
+        .update({ role: req.to_role })
+        .eq('id', req.requested_by);
+      if (profErr) throw profErr;
+
+      const { error: reqErr } = await supabase
+        .from('staff_role_change_requests')
+        .update({ status: 'approved', resolved_at: new Date().toISOString(), resolved_by: userId })
+        .eq('id', req.id);
+      if (reqErr) throw reqErr;
+
+      alert('Ünvan değişikliği onaylandı.');
+      fetchStaffRoleChangeRequests();
+      fetchTeamMembers();
+    } catch (err: any) {
+      alert('Hata oluştu: ' + err.message);
+    }
+  };
+
+  const handleRejectRoleChangeRequest = async (req: any) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+    const reason = window.prompt('Red gerekçesi (opsiyonel):') || null;
+    try {
+      const { error } = await supabase
+        .from('staff_role_change_requests')
+        .update({ status: 'rejected', rejection_reason: reason, resolved_at: new Date().toISOString(), resolved_by: userId })
+        .eq('id', req.id);
+      if (error) throw error;
+      alert('Talep reddedildi.');
+      fetchStaffRoleChangeRequests();
+    } catch (err: any) {
+      alert('Hata oluştu: ' + err.message);
+    }
+  };
+
   const fetchReports = async (oId: string, role: string, uId: string, perms?: any) => {
     if (!oId && role !== 'system_admin' && role !== 'admin') {
       setReports([]);
@@ -4032,6 +4177,37 @@ export default function ConsultantPanel() {
     }
     const { data } = await query.order('created_at', { ascending: false });
     if (data) setReports(data as any);
+  };
+
+  const permitStageLabel = (stage?: string) =>
+    stage === 'ek1' ? 'EK-1' : stage === 'ek2' ? 'EK-2' : 'Kapsam Dışı';
+
+  const handleExportClientsToExcel = () => {
+    const headers = ['Firma Adı', 'Adres', 'Vergi No', 'Telefon', 'E-posta', 'ÇED Durumu', 'Çevre İzin Durumu', 'Aylık Ücret (TL)', 'Hizmet Başlangıç'];
+    const escapeCell = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = clients
+      .filter((c) => !c.parent_client_id)
+      .map((c) => [
+        c.name,
+        c.address || '',
+        c.tax_no || '',
+        c.phone || '',
+        c.email || '',
+        permitStageLabel(c.ced_status),
+        permitStageLabel(c.permit_stage),
+        c.monthly_fee != null ? String(c.monthly_fee) : '0',
+        c.service_start_date || '',
+      ].map(escapeCell).join(';'));
+    const csvContent = '﻿' + [headers.map(escapeCell).join(';'), ...rows].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `hizmet-verilen-isletmeler-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleAddClient = async (e: React.FormEvent) => {
@@ -4078,6 +4254,25 @@ export default function ConsultantPanel() {
         },
       ]);
       if (error) throw error;
+
+      // Zorunlu belge matrisi (bkz. defTabTypes eşleşmesi) bir belgenin
+      // location_def_id etiketini işletme adıyla karşılaştırarak eşleştiriyor;
+      // bu yüzden her yeni işletme için aynı adda bir "location" tanımı da
+      // oluşturuluyor (personal hesaplardaki location->client senkronunun tersi).
+      const clientLabel = newClient.name.trim();
+      const locExists = rawDefs.some(
+        (l) => l.category === 'location' && l.label && l.label.trim().toLowerCase() === clientLabel.toLowerCase()
+      );
+      if (!locExists) {
+        await supabase.from('user_definitions').insert({
+          user_id: userId,
+          category: 'location',
+          label: clientLabel,
+          organization_id: orgId,
+        });
+        await fetchDefinitionsTab();
+      }
+
       setShowAddClient(false);
       setNewClient({
         name: '',
@@ -4175,6 +4370,22 @@ export default function ConsultantPanel() {
         },
       ]);
       if (error) throw error;
+
+      // bkz. handleAddClient: zorunlu belge matrisinin işletme adı<->lokasyon
+      // etiketi eşleşmesi için şube de aynı adda bir location tanımı alır.
+      const branchLocExists = rawDefs.some(
+        (l) => l.category === 'location' && l.label && l.label.trim().toLowerCase() === fullName.trim().toLowerCase()
+      );
+      if (!branchLocExists) {
+        await supabase.from('user_definitions').insert({
+          user_id: userId,
+          category: 'location',
+          label: fullName,
+          organization_id: orgId,
+        });
+        await fetchDefinitionsTab();
+      }
+
       alert(`✅ "${fullName}" şubesi başarıyla eklendi! Personel atamak için şubenin yanındaki "Personel Ata" butonunu kullanabilirsiniz.`);
       setShowAddBranchModal(false);
       setBranchParent(null);
@@ -4280,6 +4491,24 @@ export default function ConsultantPanel() {
         .eq('id', editingClient.id);
 
       if (error) throw error;
+
+      // bkz. handleAddClient: işletme adı değiştiyse, matris eşleşmesinin
+      // bozulmaması için eşleşen location tanımının etiketi de güncellenir.
+      const oldName = clients.find((c) => c.id === editingClient.id)?.name;
+      const newName = editingClient.name.trim();
+      if (oldName && oldName.trim().toLowerCase() !== newName.toLowerCase()) {
+        const matchingLocDef = rawDefs.find(
+          (l) => l.category === 'location' && l.label && l.label.trim().toLowerCase() === oldName.trim().toLowerCase()
+        );
+        if (matchingLocDef) {
+          await supabase
+            .from('user_definitions')
+            .update({ label: newName })
+            .eq('id', matchingLocDef.id);
+          await fetchDefinitionsTab();
+        }
+      }
+
       setShowEditClient(false);
       setEditingClient(null);
       fetchClients(orgId, userRole, userId);
@@ -5277,7 +5506,10 @@ export default function ConsultantPanel() {
               Tüm İşletmeler
             </button>
             <button
-              onClick={() => setClientSubView('personnel')}
+              onClick={() => {
+                setClientSubView('personnel');
+                if (teamMembers.length === 0) fetchTeamMembers();
+              }}
               className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
                 clientSubView === 'personnel'
                   ? 'bg-blue-600 text-white shadow-sm'
@@ -5290,6 +5522,7 @@ export default function ConsultantPanel() {
               onClick={() => {
                 setClientSubView('requests');
                 fetchChangeRequests();
+                fetchStaffRoleChangeRequests();
               }}
               className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
                 clientSubView === 'requests'
@@ -5302,6 +5535,21 @@ export default function ConsultantPanel() {
           </div>
 
           {clientSubView === 'grid' ? (
+            <>
+            <div className="flex items-center justify-between flex-wrap gap-3 bg-white dark:bg-slate-800 px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-700">
+              <span className="text-sm font-bold text-gray-700 dark:text-gray-200">
+                Toplam <span className="text-blue-600 dark:text-blue-400">{clients.filter((c) => !c.parent_client_id).length}</span> işletmeye hizmet veriliyor
+                {clients.some((c) => c.parent_client_id) && (
+                  <span className="text-gray-400 font-normal"> ({clients.filter((c) => c.parent_client_id).length} şube dahil değil)</span>
+                )}
+              </span>
+              <button
+                onClick={handleExportClientsToExcel}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition"
+              >
+                <Download size={14} /> Excel'e Aktar
+              </button>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {clients.map((client) => {
                 const branches = clients.filter((c) => c.parent_client_id === client.id);
@@ -5532,6 +5780,7 @@ export default function ConsultantPanel() {
                 );
               })}
             </div>
+            </>
           ) : clientSubView === 'personnel' ? (
             <div className="space-y-6">
               {teamMembers
@@ -5633,6 +5882,7 @@ export default function ConsultantPanel() {
                 })}
             </div>
           ) : (
+            <>
             <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
               <div className="border-b pb-3">
                 <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
@@ -5736,6 +5986,57 @@ export default function ConsultantPanel() {
                 </div>
               )}
             </div>
+
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 space-y-4">
+            <div className="border-b pb-3">
+              <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base flex items-center gap-2">
+                <User size={18} className="text-purple-600" /> Personel Ünvan Değişikliği Talepleri
+              </h3>
+              <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
+                Ekip üyelerinin kendi ünvanları için gönderdiği değişiklik talepleri. Onaylandığında ilgili kullanıcının rolü doğrudan güncellenir.
+              </p>
+            </div>
+
+            {staffRoleChangeRequests.length === 0 ? (
+              <div className="p-8 text-center text-xs text-gray-400 italic bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-dashed">
+                Henüz gönderilmiş bir ünvan değişikliği talebi bulunmuyor.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {staffRoleChangeRequests.map((req) => (
+                  <div key={req.id} className="p-4 rounded-xl border bg-slate-50/50 dark:bg-slate-900/10 dark:border-slate-800 space-y-2 text-xs">
+                    <div className="font-bold text-slate-900 dark:text-white text-sm">{req.requester?.full_name || 'Bilinmeyen'}</div>
+                    <div className="text-[10px] text-gray-500 dark:text-gray-400">{req.requester?.email}</div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <span className="px-2 py-0.5 rounded bg-gray-100 dark:bg-slate-800 font-semibold">{roleLabels[req.from_role] || req.from_role}</span>
+                      <span>→</span>
+                      <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 font-semibold">{roleLabels[req.to_role] || req.to_role}</span>
+                    </div>
+                    {req.reason && <p className="text-gray-600 dark:text-gray-400 italic">"{req.reason}"</p>}
+                    <div className="flex items-center justify-between pt-2 border-t border-dashed border-gray-200 dark:border-slate-700">
+                      <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                        req.status === 'approved' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30' :
+                        req.status === 'rejected' ? 'bg-red-50 text-red-600 dark:bg-red-950/30' :
+                        'bg-amber-50 text-amber-700 dark:bg-amber-950/30'
+                      }`}>
+                        {req.status === 'approved' ? 'Onaylandı' : req.status === 'rejected' ? 'Reddedildi' : 'Bekliyor'}
+                      </span>
+                      {req.status === 'pending' && userRole === 'premium_corporate' && (
+                        <div className="flex gap-1.5">
+                          <button onClick={() => handleApproveRoleChangeRequest(req)} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1 px-2 rounded text-[10px]">Onayla</button>
+                          <button onClick={() => handleRejectRoleChangeRequest(req)} className="bg-red-600 hover:bg-red-700 text-white font-bold py-1 px-2 rounded text-[10px]">Reddet</button>
+                        </div>
+                      )}
+                    </div>
+                    {req.status === 'rejected' && req.rejection_reason && (
+                      <p className="text-[10px] text-red-500 italic">Gerekçe: {req.rejection_reason}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          </>
           )}
         </div>
       )}
@@ -6038,6 +6339,18 @@ export default function ConsultantPanel() {
                             <Trash2 size={14} />
                           </button>
                         </div>
+                      )}
+                      {userRole !== 'premium_corporate' && member.id === userId && (
+                        <button
+                          onClick={() => {
+                            setRoleChangeRequestTo(member.role === 'corporate_chief' ? 'corporate_staff' : 'corporate_chief');
+                            setRoleChangeRequestReason('');
+                            setShowRoleChangeRequestModal(true);
+                          }}
+                          className="text-xs bg-purple-50 text-purple-700 px-3 py-2 rounded border border-purple-200 hover:bg-purple-100 transition dark:bg-purple-950/20 dark:border-purple-900 dark:text-purple-400 font-bold"
+                        >
+                          Ünvan Değişikliği Talep Et
+                        </button>
                       )}
                     </div>
 
@@ -11823,6 +12136,63 @@ export default function ConsultantPanel() {
                   disabled={submittingClientChangeRequest}
                 >
                   {submittingClientChangeRequest ? 'Talep Gönderiliyor...' : 'Talep Gönder'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {showRoleChangeRequestModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-md shadow-2xl">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center">
+              <h2 className="text-xl font-bold">Ünvan Değişikliği Talebi</h2>
+              <button
+                onClick={() => setShowRoleChangeRequestModal(false)}
+                className="text-gray-400 hover:text-gray-605 dark:text-gray-300"
+              >
+                X
+              </button>
+            </div>
+            <form onSubmit={handleSubmitRoleChangeRequest} className="p-6 space-y-4">
+              <div className="text-xs p-3 bg-purple-50 dark:bg-purple-950/20 text-purple-800 dark:text-purple-300 rounded-lg border border-purple-200/50">
+                Mevcut ünvanınız: <b>{roleLabels[userRole] || userRole}</b>. Talebiniz firma sahibine iletilir, onaylanırsa ünvanınız değişir.
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Talep Edilen Ünvan</label>
+                <select
+                  value={roleChangeRequestTo}
+                  onChange={(e) => setRoleChangeRequestTo(e.target.value)}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"
+                >
+                  <option value="corporate_chief">Çevre Danışmanlık Firma Yöneticisi (Şef)</option>
+                  <option value="corporate_staff">Çevre Danışmanlık Personeli</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Gerekçe (opsiyonel)</label>
+                <textarea
+                  value={roleChangeRequestReason}
+                  onChange={(e) => setRoleChangeRequestReason(e.target.value)}
+                  className="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700 h-20"
+                  placeholder="Örn: 2 yıldır ekibi yönetiyorum, şef ünvanı talep ediyorum."
+                ></textarea>
+              </div>
+              <div className="pt-4 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowRoleChangeRequestModal(false)}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-gray-700 dark:text-gray-300 dark:border-slate-750"
+                  disabled={submittingRoleChangeRequest}
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-medium disabled:opacity-50"
+                  disabled={submittingRoleChangeRequest}
+                >
+                  {submittingRoleChangeRequest ? 'Gönderiliyor...' : 'Talep Gönder'}
                 </button>
               </div>
             </form>

@@ -23,7 +23,7 @@ interface TokenData {
   client?: { name: string };
 }
 
-const CLIENT_QUESTIONS = [
+export const CLIENT_QUESTIONS = [
   {
     id: 'cli_q1',
     text: 'Ulaşılabilirlik',

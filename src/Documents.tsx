@@ -39,6 +39,9 @@ export default function Documents() {
   const [filterType, setFilterType] = useState('');
   const [filterLoc, setFilterLoc] = useState('');
   const [filterUser, setFilterUser] = useState('');
+  // 'all' = kurumsal + şahsi birlikte, 'mine' = sadece şahsi (organization_id boş
+  // olan kendi yüklediklerim), 'org' = sadece kurumsal (organization_id dolu)
+  const [scopeFilter, setScopeFilter] = useState<'all' | 'mine' | 'org'>('all');
 
   const [uniqueTypes, setUniqueTypes] = useState<string[]>([]);
   const [uniqueLocs, setUniqueLocs] = useState<string[]>([]);
@@ -260,10 +263,14 @@ const getOrCreateDriveFolder = async (
         (d) => (d.location_def?.label || '-') === filterLoc
       );
     if (filterUser) result = result.filter((d) => d.uploader_id === filterUser);
+    if (scopeFilter === 'mine')
+      result = result.filter((d) => !d.organization_id && d.uploader_id === userId);
+    else if (scopeFilter === 'org')
+      result = result.filter((d) => !!d.organization_id);
 
     setFilteredDocs(result);
     calculateStats(result);
-  }, [searchTerm, filterType, filterLoc, filterUser, docs, userRole]);
+  }, [searchTerm, filterType, filterLoc, filterUser, scopeFilter, docs, userRole, userId]);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -871,6 +878,31 @@ const getOrCreateDriveFolder = async (
               </select>
             )}
         </div>
+        {docs.some((d) => !!d.organization_id) && (
+          <div className="flex items-center gap-2 pt-1">
+            <span className="text-xs text-gray-400 font-bold">Kapsam:</span>
+            <div className="flex bg-gray-50 border rounded-lg p-1 gap-1">
+              {[
+                { key: 'all', label: 'Tümü' },
+                { key: 'mine', label: 'Şahsi Evraklarım' },
+                { key: 'org', label: 'Kurumsal Evraklar' },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setScopeFilter(opt.key as 'all' | 'mine' | 'org')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition ${
+                    scopeFilter === opt.key
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ZORUNLU / EKSİK BELGELER PANELİ */}
@@ -1350,7 +1382,14 @@ const getOrCreateDriveFolder = async (
                               >
                                 <Download size={14} />
                               </a>
-                            ) : null}
+                            ) : (
+                              <span
+                                className="p-1.5 bg-gray-50 text-gray-300 border border-gray-150 rounded flex items-center justify-center dark:bg-slate-900 dark:text-slate-700 dark:border-slate-700"
+                                title="Bu arşiv kaydına ait dosya bulunmuyor"
+                              >
+                                <Download size={14} />
+                              </span>
+                            )}
 
                             {/* Islak İmza Yükleme (Sadece Raporlar İçin) */}
                             {isReport && canEditArc && (

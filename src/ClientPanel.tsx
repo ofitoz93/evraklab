@@ -27,9 +27,13 @@ import {
   Sparkles,
   PartyPopper,
   Sun,
-  Moon
+  Moon,
+  Star,
+  Loader,
+  ThumbsUp,
 } from 'lucide-react';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
+import { CLIENT_QUESTIONS } from './ClientEvaluationPage';
 
 const getContractStatus = (startDateStr: string) => {
   const serviceStartDate = new Date(startDateStr);
@@ -69,7 +73,7 @@ export default function ClientPanel() {
   const [reports, setReports] = useState<any[]>([]);
 
   // Navigation / Tabs
-  const [activeTab, setActiveTab] = useState<'overview' | 'docs' | 'actions' | 'waste' | 'reports' | 'matrix' | 'inspections' | 'legislations'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'docs' | 'actions' | 'waste' | 'reports' | 'matrix' | 'inspections' | 'legislations' | 'evaluation'>('overview');
 
   const NAV_TABS: { id: typeof activeTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Genel Bakış', icon: <Activity size={15} /> },
@@ -80,7 +84,25 @@ export default function ClientPanel() {
     { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <Calendar size={15} /> },
     { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={15} /> },
     { id: 'legislations', label: 'Mevzuat Takip', icon: <Scale size={15} /> },
+    { id: 'evaluation', label: 'Danışman Değerlendirme', icon: <Star size={15} /> },
   ];
+
+  // Danışman Değerlendirme Anketi state'leri
+  const [activeEvalPeriod, setActiveEvalPeriod] = useState<any>(null);
+  const [assignedStaffForEval, setAssignedStaffForEval] = useState<any[]>([]);
+  const [myClientEvaluations, setMyClientEvaluations] = useState<any[]>([]);
+  const [loadingEval, setLoadingEval] = useState(false);
+  const [selectedEvalStaffId, setSelectedEvalStaffId] = useState<string | null>(null);
+  const [evalScores, setEvalScores] = useState<Record<string, number>>({});
+  const [evalComments, setEvalComments] = useState('');
+  const [submittingEval, setSubmittingEval] = useState(false);
+
+  // Aktif donem yoksa sekme hic gozukmesin; donem varken doldurulmamis
+  // degerlendirme kaldigi surece sekme yanip sonsun (dikkat cekmek icin).
+  const evaluatedStaffIdSet = new Set(myClientEvaluations.map((ev) => ev.evaluatee_id));
+  const hasPendingEvaluation =
+    !!activeEvalPeriod && assignedStaffForEval.some((a) => !evaluatedStaffIdSet.has(a.user_id));
+  const visibleNavTabs = NAV_TABS.filter((t) => t.id !== 'evaluation' || !!activeEvalPeriod);
   
   // New States for Matrix, Inspections, and Legislations
   const [defTabTypes, setDefTabTypes] = useState<any[]>([]);
@@ -272,12 +294,97 @@ export default function ClientPanel() {
       fetchMatrixData(prof.client_id);
       fetchInspectionsData(prof.client_id);
       fetchLegislationsData(prof.client_id);
+      if (client.consultant_company_id) {
+        fetchEvaluationData(prof.client_id, client.consultant_company_id);
+      }
 
     } catch (err: any) {
       console.error(err);
       alert('Veriler yüklenirken hata: ' + err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchEvaluationData = async (clientId: string, orgId: string) => {
+    setLoadingEval(true);
+    try {
+      const { data: period, error: periodErr } = await supabase
+        .from('evaluation_periods')
+        .select('*')
+        .eq('organization_id', orgId)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .maybeSingle();
+      if (periodErr) throw periodErr;
+      setActiveEvalPeriod(period || null);
+      if (!period) {
+        setAssignedStaffForEval([]);
+        setMyClientEvaluations([]);
+        return;
+      }
+
+      const { data: assigns, error: assignsErr } = await supabase
+        .from('consultant_assignments')
+        .select('user_id, staff:user_id(id, full_name, role)')
+        .eq('client_id', clientId);
+      if (assignsErr) throw assignsErr;
+      setAssignedStaffForEval(assigns || []);
+
+      const { data: evals, error: evalsErr } = await supabase
+        .from('evaluations')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('period_id', period.id)
+        .eq('evaluator_type', 'client');
+      if (evalsErr) throw evalsErr;
+      setMyClientEvaluations(evals || []);
+    } catch (err: any) {
+      // Sessizce yutulmasin: bu tam da openAssignModal'da bulunan hatanin
+      // ayni sinifi - once hata gizlenip sekme "bos/kapali" gorunuyordu.
+      console.error('Değerlendirme verisi alınamadı:', err);
+      setActiveEvalPeriod(null);
+    } finally {
+      setLoadingEval(false);
+    }
+  };
+
+  const handleEvalScoreChange = (qId: string, rating: number) => {
+    setEvalScores((prev) => ({ ...prev, [qId]: rating }));
+  };
+
+  const handleSubmitClientEvaluation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeEvalPeriod || !selectedEvalStaffId || !profile) return;
+
+    const unanswered = CLIENT_QUESTIONS.filter((q) => !evalScores[q.id]);
+    if (unanswered.length > 0) {
+      alert('Lütfen tüm değerlendirme sorularını oylayınız.');
+      return;
+    }
+
+    setSubmittingEval(true);
+    try {
+      const { error } = await supabase.from('evaluations').insert({
+        period_id: activeEvalPeriod.id,
+        evaluator_id: null,
+        evaluatee_id: selectedEvalStaffId,
+        client_id: profile.client_id,
+        evaluator_type: 'client',
+        scores: evalScores,
+        comments: evalComments.trim() || null,
+      });
+      if (error) throw error;
+
+      alert('Değerlendirmeniz kaydedildi, teşekkür ederiz!');
+      setSelectedEvalStaffId(null);
+      setEvalScores({});
+      setEvalComments('');
+      fetchEvaluationData(profile.client_id, clientDetails.consultant_company_id);
+    } catch (err: any) {
+      alert('Değerlendirme kaydedilirken hata oluştu: ' + err.message);
+    } finally {
+      setSubmittingEval(false);
     }
   };
 
@@ -1083,6 +1190,131 @@ export default function ClientPanel() {
     );
   };
 
+  const renderEvaluationView = () => {
+    if (loadingEval) {
+      return (
+        <div className="flex justify-center items-center py-16 text-xs text-gray-500 gap-2">
+          <Loader className="animate-spin" size={16} /> Yükleniyor...
+        </div>
+      );
+    }
+
+    if (!activeEvalPeriod) {
+      return (
+        <div className="p-10 text-center text-sm text-gray-400 italic bg-white dark:bg-slate-900/20 rounded-2xl border border-dashed border-gray-200 dark:border-slate-800">
+          Şu anda açık bir değerlendirme dönemi bulunmuyor. Danışmanlık firmanız yeni bir dönem açtığında burada anketi doldurabileceksiniz.
+        </div>
+      );
+    }
+
+    const evaluatedStaffIds = new Set(myClientEvaluations.map((ev) => ev.evaluatee_id));
+
+    if (selectedEvalStaffId) {
+      const staff = assignedStaffForEval.find((a) => a.user_id === selectedEvalStaffId)?.staff;
+      return (
+        <div className="max-w-2xl mx-auto bg-white dark:bg-slate-900/20 rounded-2xl border border-gray-200 dark:border-slate-800 overflow-hidden animate-fadeIn">
+          <div className="p-6 bg-gradient-to-r from-teal-600 to-emerald-600 text-white">
+            <h3 className="text-lg font-black">Danışman Değerlendirme Anketi</h3>
+            <p className="text-xs text-teal-100 mt-1">{staff?.full_name} için değerlendirmenizi doldurun</p>
+          </div>
+          <form onSubmit={handleSubmitClientEvaluation} className="p-6 space-y-5">
+            {CLIENT_QUESTIONS.map((q, index) => (
+              <div key={q.id} className="p-4 bg-gray-50/50 dark:bg-slate-800/30 rounded-xl border border-gray-150/40 dark:border-slate-800/60 space-y-2">
+                <div className="flex justify-between items-start gap-4">
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 block">Soru {index + 1}</span>
+                    <h4 className="font-bold text-gray-800 dark:text-white text-sm">{q.text}</h4>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0 pt-1">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        onClick={() => handleEvalScoreChange(q.id, star)}
+                        className={`p-0.5 transition ${
+                          star <= (evalScores[q.id] || 0)
+                            ? 'text-yellow-500 fill-yellow-500 hover:scale-110'
+                            : 'text-gray-300 dark:text-slate-700 hover:text-yellow-450'
+                        }`}
+                      >
+                        <Star size={20} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{q.desc}</p>
+              </div>
+            ))}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-500 dark:text-gray-400">Ek Görüş ve Önerileriniz (İsteğe Bağlı)</label>
+              <textarea
+                value={evalComments}
+                onChange={(e) => setEvalComments(e.target.value)}
+                className="bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl p-3 text-sm text-gray-700 dark:text-gray-200 w-full focus:outline-none focus:ring-1 focus:ring-blue-500 h-24"
+                placeholder="Danışmanınız hakkında eklemek istediğiniz geri bildirimleri yazabilirsiniz..."
+              ></textarea>
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => { setSelectedEvalStaffId(null); setEvalScores({}); setEvalComments(''); }}
+                className="px-4 py-2.5 border rounded-xl text-xs font-bold text-gray-600 dark:text-gray-300 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="submit"
+                disabled={submittingEval}
+                className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition"
+              >
+                {submittingEval ? (<><Loader className="animate-spin" size={16} /> Gönderiliyor...</>) : 'Anketi Tamamla ve Gönder'}
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-4 animate-fadeIn">
+        <div className="p-4 bg-teal-50 dark:bg-teal-950/20 border border-teal-200 dark:border-teal-900/50 rounded-xl text-xs text-teal-800 dark:text-teal-300">
+          <b>{activeEvalPeriod.title}</b> dönemi için danışmanlarınızı değerlendirebilirsiniz. Görüşleriniz hizmet kalitemizin takibi için önemlidir.
+        </div>
+        {assignedStaffForEval.length === 0 ? (
+          <div className="p-10 text-center text-sm text-gray-400 italic bg-white dark:bg-slate-900/20 rounded-2xl border border-dashed border-gray-200 dark:border-slate-800">
+            Firmanıza henüz atanmış bir danışman bulunmuyor.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {assignedStaffForEval.map((a) => {
+              const isDone = evaluatedStaffIds.has(a.user_id);
+              return (
+                <div key={a.user_id} className="p-5 bg-white dark:bg-slate-900/20 rounded-2xl border border-gray-200 dark:border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="font-bold text-gray-900 dark:text-white text-sm">{a.staff?.full_name}</div>
+                    <div className="text-[10px] text-gray-400 uppercase font-bold mt-0.5">Danışman</div>
+                  </div>
+                  {isDone ? (
+                    <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold bg-emerald-50 dark:bg-emerald-950/20 px-3 py-1.5 rounded-lg">
+                      <ThumbsUp size={13} /> Değerlendirildi
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => { setSelectedEvalStaffId(a.user_id); setEvalScores({}); setEvalComments(''); }}
+                      className="bg-teal-600 hover:bg-teal-700 text-white px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition"
+                    >
+                      <Star size={13} /> Değerlendir
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderLegislationsView = () => {
     return (
       <div className="space-y-6 animate-fadeIn text-xs">
@@ -1199,19 +1431,25 @@ export default function ClientPanel() {
       {/* TAB NAVIGATION */}
       <nav className="bg-white/60 dark:bg-slate-900/60 border-b border-gray-200 dark:border-slate-800 px-4 sticky top-[73px] z-30 overflow-x-auto">
         <div className="max-w-7xl mx-auto flex gap-1 py-2">
-          {NAV_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                activeTab === tab.id
-                  ? 'bg-teal-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-gray-200 dark:hover:bg-slate-800'
-              }`}
-            >
-              {tab.icon} {tab.label}
-            </button>
-          ))}
+          {visibleNavTabs.map((tab) => {
+            const isBlinking = tab.id === 'evaluation' && hasPendingEvaluation && activeTab !== 'evaluation';
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
+                  activeTab === tab.id
+                    ? 'bg-teal-600 text-white shadow-md'
+                    : isBlinking
+                      ? 'text-teal-700 dark:text-teal-300 animate-pulse bg-teal-100 dark:bg-teal-900/40'
+                      : 'text-slate-400 hover:text-white hover:bg-gray-200 dark:hover:bg-slate-800'
+                }`}
+              >
+                {tab.icon} {tab.label}
+                {isBlinking && <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />}
+              </button>
+            );
+          })}
         </div>
       </nav>
 
@@ -1869,6 +2107,11 @@ export default function ClientPanel() {
         {/* TAB 8: MEVZUATLAR */}
         {activeTab === 'legislations' && (
           renderLegislationsView()
+        )}
+
+        {/* TAB 9: DANIŞMAN DEĞERLENDİRME */}
+        {activeTab === 'evaluation' && (
+          renderEvaluationView()
         )}
             </main>
 

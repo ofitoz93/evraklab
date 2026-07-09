@@ -2751,8 +2751,6 @@ export default function AdminPanel() {
                   setCreateOrgId('');
                   setCreateEndDate('');
                   setCreateQuotaMB(50);
-                  setCreateCanViewRegulations(false);
-                  setCreateCanManageRegulations(false);
                   setUserSaveError(null);
                 }}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-lg shadow-blue-100"
