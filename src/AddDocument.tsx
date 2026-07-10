@@ -79,6 +79,9 @@ export default function AddDocument() {
   const [corporateClients, setCorporateClients] = useState<any[]>([]);
   const [allOrgClients, setAllOrgClients] = useState<any[]>([]);
   const [orgSettings, setOrgSettings] = useState<any>(null);
+  const [myPermissions, setMyPermissions] = useState<any>(null);
+  const [myExtraPermissions, setMyExtraPermissions] = useState<any>(null);
+  const [myStorageLimit, setMyStorageLimit] = useState(0);
 
 const getOrCreateDriveFolder = async (
   accessToken: string,
@@ -182,7 +185,7 @@ const getOrCreateDriveFolder = async (
         const { data: profile, error } = await supabase
           .from('profiles')
           .select(
-            'role, organization_id, subscription_end_date, extra_permissions, organization:organizations(subscription_end_date)'
+            'role, organization_id, subscription_end_date, permissions, extra_permissions, storage_limit, organization:organizations(subscription_end_date)'
           )
           .eq('id', session.user.id)
           .single();
@@ -192,6 +195,9 @@ const getOrCreateDriveFolder = async (
         const role = profile?.role || 'normal';
         setUserRole(role);
         setMyOrgId(profile?.organization_id || null);
+        setMyPermissions(profile?.permissions || null);
+        setMyExtraPermissions(profile?.extra_permissions || null);
+        setMyStorageLimit(profile?.storage_limit || 0);
         if ((role === 'admin' || role === 'premium_corporate' || profile?.organization_id)) {
           setDocScope('corporate');
           const { data: orgSettings } = await supabase
@@ -324,6 +330,19 @@ const getOrCreateDriveFolder = async (
   };
 
   const canUploadCorporate = !!myOrgId;
+  // Firma personeli (Şef/Personel) için şahsi belge yükleme varsayılan olarak kapalıdır;
+  // Şef veya Yönetici, Ekip Yönetimi sayfasından bu yetkiyi kişi bazlı açabilir.
+  const isStaffOrChief = userRole === 'corporate_staff' || userRole === 'corporate_chief';
+  const employerGrantedPersonal =
+    myPermissions?.can_upload_personal_docs === true ||
+    myExtraPermissions?.can_upload_personal_docs === true;
+  // Ücretsiz bireysel kota varsayılanı 50MB (bkz. profiles.storage_limit default,
+  // supabase_schema.sql). Bunun üzerinde bir limit varsa kullanıcı kendi şahsi
+  // kotasını satın almış demektir (bkz. Pricing.tsx "Şahsi Kotam") ve işveren
+  // izni olmasa da şahsi modülü kendi kotasıyla kullanabilir.
+  const FREE_PERSONAL_STORAGE_BYTES = 52428800;
+  const hasPurchasedOwnQuota = myStorageLimit > FREE_PERSONAL_STORAGE_BYTES;
+  const canUploadPersonal = !isStaffOrChief || employerGrantedPersonal || hasPurchasedOwnQuota;
 
   const getFilteredLocOptions = () => {
     if (docScope !== 'corporate') {
@@ -669,7 +688,18 @@ const getOrCreateDriveFolder = async (
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
 
-    const finalOrgId = canUploadCorporate && docScope === 'corporate' ? myOrgId : null;
+    // Şahsi yükleme yetkisi olmayan personel yanlışlıkla/eski state ile 'personal'
+    // kalmışsa bile belge kurumsal kapsamda kaydedilir.
+    const effectiveDocScope = !canUploadPersonal && docScope === 'personal' ? 'corporate' : docScope;
+    const finalOrgId = canUploadCorporate && effectiveDocScope === 'corporate' ? myOrgId : null;
+    // Şahsi belge görünürlüğü (herkese kapalı, sadece yükleyene açık) her zaman
+    // korunur. Ama işveren bu yetkiyi kendisi AÇTIYSA (ya da yükleyen firma
+    // sahibiyse) depolama maliyeti işverenin ortak kotasından düşer; kullanıcı
+    // izin olmadan kendi satın aldığı kotayla yüklüyorsa kendi kotasından düşer.
+    const billingOrgId =
+      effectiveDocScope === 'personal' && myOrgId && (userRole === 'premium_corporate' || employerGrantedPersonal)
+        ? myOrgId
+        : null;
 
     // Bir isimle eşleşen mevcut "lokasyon" (user_definitions, category='location')
     // tanımını arar (oluşturmaz). CLIENT_NAME: ve NEW_LOC dallarının ikisi de bunu
@@ -911,6 +941,7 @@ const getOrCreateDriveFolder = async (
         const { error } = await supabase.from('documents').insert([
           {
             organization_id: finalOrgId,
+            billing_org_id: billingOrgId,
             uploader_id: session.user.id,
             title: doc.title || doc.fileName || (file ? file.name : 'Dosyasız Kayıt'),
             description: doc.description || desc || null,
@@ -1014,27 +1045,43 @@ const getOrCreateDriveFolder = async (
                     <span className="text-[10px] text-gray-400">Şirket dökümanlarına ekle</span>
                   </div>
                 </label>
-                <label
-                  className={`flex-1 flex items-center justify-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${docScope === 'personal'
-                    ? 'bg-white border-purple-500 shadow-md scale-[1.02]'
-                    : 'bg-white/50 border-transparent hover:border-gray-200'
-                    }`}
-                >
-                  <input
-                    type="radio"
-                    name="scope"
-                    className="w-5 h-5 accent-purple-600"
-                    checked={docScope === 'personal'}
-                    onChange={() => setDocScope('personal')}
-                  />
-                  <div className="flex flex-col items-center">
-                    <div className={`font-bold text-sm ${docScope === 'personal' ? 'text-purple-700' : 'text-gray-500'}`}>
-                      <User size={18} className="inline mr-2" /> ŞAHSİ
+                {canUploadPersonal && (
+                  <label
+                    className={`flex-1 flex items-center justify-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${docScope === 'personal'
+                      ? 'bg-white border-purple-500 shadow-md scale-[1.02]'
+                      : 'bg-white/50 border-transparent hover:border-gray-200'
+                      }`}
+                  >
+                    <input
+                      type="radio"
+                      name="scope"
+                      className="w-5 h-5 accent-purple-600"
+                      checked={docScope === 'personal'}
+                      onChange={() => setDocScope('personal')}
+                    />
+                    <div className="flex flex-col items-center">
+                      <div className={`font-bold text-sm ${docScope === 'personal' ? 'text-purple-700' : 'text-gray-500'}`}>
+                        <User size={18} className="inline mr-2" /> ŞAHSİ
+                      </div>
+                      <span className="text-[10px] text-gray-400">Sadece sana özel kalsın</span>
                     </div>
-                    <span className="text-[10px] text-gray-400">Sadece sana özel kalsın</span>
-                  </div>
-                </label>
+                  </label>
+                )}
               </div>
+              {!canUploadPersonal && (
+                <div className="bg-gray-100 p-2.5 rounded-lg text-xs text-gray-500 flex items-center justify-between gap-2 flex-wrap">
+                  <span className="flex items-center gap-2">
+                    <Info size={14} /> Şahsi belge yükleme yetkiniz bulunmuyor. Bu yetkiyi Şefinizden veya Yöneticinizden talep edebilir, ya da kendi şahsi kotanızı satın alarak izinsiz kullanabilirsiniz.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/pricing')}
+                    className="text-purple-600 font-bold hover:underline shrink-0"
+                  >
+                    Şahsi Kota Satın Al →
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {!canUploadCorporate && (

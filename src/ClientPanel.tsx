@@ -31,9 +31,14 @@ import {
   Star,
   Loader,
   ThumbsUp,
+  Inbox,
+  Upload,
+  Plus,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
 import { CLIENT_QUESTIONS } from './ClientEvaluationPage';
+import InspectionAnalytics from './InspectionAnalytics';
 
 const getContractStatus = (startDateStr: string) => {
   const serviceStartDate = new Date(startDateStr);
@@ -62,6 +67,7 @@ export default function ClientPanel() {
   const [profile, setProfile] = useState<any>(null);
   const [clientDetails, setClientDetails] = useState<any>(null);
   const [permitCategories, setPermitCategories] = useState<{ stage: string; code: string; title: string }[]>([]);
+  const [cedCategories, setCedCategories] = useState<{ stage: string; code: string; title: string }[]>([]);
   const [documents, setDocuments] = useState<any[]>([]);
   const [actions, setActions] = useState<any[]>([]);
   const [completingActionId, setCompletingActionId] = useState<string | null>(null);
@@ -72,12 +78,18 @@ export default function ClientPanel() {
   const [visits, setVisits] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
 
+  // Evrak Talepleri (Danışman'ın açtığı, müşterinin belge yükleyip karşıladığı talepler)
+  const [documentRequests, setDocumentRequests] = useState<any[]>([]);
+  const [docReqUploadFiles, setDocReqUploadFiles] = useState<Record<string, File | null>>({});
+  const [fulfillingRequestId, setFulfillingRequestId] = useState<string | null>(null);
+
   // Navigation / Tabs
-  const [activeTab, setActiveTab] = useState<'overview' | 'docs' | 'actions' | 'waste' | 'reports' | 'matrix' | 'inspections' | 'legislations' | 'evaluation'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'docs' | 'doc_requests' | 'actions' | 'waste' | 'reports' | 'matrix' | 'inspections' | 'legislations' | 'evaluation'>('overview');
 
   const NAV_TABS: { id: typeof activeTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Genel Bakış', icon: <Activity size={15} /> },
     { id: 'docs', label: 'Belgelerim', icon: <FileText size={15} /> },
+    { id: 'doc_requests', label: 'Evrak Talepleri', icon: <Inbox size={15} /> },
     { id: 'actions', label: 'Aksiyonlar', icon: <CheckCircle size={15} /> },
     { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={15} /> },
     { id: 'matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={15} /> },
@@ -102,6 +114,7 @@ export default function ClientPanel() {
   const evaluatedStaffIdSet = new Set(myClientEvaluations.map((ev) => ev.evaluatee_id));
   const hasPendingEvaluation =
     !!activeEvalPeriod && assignedStaffForEval.some((a) => !evaluatedStaffIdSet.has(a.user_id));
+  const hasPendingDocRequests = documentRequests.some((r) => r.status === 'pending');
   const visibleNavTabs = NAV_TABS.filter((t) => t.id !== 'evaluation' || !!activeEvalPeriod);
   
   // New States for Matrix, Inspections, and Legislations
@@ -115,6 +128,25 @@ export default function ClientPanel() {
   const [inspectionPoints, setInspectionPoints] = useState<any[]>([]);
   const [inspectionSubmissions, setInspectionSubmissions] = useState<any[]>([]);
   const [loadingInspections, setLoadingInspections] = useState(false);
+
+  // Kendi saha denetim formunuzu oluşturma (form tasarımı + QR nokta)
+  const [showCreateInspectionFormModal, setShowCreateInspectionFormModal] = useState(false);
+  const [newInsFormTitle, setNewInsFormTitle] = useState('');
+  const [newInsFormDesc, setNewInsFormDesc] = useState('');
+  const [newInsFormQuestions, setNewInsFormQuestions] = useState<any[]>([
+    { question_text: '', question_type: 'yes_no', is_required: true },
+  ]);
+  const [savingInspectionForm, setSavingInspectionForm] = useState(false);
+
+  const [showCreateInspectionPointModal, setShowCreateInspectionPointModal] = useState(false);
+  const [newInsPointFormId, setNewInsPointFormId] = useState('');
+  const [newInsPointName, setNewInsPointName] = useState('');
+  const [newInsPointLocation, setNewInsPointLocation] = useState('');
+  const [savingInspectionPoint, setSavingInspectionPoint] = useState(false);
+
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState('');
+  const [qrPointForModal, setQrPointForModal] = useState<any>(null);
   const [selectedSubmissionForDetail, setSelectedSubmissionForDetail] = useState<any>(null);
   const [expandedSubmissionId, setExpandedSubmissionId] = useState<string | null>(null);
   const [submissionAnswers, setSubmissionAnswers] = useState<Record<string, any[]>>({});
@@ -232,6 +264,12 @@ export default function ClientPanel() {
         .order('sort_order', { ascending: true });
       setPermitCategories(permitCats || []);
 
+      const { data: cedCats } = await supabase
+        .from('ced_project_categories')
+        .select('stage, code, title')
+        .order('sort_order', { ascending: true });
+      setCedCategories(cedCats || []);
+
       // Taşıyıcı / gönderilen firma listesi (danışmanın tanımladığı ortak liste)
       if (client.consultant_company_id) {
         fetchWasteCompanies(client.consultant_company_id);
@@ -294,6 +332,7 @@ export default function ClientPanel() {
       fetchMatrixData(prof.client_id);
       fetchInspectionsData(prof.client_id);
       fetchLegislationsData(prof.client_id);
+      fetchDocumentRequests(prof.client_id);
       if (client.consultant_company_id) {
         fetchEvaluationData(prof.client_id, client.consultant_company_id);
       }
@@ -762,6 +801,145 @@ export default function ClientPanel() {
     }
   };
 
+  const fetchDocumentRequests = async (clientId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('document_requests')
+        .select('*, document:document_id(file_url, file_type, file_size), requester:requested_by(full_name, email)')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setDocumentRequests(data || []);
+    } catch (err: any) {
+      console.error('Evrak talepleri fetch error:', err.message);
+    }
+  };
+
+  const sendDocumentFulfilledEmail = async (email: string, clientName: string, title: string): Promise<boolean> => {
+    if (!email) return false;
+    try {
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      const actualScriptUrl = scriptSetting?.value;
+      if (!actualScriptUrl) {
+        console.warn('Evrak yükleme bildirim e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return false;
+      }
+
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'document_request_fulfilled',
+          email,
+          clientName,
+          title,
+          loginLink: `${window.location.origin}/login`,
+        }),
+      });
+      return true;
+    } catch (err) {
+      console.error('Evrak yükleme bildirim e-postası gönderilemedi:', err);
+      return false;
+    }
+  };
+
+  const handleFulfillDocumentRequest = async (request: any) => {
+    const file = docReqUploadFiles[request.id];
+    if (!file) {
+      alert('Lütfen önce bir dosya seçin.');
+      return;
+    }
+    if (!clientDetails?.consultant_company_id) {
+      alert('Danışmanlık firması bilgisi bulunamadı.');
+      return;
+    }
+    setFulfillingRequestId(request.id);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const filePath = `document_requests/${request.id}_${Math.random().toString(36).slice(2)}.${fileExt}`;
+      const { error: uploadErr } = await supabase.storage.from('documents').upload(filePath, file);
+      if (uploadErr) throw uploadErr;
+      const { data: urlData } = supabase.storage.from('documents').getPublicUrl(filePath);
+
+      // Belgeyi kendi firma adıyla (mevcut "lokasyon" etiketleme kuralı) etiketle ki
+      // Zorunlu Belge Matrisi, Firma Bazlı Kota ve kendi "Belgelerim" sekmesinde görünsün.
+      const cleanClientName = (clientDetails.name || '').trim();
+      let locationDefId: string | null = null;
+      if (cleanClientName) {
+        const { data: existingLoc } = await supabase
+          .from('user_definitions')
+          .select('id')
+          .eq('organization_id', clientDetails.consultant_company_id)
+          .eq('category', 'location')
+          .ilike('label', cleanClientName)
+          .maybeSingle();
+
+        if (existingLoc?.id) {
+          locationDefId = existingLoc.id;
+        } else {
+          const { data: newLoc, error: locErr } = await supabase
+            .from('user_definitions')
+            .insert({
+              organization_id: clientDetails.consultant_company_id,
+              category: 'location',
+              label: cleanClientName,
+              user_id: profile.id,
+            })
+            .select('id')
+            .single();
+          if (!locErr) locationDefId = newLoc?.id || null;
+        }
+      }
+
+      const { data: newDoc, error: docErr } = await supabase
+        .from('documents')
+        .insert({
+          organization_id: clientDetails.consultant_company_id,
+          uploader_id: profile.id,
+          title: request.title,
+          description: request.description || null,
+          acquisition_date: new Date().toISOString().split('T')[0],
+          location_def_id: locationDefId,
+          file_url: urlData.publicUrl,
+          file_type: file.type,
+          file_size: file.size,
+          is_indefinite: true,
+        })
+        .select()
+        .single();
+      if (docErr) throw docErr;
+
+      const { error: reqErr } = await supabase
+        .from('document_requests')
+        .update({
+          status: 'fulfilled',
+          document_id: newDoc.id,
+          fulfilled_by: profile.id,
+          fulfilled_at: new Date().toISOString(),
+        })
+        .eq('id', request.id);
+      if (reqErr) throw reqErr;
+
+      // Talebi açan personele belgenin yüklendiğini bildiren mail gönder
+      if (request.requester?.email) {
+        await sendDocumentFulfilledEmail(request.requester.email, clientDetails?.name || '', request.title);
+      }
+
+      alert('Belge başarıyla yüklendi, talep karşılandı.');
+      setDocReqUploadFiles((prev) => ({ ...prev, [request.id]: null }));
+      await fetchDocumentRequests(request.client_id);
+    } catch (err: any) {
+      alert('Belge yüklenirken hata: ' + err.message);
+    } finally {
+      setFulfillingRequestId(null);
+    }
+  };
+
   const handleClientSubmitAction = async (actionId: string) => {
     if (!actionNoteInput.trim()) {
       alert('Lütfen yapılan işle ilgili bir açıklama yazın.');
@@ -922,6 +1100,101 @@ export default function ClientPanel() {
       console.error('Inspections error:', err.message);
     } finally {
       setLoadingInspections(false);
+    }
+  };
+
+  const handleSaveInspectionForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInsFormTitle.trim()) return alert('Lütfen form başlığını girin.');
+    if (newInsFormQuestions.length === 0) return alert('Lütfen en az bir soru ekleyin.');
+    if (newInsFormQuestions.some((q) => !q.question_text.trim())) {
+      return alert('Lütfen tüm soru metinlerini doldurun.');
+    }
+    if (!clientDetails?.consultant_company_id) {
+      return alert('Danışmanlık firması bilgisi bulunamadı.');
+    }
+
+    setSavingInspectionForm(true);
+    try {
+      const { data: form, error: formError } = await supabase
+        .from('inspection_forms')
+        .insert({
+          organization_id: clientDetails.consultant_company_id,
+          client_id: profile.client_id,
+          title: newInsFormTitle.trim(),
+          description: newInsFormDesc.trim() || null,
+          created_by: profile.id,
+        })
+        .select()
+        .single();
+      if (formError) throw formError;
+
+      const questionsToInsert = newInsFormQuestions.map((q, index) => ({
+        form_id: form.id,
+        order_index: index + 1,
+        question_text: q.question_text.trim(),
+        question_type: q.question_type,
+        is_required: q.is_required,
+      }));
+      const { error: qError } = await supabase.from('inspection_questions').insert(questionsToInsert);
+      if (qError) throw qError;
+
+      alert('Denetim formunuz oluşturuldu! Şimdi bir denetim noktası ve QR kod ekleyebilirsiniz.');
+      setShowCreateInspectionFormModal(false);
+      setNewInsFormTitle('');
+      setNewInsFormDesc('');
+      setNewInsFormQuestions([{ question_text: '', question_type: 'yes_no', is_required: true }]);
+      await fetchInspectionsData(profile.client_id);
+    } catch (err: any) {
+      alert('Form kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingInspectionForm(false);
+    }
+  };
+
+  const handleSaveInspectionPoint = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInsPointName.trim()) return alert('Lütfen nokta adını girin.');
+    if (!newInsPointFormId) return alert('Lütfen bu noktada kullanılacak denetim formunu seçin.');
+
+    setSavingInspectionPoint(true);
+    try {
+      const randToken = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+      const { data: point, error } = await supabase
+        .from('inspection_points')
+        .insert({
+          form_id: newInsPointFormId,
+          name: newInsPointName.trim(),
+          location_description: newInsPointLocation.trim() || null,
+          qr_token: randToken,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      setShowCreateInspectionPointModal(false);
+      setNewInsPointName('');
+      setNewInsPointLocation('');
+      setNewInsPointFormId('');
+      await fetchInspectionsData(profile.client_id);
+      await handleShowQrCode(point);
+    } catch (err: any) {
+      alert('Nokta oluşturulurken hata: ' + err.message);
+    } finally {
+      setSavingInspectionPoint(false);
+    }
+  };
+
+  const handleShowQrCode = async (point: any) => {
+    setQrPointForModal(point);
+    const url = `${window.location.origin}/inspect/${point.qr_token}`;
+    try {
+      const dataUrl = await QRCode.toDataURL(url, { width: 300, margin: 2 });
+      setQrCodeDataUrl(dataUrl);
+      setShowQrModal(true);
+    } catch (err) {
+      console.error(err);
+      alert('QR kod oluşturulamadı.');
     }
   };
 
@@ -1113,6 +1386,76 @@ export default function ClientPanel() {
   const renderInspectionsView = () => {
     return (
       <div className="space-y-6 animate-fadeIn text-xs">
+        {/* KENDİ DENETİM FORMLARINIZ */}
+        <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-xl">
+                <FileText size={20} />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Kendi Denetim Formlarınız</h3>
+                <p className="text-[10px] text-gray-500 dark:text-slate-400">Kendi saha denetim formunuzu tasarlayıp QR nokta oluşturabilirsiniz</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowCreateInspectionFormModal(true)}
+              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition shrink-0"
+            >
+              <Plus size={14} /> Yeni Form Oluştur
+            </button>
+          </div>
+
+          {inspectionForms.length === 0 ? (
+            <div className="py-14 text-center text-gray-400 dark:text-slate-500 text-xs font-medium italic">
+              Henüz kendi denetim formunuzu oluşturmadınız.
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 dark:divide-slate-800">
+              {inspectionForms.map((form) => {
+                const formPoints = inspectionPoints.filter((p) => p.form_id === form.id);
+                return (
+                  <div key={form.id} className="p-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-sm text-gray-800 dark:text-white">{form.title}</div>
+                        {form.description && <div className="text-[11px] text-gray-500 dark:text-slate-400 mt-0.5">{form.description}</div>}
+                      </div>
+                      <button
+                        onClick={() => {
+                          setNewInsPointFormId(form.id);
+                          setShowCreateInspectionPointModal(true);
+                        }}
+                        className="flex items-center gap-1.5 bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/20 text-teal-700 dark:text-teal-400 border border-teal-200 dark:border-teal-900/40 text-xs font-bold px-3 py-1.5 rounded-lg transition shrink-0"
+                      >
+                        <PlusCircle size={13} /> Nokta ve QR Ekle
+                      </button>
+                    </div>
+                    {formPoints.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        {formPoints.map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => handleShowQrCode(p)}
+                            className="flex items-center gap-1.5 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 text-[11px] font-bold text-gray-600 dark:text-slate-300 px-2.5 py-1.5 rounded-lg transition"
+                          >
+                            <QrCode size={12} /> {p.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ANALİZ */}
+        {inspectionForms.length > 0 && (
+          <InspectionAnalytics inspectionForms={inspectionForms} supabase={supabase} />
+        )}
+
         <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
           <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex items-center gap-3">
             <div className="p-2 bg-teal-500/10 text-teal-600 dark:text-teal-400 rounded-xl">
@@ -1432,7 +1775,9 @@ export default function ClientPanel() {
       <nav className="bg-white/60 dark:bg-slate-900/60 border-b border-gray-200 dark:border-slate-800 px-4 sticky top-[73px] z-30 overflow-x-auto">
         <div className="max-w-7xl mx-auto flex gap-1 py-2">
           {visibleNavTabs.map((tab) => {
-            const isBlinking = tab.id === 'evaluation' && hasPendingEvaluation && activeTab !== 'evaluation';
+            const isBlinking =
+              (tab.id === 'evaluation' && hasPendingEvaluation && activeTab !== 'evaluation') ||
+              (tab.id === 'doc_requests' && hasPendingDocRequests && activeTab !== 'doc_requests');
             return (
               <button
                 key={tab.id}
@@ -1556,7 +1901,7 @@ export default function ClientPanel() {
                 )}
 
                 <div>
-                  <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider block mb-1.5">İzin Kapsamı</span>
+                  <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider block mb-1.5">Çevre İzin ve Lisans Yönetmeliği Kapsamındaki Yeri</span>
                   {clientDetails?.permit_stage === 'ek1' ? (
                     <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/40 uppercase">EK-1 Kapsamında</span>
                   ) : clientDetails?.permit_stage === 'ek2' ? (
@@ -1573,6 +1918,40 @@ export default function ClientPanel() {
                         : [];
                     if (articlesArray.length === 0) return null;
                     const source = permitCategories.filter((c) => c.stage === clientDetails.permit_stage);
+                    return (
+                      <div className="mt-2 space-y-1.5">
+                        {articlesArray.map((code) => {
+                          const art = source.find(a => a.code === code);
+                          return (
+                            <div key={code} className="text-[11px] bg-gray-50 dark:bg-slate-950/40 border border-gray-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 flex gap-2">
+                              <span className="font-mono font-bold text-blue-700 dark:text-blue-400 shrink-0">{code}</span>
+                              <span className="text-gray-500 dark:text-slate-400">{art?.title || 'Madde tanımı bulunamadı'}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="pt-3 border-t border-dashed border-gray-200 dark:border-slate-800">
+                  <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider block mb-1.5">Çevresel Etki Değerlendirmesi Yönetmeliği Kapsamındaki Yeri (ÇED)</span>
+                  {clientDetails?.ced_status === 'ek1' ? (
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/40 uppercase">EK-1 Kapsamında</span>
+                  ) : clientDetails?.ced_status === 'ek2' ? (
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/40 uppercase">EK-2 Kapsamında</span>
+                  ) : (
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400 border-gray-200 dark:border-slate-700 uppercase">Kapsam Dışı</span>
+                  )}
+
+                  {clientDetails?.ced_status && clientDetails.ced_status !== 'out_of_scope' && (() => {
+                    const articlesArray: string[] = Array.isArray(clientDetails.ced_articles)
+                      ? clientDetails.ced_articles
+                      : typeof clientDetails.ced_articles === 'string'
+                        ? JSON.parse(clientDetails.ced_articles || '[]')
+                        : [];
+                    if (articlesArray.length === 0) return null;
+                    const source = cedCategories.filter((c) => c.stage === clientDetails.ced_status);
                     return (
                       <div className="mt-2 space-y-1.5">
                         {articlesArray.map((code) => {
@@ -1682,6 +2061,93 @@ export default function ClientPanel() {
                   </tbody>
                 </table>
               </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2.5: EVRAK TALEPLERİ */}
+        {activeTab === 'doc_requests' && (
+          <div className="space-y-4">
+            <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl p-4 bg-gray-50 dark:bg-slate-950/20">
+              <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                <Inbox size={14} className="text-teal-500" /> Evrak Talepleri
+              </h3>
+              <p className="text-[11px] text-gray-500 dark:text-slate-400 mt-1">
+                Danışmanınızın sizden talep ettiği belgeler burada listelenir. Belgeyi seçip yükleyerek talebi karşılayabilirsiniz.
+              </p>
+            </div>
+
+            {documentRequests.length === 0 ? (
+              <div className="text-center py-14 text-gray-400 dark:text-slate-500 text-xs italic bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl">
+                Henüz bir evrak talebi bulunmuyor.
+              </div>
+            ) : (
+              <>
+                {documentRequests.filter((r) => r.status === 'pending').length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">Bekleyen Talepler</h4>
+                    {documentRequests.filter((r) => r.status === 'pending').map((r) => (
+                      <div key={r.id} className="bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-sm text-gray-800 dark:text-white flex items-center gap-2">
+                            {r.title}
+                            <span className="text-[9px] font-black px-2 py-0.5 rounded-full uppercase border bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/40 animate-pulse">Bekliyor</span>
+                          </div>
+                          {r.description && <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">{r.description}</p>}
+                          <p className="text-[10px] text-gray-400 dark:text-slate-500 mt-1">Talep tarihi: {new Date(r.created_at).toLocaleDateString('tr-TR')}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <label className="flex items-center gap-1.5 text-xs font-bold text-gray-600 dark:text-slate-300 border border-gray-200 dark:border-slate-700 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 transition">
+                            <Upload size={13} />
+                            {docReqUploadFiles[r.id] ? docReqUploadFiles[r.id]!.name.slice(0, 18) : 'Dosya Seç'}
+                            <input
+                              type="file"
+                              className="hidden"
+                              onChange={(e) => setDocReqUploadFiles((prev) => ({ ...prev, [r.id]: e.target.files?.[0] || null }))}
+                            />
+                          </label>
+                          <button
+                            onClick={() => handleFulfillDocumentRequest(r)}
+                            disabled={!docReqUploadFiles[r.id] || fulfillingRequestId === r.id}
+                            className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {fulfillingRequestId === r.id ? 'Yükleniyor...' : 'Yükle'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {documentRequests.filter((r) => r.status === 'fulfilled').length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mt-6">Karşılanan Talepler</h4>
+                    {documentRequests.filter((r) => r.status === 'fulfilled').map((r) => (
+                      <div key={r.id} className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-sm text-gray-800 dark:text-white flex items-center gap-2">
+                            {r.title}
+                            <span className="text-[9px] font-black px-2 py-0.5 rounded-full uppercase border bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/40">Karşılandı</span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 dark:text-slate-500 mt-1">
+                            {r.fulfilled_at && `Yükleme: ${new Date(r.fulfilled_at).toLocaleDateString('tr-TR')}`}
+                          </p>
+                        </div>
+                        {r.document?.file_url && (
+                          <a
+                            href={r.document.file_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-1.5 bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/20 dark:hover:bg-teal-950/40 text-teal-700 dark:text-teal-400 border border-teal-200 dark:border-teal-900/40 px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0"
+                          >
+                            <Download size={13} /> İndir
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -2216,6 +2682,251 @@ export default function ClientPanel() {
           </div>
         );
       })()}
+
+      {/* DENETİM FORMU OLUŞTURMA MODALI */}
+      {showCreateInspectionFormModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white">
+              <div>
+                <h3 className="font-bold text-lg flex items-center gap-2">
+                  <FileText size={20} /> Yeni Saha Denetim Formu Tasarla
+                </h3>
+                <p className="text-xs opacity-80">Kendi tesisiniz için evet/hayır tarzı sorulardan oluşan bir kontrol listesi oluşturun</p>
+              </div>
+              <button onClick={() => setShowCreateInspectionFormModal(false)} className="p-1 hover:bg-white/10 rounded-full text-white transition">
+                <X size={22} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveInspectionForm} className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Form Başlığı *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Atık Depolama Sahası Günlük Kontrolü"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newInsFormTitle}
+                  onChange={(e) => setNewInsFormTitle(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama / Yönergeler</label>
+                <textarea
+                  rows={2}
+                  placeholder="Formu dolduracak personelin dikkat etmesi gereken kurallar varsa belirtin..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200 resize-none"
+                  value={newInsFormDesc}
+                  onChange={(e) => setNewInsFormDesc(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-3 pt-2">
+                <div className="flex justify-between items-center border-b pb-2 border-gray-100 dark:border-slate-700">
+                  <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <CheckCircle size={16} className="text-blue-600" /> Form Soruları
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setNewInsFormQuestions([...newInsFormQuestions, { question_text: '', question_type: 'yes_no', is_required: true }])
+                    }
+                    className="bg-blue-50 dark:bg-slate-700 hover:bg-blue-100 text-blue-600 dark:text-blue-400 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 border border-blue-200 dark:border-slate-600 transition"
+                  >
+                    <Plus size={14} /> Soru Ekle
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {newInsFormQuestions.map((q, idx) => (
+                    <div key={idx} className="bg-slate-50 dark:bg-slate-900/40 p-4 rounded-xl border border-slate-200/60 dark:border-slate-700/60 flex flex-col md:flex-row gap-3 items-end animate-fadeIn">
+                      <div className="flex-shrink-0 text-xs font-bold bg-slate-200 dark:bg-slate-700 w-6 h-6 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 self-center">
+                        {idx + 1}
+                      </div>
+                      <div className="flex-1 space-y-1 w-full">
+                        <label className="block text-[10px] font-bold text-gray-400 uppercase">Soru Metni *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Örn: Konteynerlerin kapakları kapalı ve sızdırmaz mı?"
+                          className="w-full p-2 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none text-slate-800 dark:text-slate-200 focus:ring-1 focus:ring-blue-500"
+                          value={q.question_text}
+                          onChange={(e) => {
+                            const updated = [...newInsFormQuestions];
+                            updated[idx].question_text = e.target.value;
+                            setNewInsFormQuestions(updated);
+                          }}
+                        />
+                      </div>
+                      <div className="w-full md:w-36 space-y-1">
+                        <label className="block text-[10px] font-bold text-gray-400 uppercase">Soru Türü</label>
+                        <select
+                          className="w-full p-2 border rounded-lg bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-700 text-sm outline-none text-slate-800 dark:text-slate-200 focus:ring-1 focus:ring-blue-500 font-semibold"
+                          value={q.question_type}
+                          onChange={(e) => {
+                            const updated = [...newInsFormQuestions];
+                            updated[idx].question_type = e.target.value as any;
+                            setNewInsFormQuestions(updated);
+                          }}
+                        >
+                          <option value="yes_no">EVET / HAYIR</option>
+                          <option value="compliant">UYGUN / DEĞİL</option>
+                          <option value="text">Serbest Metin</option>
+                          <option value="rating">Derecelendirme (1-5)</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-4 mb-2">
+                        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400 font-semibold cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={q.is_required}
+                            onChange={(e) => {
+                              const updated = [...newInsFormQuestions];
+                              updated[idx].is_required = e.target.checked;
+                              setNewInsFormQuestions(updated);
+                            }}
+                            className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                          />
+                          Zorunlu
+                        </label>
+                        {newInsFormQuestions.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setNewInsFormQuestions(newInsFormQuestions.filter((_, i) => i !== idx))}
+                            className="text-red-500 hover:text-red-700 p-1 rounded hover:bg-red-50 transition"
+                            title="Soruyu Kaldır"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 justify-end pt-4 border-t border-gray-100 dark:border-slate-700 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateInspectionFormModal(false)}
+                  className="px-5 py-2.5 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300 border-slate-200 dark:border-slate-700"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingInspectionForm}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-lg disabled:opacity-50"
+                >
+                  {savingInspectionForm ? 'Kaydediliyor...' : 'Form Şablonunu Kaydet'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* DENETİM NOKTASI + QR OLUŞTURMA MODALI */}
+      {showCreateInspectionPointModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2 text-lg">
+                <PlusCircle size={18} className="text-teal-600" /> Yeni Denetim Noktası ve QR Tanımla
+              </h3>
+              <button onClick={() => setShowCreateInspectionPointModal(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full text-slate-400 hover:text-slate-600 transition">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveInspectionPoint} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Kullanılacak Form Şablonu *</label>
+                <select
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newInsPointFormId}
+                  onChange={(e) => setNewInsPointFormId(e.target.value)}
+                >
+                  <option value="">-- Form Seçin --</option>
+                  {inspectionForms.map((form) => (
+                    <option key={form.id} value={form.id}>{form.title}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Nokta Adı *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Örn: Kazan Dairesi Atıksu Çıkışı, A Bölgesi Deposu"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newInsPointName}
+                  onChange={(e) => setNewInsPointName(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Lokasyon Açıklaması / Konum</label>
+                <textarea
+                  rows={2}
+                  placeholder="Örn: Fabrika arka giriş kapısının sağ tarafındaki konteyner kafesi..."
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200 resize-none"
+                  value={newInsPointLocation}
+                  onChange={(e) => setNewInsPointLocation(e.target.value)}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-100 dark:border-slate-700">
+                <button
+                  type="submit"
+                  disabled={savingInspectionPoint}
+                  className="flex-1 bg-teal-600 hover:bg-teal-700 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-lg disabled:opacity-50"
+                >
+                  {savingInspectionPoint ? 'Oluşturuluyor...' : 'Noktayı ve QR Oluştur'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateInspectionPointModal(false)}
+                  className="flex-1 border border-slate-200 dark:border-slate-700 py-2.5 rounded-xl font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+                >
+                  İptal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* QR KOD GÖSTERİM MODALI */}
+      {showQrModal && qrPointForModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-slate-100 dark:border-slate-700 animate-scaleIn text-center">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm">{qrPointForModal.name}</h3>
+              <button onClick={() => setShowQrModal(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full text-slate-400 hover:text-slate-600 transition">
+                <X size={20} />
+              </button>
+            </div>
+            {qrCodeDataUrl && (
+              <div className="flex flex-col items-center gap-3">
+                <img src={qrCodeDataUrl} alt="QR Code" className="w-48 h-48 border border-gray-100 dark:border-slate-700 rounded-xl" />
+                <p className="text-[11px] text-gray-500 dark:text-slate-400">Bu QR kodu sahada bu noktaya yerleştirip personelin telefonla okutmasını sağlayın.</p>
+                <a
+                  href={qrCodeDataUrl}
+                  download={`qr-${qrPointForModal.qr_token}.png`}
+                  className="w-full bg-teal-600 hover:bg-teal-700 text-white py-2 rounded-xl font-bold text-xs transition"
+                >
+                  QR Kodu İndir
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* MEVZUAT MADDELERİ DETAY MODALI */}
       {showLegArticlesModal && selectedRegulation && (

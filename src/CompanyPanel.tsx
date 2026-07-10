@@ -35,6 +35,7 @@ import {
   QrCode,
   Eye,
   RefreshCw,
+  HardDrive,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
@@ -42,12 +43,30 @@ import { MapPickerModal } from './MapPickerModal';
 import InspectionAnalytics from './InspectionAnalytics';
 import WasteManagement from './WasteManagement';
 
+// Boyut formatlama (Byte -> MB/GB)
+function formatBytes(bytes: number, decimals = 1) {
+  if (!bytes || bytes === 0) return '0 MB';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
+
 export default function CompanyPanel() {
   const [loading, setLoading] = useState(true);
   const [myOrg, setMyOrg] = useState<any>(null);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [invitations, setInvitations] = useState<any[]>([]);
   const [myProfile, setMyProfile] = useState<any>(null);
+  const [orgStorageUsed, setOrgStorageUsed] = useState(0);
+  const [memberStorage, setMemberStorage] = useState<Record<string, { bytes: number; count: number }>>({});
+
+  // Depo Kotası Detay Modalı (sadece firma sahibi)
+  const [showQuotaDetailModal, setShowQuotaDetailModal] = useState(false);
+  const [orgDocumentsForQuota, setOrgDocumentsForQuota] = useState<any[]>([]);
+  const [loadingQuotaDetail, setLoadingQuotaDetail] = useState(false);
+  const [deletingQuotaDocId, setDeletingQuotaDocId] = useState<string | null>(null);
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
@@ -252,6 +271,7 @@ export default function CompanyPanel() {
     can_view_team_docs: 'Ekip Dosyalarını Gör',
     can_edit_team_docs: 'Dosya Düzenle',
     can_delete_team_docs: 'Dosya Sil',
+    can_upload_personal_docs: 'Şahsi Belge Yükleme',
   };
 
   // Rol İsimleri (Türkçe Çeviri)
@@ -294,6 +314,24 @@ export default function CompanyPanel() {
 
           if (orgData) {
             setMyOrg(orgData);
+
+            // Kota: herkes toplam kullanımı görebilsin
+            supabase
+              .rpc('get_org_storage_usage', { org_id: profile.organization_id })
+              .then(({ data }) => setOrgStorageUsed(data || 0));
+
+            // Kişi bazlı kırılım: sadece Yönetici (şirket sahibi) görebilir
+            if (profile.role === 'premium_corporate') {
+              supabase
+                .rpc('get_org_storage_usage_by_member', { org_id: profile.organization_id })
+                .then(({ data }) => {
+                  const map: Record<string, { bytes: number; count: number }> = {};
+                  (data || []).forEach((r: any) => {
+                    if (r.uploader_id) map[r.uploader_id] = { bytes: r.total_bytes, count: r.doc_count };
+                  });
+                  setMemberStorage(map);
+                });
+            }
 
           // 1. MEVCUT ÜYELER
           let query = supabase
@@ -2220,6 +2258,8 @@ export default function CompanyPanel() {
   const isConsultant = !!myOrg?.is_environmental_consultant || 
     ['premium_corporate', 'corporate_chief', 'corporate_staff'].includes(myProfile?.role);
   const isCorporateAdmin = myProfile?.role === 'premium_corporate';
+  // Şahsi belge yükleme yetkisi gibi personel yetkilerini Yönetici'nin yanı sıra Şef de yönetebilir.
+  const canManageStaffPerms = isCorporateAdmin || myProfile?.role === 'corporate_chief';
   const canInvite =
     isCorporateAdmin ||
     (myProfile?.role === 'corporate_chief' &&
@@ -2448,7 +2488,7 @@ export default function CompanyPanel() {
   };
 
   const handleTogglePermission = async (member: any, permType: string) => {
-    if (!isCorporateAdmin) return;
+    if (!canManageStaffPerms) return;
     const currentPerms = member.permissions || {};
     const newPerms = { ...currentPerms, [permType]: !currentPerms[permType] };
     await supabase
@@ -2460,6 +2500,51 @@ export default function CompanyPanel() {
         m.id === member.id ? { ...m, permissions: newPerms } : m
       )
     );
+  };
+
+  const fetchQuotaDetail = async () => {
+    if (!myOrg?.id) return;
+    setLoadingQuotaDetail(true);
+    try {
+      const { data: docs } = await supabase
+        .from('documents')
+        .select('id, title, file_size, created_at, uploader:profiles!uploader_id(full_name)')
+        .or(`organization_id.eq.${myOrg.id},billing_org_id.eq.${myOrg.id}`)
+        .order('file_size', { ascending: false });
+      setOrgDocumentsForQuota(docs || []);
+    } catch (err: any) {
+      console.error('Kota detayı yüklenirken hata:', err.message);
+    } finally {
+      setLoadingQuotaDetail(false);
+    }
+  };
+
+  const handleOpenQuotaDetail = () => {
+    if (!isCorporateAdmin) return;
+    setShowQuotaDetailModal(true);
+    fetchQuotaDetail();
+  };
+
+  const handleDeleteQuotaDocument = async (docId: string) => {
+    if (!window.confirm('Bu belgeyi kalıcı olarak silmek istediğinize emin misiniz? Bu işlem kotanızda yer açar ve geri alınamaz.')) return;
+    setDeletingQuotaDocId(docId);
+    try {
+      const { error } = await supabase.from('documents').delete().eq('id', docId);
+      if (error) throw error;
+      setOrgDocumentsForQuota((prev) => prev.filter((d) => d.id !== docId));
+      const { data: usage } = await supabase.rpc('get_org_storage_usage', { org_id: myOrg.id });
+      setOrgStorageUsed(usage || 0);
+      const { data: byMember } = await supabase.rpc('get_org_storage_usage_by_member', { org_id: myOrg.id });
+      const map: Record<string, { bytes: number; count: number }> = {};
+      (byMember || []).forEach((r: any) => {
+        if (r.uploader_id) map[r.uploader_id] = { bytes: r.total_bytes, count: r.doc_count };
+      });
+      setMemberStorage(map);
+    } catch (err: any) {
+      alert('Belge silinirken hata: ' + err.message);
+    } finally {
+      setDeletingQuotaDocId(null);
+    }
   };
 
   // --- SAHA QR DENETİMLERİ METOTLARI ---
@@ -2990,6 +3075,40 @@ export default function CompanyPanel() {
               </span>
             </div>
 
+            {(() => {
+              const storageLimit = myOrg?.storage_limit || 524288000;
+              const storagePercent = Math.min(100, (orgStorageUsed / storageLimit) * 100);
+              const isStorageCritical = storagePercent >= 90;
+              return (
+                <div
+                  onClick={handleOpenQuotaDetail}
+                  className={`mb-4 p-3 rounded-lg border bg-slate-50 ${isCorporateAdmin ? 'cursor-pointer hover:border-blue-300 transition' : ''}`}
+                >
+                  <div className="flex justify-between items-center mb-1.5">
+                    <span className="text-xs font-bold text-gray-600 flex items-center gap-1.5">
+                      <HardDrive size={13} /> Depolama Kotası (Şirket Ortak Alanı)
+                    </span>
+                    <span className={`text-xs font-bold ${isStorageCritical ? 'text-red-600' : 'text-gray-500'}`}>
+                      {formatBytes(orgStorageUsed)} / {formatBytes(storageLimit)}
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                    <div
+                      style={{ width: `${storagePercent}%` }}
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        isStorageCritical ? 'bg-red-500' : storagePercent > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                      }`}
+                    />
+                  </div>
+                  {isCorporateAdmin && (
+                    <div className="text-[10px] text-blue-600 font-bold mt-1.5 flex items-center gap-1">
+                      <Eye size={10} /> Detaylı döküm için tıklayın
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div className="space-y-4">
               {/* Mevcut Üyeler */}
               {teamMembers.map((member) => (
@@ -3136,6 +3255,7 @@ export default function CompanyPanel() {
                           'can_view_team_docs',
                           'can_edit_team_docs',
                           'can_delete_team_docs',
+                          'can_upload_personal_docs',
                         ].map((p) => (
                           <button
                             key={p}
@@ -3162,27 +3282,30 @@ export default function CompanyPanel() {
                       görüntüleyip/düzenleyip/yenileyebiliyor; silme yetkisi ise
                       varsayılan olarak sadece şefte/sahipte - sahip isterse burada
                       bir personele de verebilir. */}
-                  {isCorporateAdmin && member.role === 'corporate_staff' && (
+                  {canManageStaffPerms && member.role === 'corporate_staff' && (
                     <div className="mt-2 pt-2 border-t ml-12">
                       <span className="text-[10px] font-bold text-gray-400 block mb-1">
                         PERSONEL YETKİLERİ
                       </span>
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={() => handleTogglePermission(member, 'can_delete_team_docs')}
-                          className={`text-[10px] px-2 py-1 rounded border flex items-center gap-1 transition ${
-                            member.permissions?.can_delete_team_docs
-                              ? 'bg-green-50 text-green-700 border-green-200'
-                              : 'bg-gray-55 text-gray-400 hover:bg-gray-100'
-                          }`}
-                        >
-                          {member.permissions?.can_delete_team_docs ? (
-                            <CheckSquare size={10} />
-                          ) : (
-                            <Square size={10} />
-                          )}{' '}
-                          {permLabels['can_delete_team_docs']}
-                        </button>
+                        {['can_delete_team_docs', 'can_upload_personal_docs'].map((p) => (
+                          <button
+                            key={p}
+                            onClick={() => handleTogglePermission(member, p)}
+                            className={`text-[10px] px-2 py-1 rounded border flex items-center gap-1 transition ${
+                              member.permissions?.[p]
+                                ? 'bg-green-50 text-green-700 border-green-200'
+                                : 'bg-gray-55 text-gray-400 hover:bg-gray-100'
+                            }`}
+                          >
+                            {member.permissions?.[p] ? (
+                              <CheckSquare size={10} />
+                            ) : (
+                              <Square size={10} />
+                            )}{' '}
+                            {permLabels[p] || p}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -3242,6 +3365,40 @@ export default function CompanyPanel() {
 
           {/* SAĞ: DAVET OLUŞTURMA */}
           <div className="space-y-6">
+            {isCorporateAdmin && (
+              <div className="bg-white p-5 rounded-xl border shadow-sm">
+                <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2 text-sm">
+                  <HardDrive size={16} /> Kişi Bazlı Kota Kullanımı
+                </h3>
+                {Object.keys(memberStorage).length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">Henüz belge yükleyen olmadı.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {teamMembers
+                      .filter((m) => memberStorage[m.id])
+                      .sort((a, b) => (memberStorage[b.id]?.bytes || 0) - (memberStorage[a.id]?.bytes || 0))
+                      .map((m) => {
+                        const usage = memberStorage[m.id];
+                        const sharePercent = orgStorageUsed > 0 ? (usage.bytes / orgStorageUsed) * 100 : 0;
+                        return (
+                          <div key={m.id}>
+                            <div className="flex justify-between items-center text-xs mb-0.5">
+                              <span className="font-bold text-gray-600 truncate">{m.full_name || m.email}</span>
+                              <span className="text-gray-400">{formatBytes(usage.bytes)} · {usage.count} belge</span>
+                            </div>
+                            <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                              <div
+                                style={{ width: `${Math.min(100, sharePercent)}%` }}
+                                className="h-full rounded-full bg-blue-500"
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            )}
             {canInvite ? (
               <>
                 {/* E-POSTA DAVET KARTI (Geri Geldi) */}
@@ -5001,6 +5158,59 @@ export default function CompanyPanel() {
               >
                 Kapat
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- DEPOLAMA KOTASI DETAY MODALI --- */}
+      {showQuotaDetailModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl border border-slate-100 animate-scaleIn flex flex-col max-h-[85vh]">
+            <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-blue-600 text-white rounded-t-2xl shrink-0">
+              <div>
+                <h3 className="font-bold text-lg flex items-center gap-2">
+                  <HardDrive size={20} /> Depolama Kotası Detayı
+                </h3>
+                <p className="text-xs opacity-80">
+                  {formatBytes(orgStorageUsed)} / {formatBytes(myOrg?.storage_limit || 524288000)} kullanılıyor
+                </p>
+              </div>
+              <button onClick={() => setShowQuotaDetailModal(false)} className="p-1 hover:bg-white/10 rounded-full text-white transition">
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1">
+              {loadingQuotaDetail ? (
+                <div className="py-16 text-center text-xs text-gray-400">Yükleniyor...</div>
+              ) : orgDocumentsForQuota.length === 0 ? (
+                <div className="py-16 text-center text-xs text-gray-400 italic">Kotayı kullanan belge bulunamadı.</div>
+              ) : (
+                <div className="divide-y divide-gray-100">
+                  {orgDocumentsForQuota.map((doc) => (
+                    <div key={doc.id} className="py-3 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-bold text-xs text-gray-800 truncate">{doc.title}</div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">
+                          {doc.uploader?.full_name || 'Bilinmeyen'} · {new Date(doc.created_at).toLocaleDateString('tr-TR')}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="text-xs font-bold text-gray-500">{formatBytes(doc.file_size || 0)}</span>
+                        <button
+                          onClick={() => handleDeleteQuotaDocument(doc.id)}
+                          disabled={deletingQuotaDocId === doc.id}
+                          className="text-red-500 hover:text-red-700 p-1.5 rounded hover:bg-red-50 transition disabled:opacity-40"
+                          title="Belgeyi Sil (Kota Boşalt)"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

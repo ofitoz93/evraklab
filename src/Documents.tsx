@@ -373,7 +373,7 @@ const getOrCreateDriveFolder = async (
       let query = supabase
         .from('documents')
         .select(
-          `*, type_def:user_definitions!type_def_id(label), location_def:user_definitions!location_def_id(label), uploader:profiles!uploader_id(full_name), organization:organizations(name), env_report:env_reports(wet_signature_url, wet_signed_at)`
+          `*, type_def:user_definitions!type_def_id(label), location_def:user_definitions!location_def_id(label), uploader:profiles!uploader_id(full_name), organization:organizations!organization_id(name), env_report:env_reports(wet_signature_url, wet_signed_at)`
         )
         .eq('is_archived', false);
 

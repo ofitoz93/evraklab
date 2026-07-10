@@ -45,9 +45,12 @@ import {
   GitBranchPlus,
   PenLine,
   Lock,
+  HardDrive,
+  Inbox,
 } from 'lucide-react';
 
 import QRCode from 'qrcode';
+import ExcelJS from 'exceljs';
 import { MapPickerModal, calculatePolygonAreaM2, formatArea } from './MapPickerModal';
 import type { AreaPoint } from './MapPickerModal';
 import { Link } from 'react-router-dom';
@@ -58,6 +61,16 @@ import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
 
 const TR_MONTH_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+
+// Boyut formatlama (Byte -> MB/GB)
+function formatBytes(bytes: number, decimals = 1) {
+  if (!bytes || bytes === 0) return '0 MB';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
 
 interface Client {
   id: string;
@@ -152,7 +165,7 @@ const getContractStatus = (startDateStr: string) => {
 };
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix' | 'opinions'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix' | 'opinions' | 'document_requests'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
@@ -740,6 +753,15 @@ export default function ConsultantPanel() {
 
   const [clients, setClients] = useState<Client[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
+
+  // Evrak Talepleri (Danışman -> Hizmet Verilen İşletme)
+  const [documentRequests, setDocumentRequests] = useState<any[]>([]);
+  const [loadingDocRequests, setLoadingDocRequests] = useState(false);
+  const [docReqClientId, setDocReqClientId] = useState('');
+  const [docReqTitle, setDocReqTitle] = useState('');
+  const [docReqDesc, setDocReqDesc] = useState('');
+  const [submittingDocReq, setSubmittingDocReq] = useState(false);
+  const [docReqStatusFilter, setDocReqStatusFilter] = useState<'all' | 'pending' | 'fulfilled'>('all');
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState('');
   const [userId, setUserId] = useState('');
@@ -953,6 +975,16 @@ export default function ConsultantPanel() {
   const [showEditClientMap, setShowEditClientMap] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [orgData, setOrgData] = useState<any>(null);
+  const [orgStorageUsed, setOrgStorageUsed] = useState(0);
+  const [memberStorage, setMemberStorage] = useState<Record<string, { bytes: number; count: number }>>({});
+
+  // Depo Kotası Detay Modalı (sadece firma sahibi)
+  const [showQuotaDetailModal, setShowQuotaDetailModal] = useState(false);
+  const [quotaDetailTab, setQuotaDetailTab] = useState<'members' | 'clients' | 'documents'>('members');
+  const [clientStorage, setClientStorage] = useState<{ client_id: string; client_name: string; total_bytes: number; doc_count: number }[]>([]);
+  const [orgDocumentsForQuota, setOrgDocumentsForQuota] = useState<any[]>([]);
+  const [loadingQuotaDetail, setLoadingQuotaDetail] = useState(false);
+  const [deletingQuotaDocId, setDeletingQuotaDocId] = useState<string | null>(null);
   const [mySubEndDate, setMySubEndDate] = useState<string | null>(null);
   const [premiumSeatActive, setPremiumSeatActive] = useState(true);
   const [previousRole, setPreviousRole] = useState<string | null>(null);
@@ -1025,6 +1057,9 @@ export default function ConsultantPanel() {
     }
     if (activeTab === 'opinions' && orgId) {
       fetchOpinionLetters();
+    }
+    if (activeTab === 'document_requests' && orgId) {
+      fetchDocumentRequests();
     }
     if ((activeTab === 'legislations' || activeTab === 'actions' || activeTab === 'requests') && orgId) {
       fetchConsultantLegislations();
@@ -1290,13 +1325,31 @@ export default function ConsultantPanel() {
       .from('profiles')
       .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active')
       .eq('organization_id', orgId);
-    
+
     const sortedMembers = (members || []).sort((a, b) => {
       if (a.role === 'premium_corporate' && b.role !== 'premium_corporate') return -1;
       if (a.role !== 'premium_corporate' && b.role === 'premium_corporate') return 1;
       return 0;
     });
     setTeamMembers(sortedMembers);
+
+    // Kota: herkes toplam kullanımı görebilsin
+    supabase
+      .rpc('get_org_storage_usage', { org_id: orgId })
+      .then(({ data }) => setOrgStorageUsed(data || 0));
+
+    // Kişi bazlı kırılım: sadece Yönetici (firma sahibi) görebilir
+    if (userRole === 'premium_corporate') {
+      supabase
+        .rpc('get_org_storage_usage_by_member', { org_id: orgId })
+        .then(({ data }) => {
+          const map: Record<string, { bytes: number; count: number }> = {};
+          (data || []).forEach((r: any) => {
+            if (r.uploader_id) map[r.uploader_id] = { bytes: r.total_bytes, count: r.doc_count };
+          });
+          setMemberStorage(map);
+        });
+    }
   };
 
   const fetchInvitations = async () => {
@@ -1308,6 +1361,49 @@ export default function ConsultantPanel() {
       .eq('is_used', false)
       .order('created_at', { ascending: false });
     setInvitations(data || []);
+  };
+
+  const fetchQuotaDetail = async () => {
+    if (!orgId) return;
+    setLoadingQuotaDetail(true);
+    try {
+      const [{ data: byClient }, { data: docs }] = await Promise.all([
+        supabase.rpc('get_org_storage_usage_by_client', { org_id: orgId }),
+        supabase
+          .from('documents')
+          .select('id, title, file_size, created_at, is_indefinite, uploader:profiles!uploader_id(full_name), location_def:user_definitions!location_def_id(label)')
+          .or(`organization_id.eq.${orgId},billing_org_id.eq.${orgId}`)
+          .order('file_size', { ascending: false }),
+      ]);
+      setClientStorage(byClient || []);
+      setOrgDocumentsForQuota(docs || []);
+    } catch (err: any) {
+      console.error('Kota detayı yüklenirken hata:', err.message);
+    } finally {
+      setLoadingQuotaDetail(false);
+    }
+  };
+
+  const handleOpenQuotaDetail = () => {
+    if (userRole !== 'premium_corporate') return;
+    setShowQuotaDetailModal(true);
+    fetchQuotaDetail();
+  };
+
+  const handleDeleteQuotaDocument = async (docId: string) => {
+    if (!window.confirm('Bu belgeyi kalıcı olarak silmek istediğinize emin misiniz? Bu işlem kotanızda yer açar ve geri alınamaz.')) return;
+    setDeletingQuotaDocId(docId);
+    try {
+      const { error } = await supabase.from('documents').delete().eq('id', docId);
+      if (error) throw error;
+      setOrgDocumentsForQuota((prev) => prev.filter((d) => d.id !== docId));
+      await fetchQuotaDetail();
+      await fetchTeamMembers();
+    } catch (err: any) {
+      alert('Belge silinirken hata: ' + err.message);
+    } finally {
+      setDeletingQuotaDocId(null);
+    }
   };
 
   const groupDefinitions = (defs: any[], orgProfiles: any[]) => {
@@ -3388,6 +3484,147 @@ export default function ConsultantPanel() {
     }
   };
 
+  const fetchDocumentRequests = async () => {
+    if (!orgId) return;
+    setLoadingDocRequests(true);
+    try {
+      const { data, error } = await supabase
+        .from('document_requests')
+        .select('*, client:client_id(name), requester:requested_by(full_name), document:document_id(file_url, title, file_type), fulfiller:fulfilled_by(full_name)')
+        .eq('consultant_company_id', orgId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setDocumentRequests(data || []);
+    } catch (err: any) {
+      console.error('Evrak talepleri yüklenirken hata:', err.message);
+    } finally {
+      setLoadingDocRequests(false);
+    }
+  };
+
+  const sendDocumentRequestCreatedEmail = async (email: string, clientName: string, title: string, description: string | null): Promise<boolean> => {
+    if (!email) return false;
+    try {
+      let actualScriptUrl = scriptUrl;
+      const { data: scriptSetting } = await supabase
+        .from('email_settings')
+        .select('value')
+        .eq('key', 'script_url')
+        .maybeSingle();
+      if (scriptSetting?.value) actualScriptUrl = scriptSetting.value;
+      if (!actualScriptUrl) {
+        console.warn('Evrak talebi e-postası gönderilemedi: Google Apps Script URL tanımlı değil.');
+        return false;
+      }
+
+      await fetch(actualScriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'document_request_created',
+          email,
+          clientName,
+          title,
+          description: description || '',
+          loginLink: `${window.location.origin}/login`,
+        }),
+      });
+      return true;
+    } catch (err) {
+      console.error('Evrak talebi e-postası gönderilemedi:', err);
+      return false;
+    }
+  };
+
+  const handleCreateDocumentRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!docReqClientId) return alert('Lütfen hizmet verilen işletmeyi seçin.');
+    if (!docReqTitle.trim()) return alert('Lütfen talep başlığını girin (ör. Güncel Mali Sigorta).');
+
+    setSubmittingDocReq(true);
+    try {
+      const { data: newRequest, error } = await supabase
+        .from('document_requests')
+        .insert({
+          client_id: docReqClientId,
+          consultant_company_id: orgId,
+          requested_by: userId,
+          title: docReqTitle.trim(),
+          description: docReqDesc.trim() || null,
+        })
+        .select('*, client:client_id(name, email)')
+        .single();
+      if (error) throw error;
+
+      // Müşterinin giriş hesabı varsa uygulama içi bildirim gönder
+      const { data: clientLogin } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('client_id', docReqClientId)
+        .eq('role', 'client')
+        .maybeSingle();
+
+      if (clientLogin?.id) {
+        await supabase.from('notifications').insert([{
+          user_id: clientLogin.id,
+          title: 'Yeni Evrak Talebi',
+          message: `${orgData?.name || 'Danışmanınız'} sizden "${newRequest.title}" belgesini talep etti.`,
+          type: 'document_request',
+          metadata: { request_id: newRequest.id },
+        }]);
+      }
+
+      // Müşterinin kayıtlı e-posta adresine de bilgilendirme maili gönder
+      if (newRequest.client?.email) {
+        await sendDocumentRequestCreatedEmail(
+          newRequest.client.email,
+          newRequest.client.name,
+          newRequest.title,
+          newRequest.description
+        );
+      }
+
+      alert('Evrak talebi oluşturuldu.');
+      setDocReqClientId('');
+      setDocReqTitle('');
+      setDocReqDesc('');
+      await fetchDocumentRequests();
+    } catch (err: any) {
+      alert('Talep oluşturulurken hata: ' + err.message);
+    } finally {
+      setSubmittingDocReq(false);
+    }
+  };
+
+  const handleCancelDocumentRequest = async (requestId: string) => {
+    if (!window.confirm('Bu evrak talebini iptal etmek istediğinize emin misiniz?')) return;
+    try {
+      const { error } = await supabase
+        .from('document_requests')
+        .update({ status: 'cancelled' })
+        .eq('id', requestId);
+      if (error) throw error;
+      await fetchDocumentRequests();
+    } catch (err: any) {
+      alert('Talep iptal edilirken hata: ' + err.message);
+    }
+  };
+
+  // Talebi karşılayan belgeyi aldıktan sonra tamamen silip kotadan yer açar.
+  // Talebin kendisi "karşılandı" kaydı olarak kalır, sadece dosya kalıcı silinir.
+  const handleDeleteFulfilledRequestDocument = async (request: any) => {
+    if (!request.document_id) return;
+    if (!window.confirm('Bu belgeyi kalıcı olarak silmek istediğinize emin misiniz? Kotanızda yer açılır ve geri alınamaz.')) return;
+    try {
+      const { error } = await supabase.from('documents').delete().eq('id', request.document_id);
+      if (error) throw error;
+      await fetchDocumentRequests();
+    } catch (err: any) {
+      alert('Belge silinirken hata: ' + err.message);
+    }
+  };
+
   const handleDeleteOpinion = async (opinionId: string) => {
     if (!window.confirm('Bu görüş yazısını silmek istediğinizden emin misiniz?')) return;
     try {
@@ -4182,28 +4419,101 @@ export default function ConsultantPanel() {
   const permitStageLabel = (stage?: string) =>
     stage === 'ek1' ? 'EK-1' : stage === 'ek2' ? 'EK-2' : 'Kapsam Dışı';
 
-  const handleExportClientsToExcel = () => {
+  const handleExportClientsToExcel = async () => {
     const headers = ['Firma Adı', 'Adres', 'Vergi No', 'Telefon', 'E-posta', 'ÇED Durumu', 'Çevre İzin Durumu', 'Aylık Ücret (TL)', 'Hizmet Başlangıç'];
-    const escapeCell = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const rows = clients
-      .filter((c) => !c.parent_client_id)
-      .map((c) => [
-        c.name,
-        c.address || '',
-        c.tax_no || '',
-        c.phone || '',
-        c.email || '',
-        permitStageLabel(c.ced_status),
-        permitStageLabel(c.permit_stage),
-        c.monthly_fee != null ? String(c.monthly_fee) : '0',
-        c.service_start_date || '',
-      ].map(escapeCell).join(';'));
-    const csvContent = '﻿' + [headers.map(escapeCell).join(';'), ...rows].join('\r\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const rows = clients.filter((c) => !c.parent_client_id);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'EvrakLab';
+    workbook.created = new Date();
+
+    const sheet = workbook.addWorksheet('Hizmet Verilen İşletmeler', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+
+    sheet.columns = [
+      { header: headers[0], key: 'name', width: 30 },
+      { header: headers[1], key: 'address', width: 34 },
+      { header: headers[2], key: 'tax_no', width: 16 },
+      { header: headers[3], key: 'phone', width: 16 },
+      { header: headers[4], key: 'email', width: 26 },
+      { header: headers[5], key: 'ced_status', width: 16 },
+      { header: headers[6], key: 'permit_stage', width: 18 },
+      { header: headers[7], key: 'monthly_fee', width: 16 },
+      { header: headers[8], key: 'service_start_date', width: 16 },
+    ];
+
+    // Başlık satırı stili
+    const headerRow = sheet.getRow(1);
+    headerRow.height = 24;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } }; // teal-700
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF0F766E' } },
+        left: { style: 'thin', color: { argb: 'FF0F766E' } },
+        bottom: { style: 'thin', color: { argb: 'FF0F766E' } },
+        right: { style: 'thin', color: { argb: 'FF0F766E' } },
+      };
+    });
+
+    const stageFill = (label: string): string | null => {
+      if (label === 'EK-1') return 'FFFEF3C7'; // amber-100
+      if (label === 'EK-2') return 'FFD1FAE5'; // emerald-100
+      return 'FFF1F5F9'; // slate-100 (Kapsam Dışı)
+    };
+    const stageFont = (label: string): string => {
+      if (label === 'EK-1') return 'FF92400E'; // amber-800
+      if (label === 'EK-2') return 'FF065F46'; // emerald-800
+      return 'FF475569'; // slate-600
+    };
+
+    rows.forEach((c, idx) => {
+      const cedLabel = permitStageLabel(c.ced_status);
+      const permitLabel = permitStageLabel(c.permit_stage);
+      const row = sheet.addRow({
+        name: c.name,
+        address: c.address || '',
+        tax_no: c.tax_no || '',
+        phone: c.phone || '',
+        email: c.email || '',
+        ced_status: cedLabel,
+        permit_stage: permitLabel,
+        monthly_fee: c.monthly_fee != null ? Number(c.monthly_fee) : 0,
+        service_start_date: c.service_start_date || '',
+      });
+
+      const zebraFill = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC'; // white / slate-50
+      row.eachCell((cell, colNumber) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        };
+        cell.alignment = { vertical: 'middle', horizontal: colNumber === 8 ? 'right' : 'left' };
+        if (colNumber === 6 || colNumber === 7) {
+          const label = colNumber === 6 ? cedLabel : permitLabel;
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: stageFill(label)! } };
+          cell.font = { bold: true, color: { argb: stageFont(label) } };
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: zebraFill } };
+        }
+      });
+
+      row.getCell('monthly_fee').numFmt = '#,##0.00 "₺"';
+    });
+
+    sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `hizmet-verilen-isletmeler-${new Date().toISOString().split('T')[0]}.csv`;
+    link.download = `hizmet-verilen-isletmeler-${new Date().toISOString().split('T')[0]}.xlsx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -5066,6 +5376,8 @@ export default function ConsultantPanel() {
   const canDeleteClients = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_delete_clients);
   const canViewReports = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || userRole === 'premium_individual' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_reports !== false);
   const canViewTeam = userRole === 'premium_corporate' || userRole === 'corporate_staff' || userRole === 'admin' || userRole === 'system_admin' || (userRole === 'corporate_chief' && currentUserPerms?.can_view_team !== false);
+  // Şahsi belge yükleme yetkisini personele Yönetici'nin yanı sıra Şef de verebilir/kaldırabilir.
+  const canManageStaffDocPerm = userRole === 'premium_corporate' || userRole === 'corporate_chief';
 
 
 
@@ -5156,6 +5468,7 @@ export default function ConsultantPanel() {
       tabs: [
         { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports },
         { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: true },
+        { id: 'document_requests', label: 'Evrak Talepleri', icon: <Inbox size={14} />, show: true },
         { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: true },
         {
           id: 'definitions',
@@ -6272,6 +6585,42 @@ export default function ConsultantPanel() {
                 </span>
               </div>
 
+              {(() => {
+                const storageLimit = orgData?.storage_limit || 524288000;
+                const storagePercent = Math.min(100, (orgStorageUsed / storageLimit) * 100);
+                const isStorageCritical = storagePercent >= 90;
+                return (
+                  <div
+                    onClick={handleOpenQuotaDetail}
+                    className={`mb-4 p-3 rounded-lg border bg-slate-50 dark:bg-slate-900/50 dark:border-slate-700 ${
+                      userRole === 'premium_corporate' ? 'cursor-pointer hover:border-blue-300 dark:hover:border-blue-800 transition' : ''
+                    }`}
+                  >
+                    <div className="flex justify-between items-center mb-1.5">
+                      <span className="text-xs font-bold text-gray-600 dark:text-gray-300 flex items-center gap-1.5">
+                        <HardDrive size={13} /> Depolama Kotası (Firma Ortak Alanı)
+                      </span>
+                      <span className={`text-xs font-bold ${isStorageCritical ? 'text-red-600' : 'text-gray-500 dark:text-gray-400'}`}>
+                        {formatBytes(orgStorageUsed)} / {formatBytes(storageLimit)}
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                      <div
+                        style={{ width: `${storagePercent}%` }}
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          isStorageCritical ? 'bg-red-500' : storagePercent > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                        }`}
+                      />
+                    </div>
+                    {userRole === 'premium_corporate' && (
+                      <div className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mt-1.5 flex items-center gap-1">
+                        <Eye size={10} /> Detaylı döküm için tıklayın
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div className="space-y-4">
                 {/* Üyeler */}
                 {teamMembers.map((member) => (
@@ -6638,6 +6987,28 @@ export default function ConsultantPanel() {
                         </div>
                       </div>
                     )}
+
+                    {/* Personel Şahsi Belge Yükleme Yetkisi - Yönetici veya Şef verebilir */}
+                    {canManageStaffDocPerm && member.role === 'corporate_staff' && member.id !== userId && (
+                      <div className="mt-2 pt-3 border-t border-gray-50 dark:border-slate-700">
+                        <span className="text-[10px] font-bold text-gray-400 block mb-1 uppercase tracking-wider">Personel Yetkileri</span>
+                        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer w-fit">
+                          <input
+                            type="checkbox"
+                            checked={member.extra_permissions?.can_upload_personal_docs || false}
+                            onChange={async (e) => {
+                              const newVal = e.target.checked;
+                              const updatedPerms = { ...(member.extra_permissions || {}), can_upload_personal_docs: newVal };
+                              const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
+                              if (error) alert('Hata: ' + error.message);
+                              else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
+                            }}
+                            className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                          />
+                          Şahsi Belge Yükleme
+                        </label>
+                      </div>
+                    )}
                   </div>
                 ))}
 
@@ -6692,6 +7063,40 @@ export default function ConsultantPanel() {
             {/* Davet Paneli (Sağ Kolon) */}
             {userRole === 'premium_corporate' && (
               <div className="space-y-6">
+                {/* Kişi Bazlı Kota Kullanımı */}
+                <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                  <h3 className="font-bold text-gray-700 dark:text-white mb-3 flex items-center gap-2 text-sm">
+                    <HardDrive size={16} /> Kişi Bazlı Kota Kullanımı
+                  </h3>
+                  {Object.keys(memberStorage).length === 0 ? (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 italic">Henüz belge yükleyen olmadı.</p>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {teamMembers
+                        .filter((m) => memberStorage[m.id])
+                        .sort((a, b) => (memberStorage[b.id]?.bytes || 0) - (memberStorage[a.id]?.bytes || 0))
+                        .map((m) => {
+                          const usage = memberStorage[m.id];
+                          const sharePercent = orgStorageUsed > 0 ? (usage.bytes / orgStorageUsed) * 100 : 0;
+                          return (
+                            <div key={m.id}>
+                              <div className="flex justify-between items-center text-xs mb-0.5">
+                                <span className="font-bold text-gray-600 dark:text-gray-300 truncate">{m.full_name || m.email}</span>
+                                <span className="text-gray-400 dark:text-gray-500">{formatBytes(usage.bytes)} · {usage.count} belge</span>
+                              </div>
+                              <div className="w-full bg-gray-100 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                                <div
+                                  style={{ width: `${Math.min(100, sharePercent)}%` }}
+                                  className="h-full rounded-full bg-blue-500"
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+
                 {/* E-posta ile davet */}
                 <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
                   <h3 className="font-bold text-blue-800 dark:text-blue-400 mb-3 flex items-center gap-2">
@@ -7093,6 +7498,160 @@ export default function ConsultantPanel() {
 
       {activeTab === 'document_matrix' && (
         renderDocumentMatrix()
+      )}
+
+      {/* EVRAK TALEPLERİ TAB */}
+      {activeTab === 'document_requests' && (
+        <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2 mb-1">
+              <Inbox className="text-blue-600" size={22} /> Evrak Talepleri
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-4 font-medium">
+              Hizmet verdiğiniz bir işletmeden serbest metinli bir belge talep edin (ör. "Güncel Mali Sigorta"). Talep, müşteri panelinde bildirim olarak görünür; müşteri belgeyi yükleyince burada karşılandı olarak işaretlenir ve indirebilirsiniz.
+            </p>
+            <form onSubmit={handleCreateDocumentRequest} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end bg-slate-50 dark:bg-slate-900/50 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">İşletme *</label>
+                <select
+                  required
+                  value={docReqClientId}
+                  onChange={(e) => setDocReqClientId(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">-- İşletme Seçin --</option>
+                  {clients.filter((c: any) => !c.parent_client_id).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Talep Başlığı *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="ör. Güncel Mali Sigorta"
+                  value={docReqTitle}
+                  onChange={(e) => setDocReqTitle(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 uppercase">Açıklama</label>
+                <input
+                  type="text"
+                  placeholder="Opsiyonel not"
+                  value={docReqDesc}
+                  onChange={(e) => setDocReqDesc(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={submittingDocReq}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-md transition disabled:opacity-50 h-[38px]"
+              >
+                {submittingDocReq ? 'Gönderiliyor...' : 'Talep Oluştur'}
+              </button>
+            </form>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-slate-700">
+              <h3 className="font-bold text-sm text-gray-700 dark:text-gray-200">Talep Listesi</h3>
+              <div className="flex gap-1.5">
+                {(['all', 'pending', 'fulfilled'] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setDocReqStatusFilter(s)}
+                    className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition ${
+                      docReqStatusFilter === s
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white dark:bg-slate-900 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    {s === 'all' ? 'Tümü' : s === 'pending' ? 'Bekliyor' : 'Karşılandı'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {loadingDocRequests ? (
+              <div className="py-10 text-center text-xs text-gray-400">Yükleniyor...</div>
+            ) : (
+              (() => {
+                const filtered = documentRequests.filter((r) => docReqStatusFilter === 'all' || r.status === docReqStatusFilter);
+                if (filtered.length === 0) {
+                  return <div className="py-10 text-center text-xs text-gray-400 italic">Bu filtreye uyan evrak talebi yok.</div>;
+                }
+                return (
+                  <div className="divide-y divide-gray-100 dark:divide-slate-700">
+                    {filtered.map((r) => (
+                      <div key={r.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm text-gray-800 dark:text-white">{r.title}</span>
+                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase border ${
+                              r.status === 'fulfilled'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-900'
+                                : r.status === 'cancelled'
+                                  ? 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-slate-800 dark:border-slate-700'
+                                  : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:border-amber-900 animate-pulse'
+                            }`}>
+                              {r.status === 'fulfilled' ? 'Karşılandı' : r.status === 'cancelled' ? 'İptal' : 'Bekliyor'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            <b className="text-gray-700 dark:text-gray-300">{r.client?.name}</b>
+                            {r.description && <> · {r.description}</>}
+                            {' '}· {new Date(r.created_at).toLocaleDateString('tr-TR')} · Talep eden: {r.requester?.full_name || '—'}
+                          </div>
+                          {r.status === 'fulfilled' && (
+                            <div className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">
+                              {r.fulfiller?.full_name || 'Müşteri'} tarafından {r.fulfilled_at ? new Date(r.fulfilled_at).toLocaleDateString('tr-TR') : ''} tarihinde yüklendi.
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {r.status === 'fulfilled' && r.document?.file_url && (
+                            <>
+                              <a
+                                href={r.document.file_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-400 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                              >
+                                <Download size={13} /> İndir
+                              </a>
+                              <button
+                                onClick={() => handleDeleteFulfilledRequestDocument(r)}
+                                className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 dark:bg-red-950/20 dark:border-red-900 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                                title="Belgeyi alıp inceledikten sonra silerek kotanızda yer açın"
+                              >
+                                <Trash2 size={13} /> Sil (Kota Boşalt)
+                              </button>
+                            </>
+                          )}
+                          {r.status === 'fulfilled' && !r.document?.file_url && (
+                            <span className="text-[11px] text-gray-400 italic">Belge silinmiş (kota için)</span>
+                          )}
+                          {r.status === 'pending' && (
+                            <button
+                              onClick={() => handleCancelDocumentRequest(r.id)}
+                              className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 dark:bg-red-950/20 dark:border-red-900 px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                            >
+                              <XCircle size={13} /> İptal
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()
+            )}
+          </div>
+        </div>
       )}
 
       {/* GÖRÜŞLER TAB */}
@@ -9997,6 +10556,131 @@ export default function ConsultantPanel() {
               >
                 Kapat
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- DEPOLAMA KOTASI DETAY MODALI --- */}
+      {showQuotaDetailModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl border border-slate-100 dark:border-slate-700 animate-scaleIn flex flex-col max-h-[85vh]">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white rounded-t-2xl shrink-0">
+              <div>
+                <h3 className="font-bold text-lg flex items-center gap-2">
+                  <HardDrive size={20} /> Depolama Kotası Detayı
+                </h3>
+                <p className="text-xs opacity-80">
+                  {formatBytes(orgStorageUsed)} / {formatBytes(orgData?.storage_limit || 524288000)} kullanılıyor
+                </p>
+              </div>
+              <button onClick={() => setShowQuotaDetailModal(false)} className="p-1 hover:bg-white/10 rounded-full text-white transition">
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="flex gap-1.5 p-3 border-b border-gray-100 dark:border-slate-700 shrink-0">
+              {([
+                { id: 'members', label: 'Kişi Bazlı' },
+                { id: 'clients', label: 'Firma Bazlı' },
+                { id: 'documents', label: 'Tüm Belgeler' },
+              ] as const).map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setQuotaDetailTab(t.id)}
+                  className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition ${
+                    quotaDetailTab === t.id
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white dark:bg-slate-900 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-gray-50'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1">
+              {loadingQuotaDetail ? (
+                <div className="py-16 text-center text-xs text-gray-400">Yükleniyor...</div>
+              ) : quotaDetailTab === 'members' ? (
+                Object.keys(memberStorage).length === 0 ? (
+                  <div className="py-16 text-center text-xs text-gray-400 italic">Henüz belge yükleyen olmadı.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {teamMembers
+                      .filter((m) => memberStorage[m.id])
+                      .sort((a, b) => (memberStorage[b.id]?.bytes || 0) - (memberStorage[a.id]?.bytes || 0))
+                      .map((m) => {
+                        const usage = memberStorage[m.id];
+                        const sharePercent = orgStorageUsed > 0 ? (usage.bytes / orgStorageUsed) * 100 : 0;
+                        return (
+                          <div key={m.id} className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-800">
+                            <div className="flex justify-between items-center text-xs mb-1">
+                              <span className="font-bold text-gray-700 dark:text-gray-200">{m.full_name || m.email}</span>
+                              <span className="text-gray-400 dark:text-gray-500">{formatBytes(usage.bytes)} · {usage.count} belge</span>
+                            </div>
+                            <div className="w-full bg-gray-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                              <div style={{ width: `${Math.min(100, sharePercent)}%` }} className="h-full rounded-full bg-blue-500" />
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )
+              ) : quotaDetailTab === 'clients' ? (
+                clientStorage.length === 0 ? (
+                  <div className="py-16 text-center text-xs text-gray-400 italic">
+                    Hiçbir işletme adına (lokasyon eşleşmesiyle) belge yüklenmemiş.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {clientStorage.map((c) => {
+                      const sharePercent = orgStorageUsed > 0 ? (c.total_bytes / orgStorageUsed) * 100 : 0;
+                      return (
+                        <div key={c.client_id} className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-800">
+                          <div className="flex justify-between items-center text-xs mb-1">
+                            <span className="font-bold text-gray-700 dark:text-gray-200 flex items-center gap-1.5">
+                              <Building size={12} className="text-gray-400" /> {c.client_name}
+                            </span>
+                            <span className="text-gray-400 dark:text-gray-500">{formatBytes(c.total_bytes)} · {c.doc_count} belge</span>
+                          </div>
+                          <div className="w-full bg-gray-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                            <div style={{ width: `${Math.min(100, sharePercent)}%` }} className="h-full rounded-full bg-purple-500" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              ) : orgDocumentsForQuota.length === 0 ? (
+                <div className="py-16 text-center text-xs text-gray-400 italic">Kotayı kullanan belge bulunamadı.</div>
+              ) : (
+                <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                  {orgDocumentsForQuota.map((doc) => (
+                    <div key={doc.id} className="py-3 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-bold text-xs text-gray-800 dark:text-slate-200 truncate">{doc.title}</div>
+                        <div className="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5">
+                          {doc.uploader?.full_name || 'Bilinmeyen'}
+                          {doc.location_def?.label && <> · {doc.location_def.label}</>}
+                          {' '}· {new Date(doc.created_at).toLocaleDateString('tr-TR')}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="text-xs font-bold text-gray-500 dark:text-gray-400">{formatBytes(doc.file_size || 0)}</span>
+                        <button
+                          onClick={() => handleDeleteQuotaDocument(doc.id)}
+                          disabled={deletingQuotaDocId === doc.id}
+                          className="text-red-500 hover:text-red-700 p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition disabled:opacity-40"
+                          title="Belgeyi Sil (Kota Boşalt)"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

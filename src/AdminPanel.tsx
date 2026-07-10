@@ -141,8 +141,8 @@ export default function AdminPanel() {
     usd_try_rate: 46.84,
     profit_margin_percent: 100,
     packages: [
-      { size_gb: 0.5, label: '500 MB Ekstra', override_price: 50 },
-      { size_gb: 1, label: '1 GB Ekstra', override_price: 90 },
+      { size_gb: 0.5, label: '500 MB Ekstra', override_price: 100 },
+      { size_gb: 1, label: '1 GB Ekstra', override_price: 190 },
     ],
   };
   const [subscriptionPlans, setSubscriptionPlans] = useState<any>(DEFAULT_SUBSCRIPTION_PLANS);

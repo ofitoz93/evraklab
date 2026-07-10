@@ -52,8 +52,8 @@ const DEFAULT_STORAGE_PRICING = {
   usd_try_rate: 46.84,
   profit_margin_percent: 100,
   packages: [
-    { size_gb: 0.5, label: '500 MB Ekstra', override_price: 50 },
-    { size_gb: 1, label: '1 GB Ekstra', override_price: 90 },
+    { size_gb: 0.5, label: '500 MB Ekstra', override_price: 100 },
+    { size_gb: 1, label: '1 GB Ekstra', override_price: 190 },
   ],
 };
 
@@ -99,6 +99,9 @@ export default function Pricing() {
   // Depolama Seçimi
   const [selectedStorageIndex, setSelectedStorageIndex] = useState(1); // Varsayılan 1 GB
   const [storageQuantity, setStorageQuantity] = useState(1); // Kaç adet alınacak?
+  // Firma üyesi (sahip/yönetici hariç) satın aldığı depolamayı şirketin ortak
+  // kotasına mı yoksa kendi şahsi kotasına mı eklemek istediğini seçebilir.
+  const [storageTarget, setStorageTarget] = useState<'company' | 'personal'>('company');
 
   // Modallar
   const [showLeaveWarning, setShowLeaveWarning] = useState(false);
@@ -248,8 +251,12 @@ export default function Pricing() {
       if (purchaseType === 'storage') {
         const pack = storagePricing.packages[selectedStorageIndex];
         const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
-        const targetId = profile?.organization_id || user.id;
-        const isCorporate = !!profile?.organization_id;
+        // Şirket sahibi/yöneticisi olmayan bir firma üyesi "Şahsi Kotam"ı seçtiyse
+        // satın alınan alan şirkete değil, kendi bireysel kotasına eklenir.
+        const useOwnPersonalQuota =
+          !!profile?.organization_id && profile?.role !== 'premium_corporate' && storageTarget === 'personal';
+        const targetId = useOwnPersonalQuota ? user.id : (profile?.organization_id || user.id);
+        const isCorporate = useOwnPersonalQuota ? false : !!profile?.organization_id;
 
         const { error } = await supabase.rpc('add_storage_limit', {
           target_id: targetId,
@@ -261,13 +268,17 @@ export default function Pricing() {
 
         await supabase.from('subscription_payments').insert({
           user_id: user.id,
-          organization_id: profile?.organization_id || null,
+          organization_id: useOwnPersonalQuota ? null : (profile?.organization_id || null),
           plan_type: 'storage',
           amount: totalAmount,
           storage_bytes: totalBytesToAdd,
         });
 
-        alert(`✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı.`);
+        alert(
+          `✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı${
+            useOwnPersonalQuota ? ' (Şahsi Kotanız)' : isCorporate ? ' (Şirket Ortak Kotası)' : ''
+          }.`
+        );
       } else {
         // subscription
         const now = new Date();
@@ -671,6 +682,36 @@ export default function Pricing() {
           ) : (
             /* --- DEPOLAMA SATIN ALMA EKRANI --- */
             <div className="animate-fadeIn">
+              {!!profile?.organization_id && profile?.role !== 'premium_corporate' && (
+                <div className="max-w-md mx-auto mb-6 bg-gray-50 p-4 rounded-2xl border border-gray-200 text-left">
+                  <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">
+                    Bu alanı nereye eklemek istersiniz?
+                  </label>
+                  <div className="bg-white p-1 rounded-xl border border-gray-200 inline-flex w-full">
+                    <button
+                      onClick={() => setStorageTarget('company')}
+                      className={`flex-1 px-4 py-2 rounded-lg font-bold text-xs transition-all ${
+                        storageTarget === 'company' ? 'bg-purple-600 text-white shadow' : 'text-gray-500'
+                      }`}
+                    >
+                      <Building size={14} className="inline mr-1.5" /> Şirket Ortak Kotası
+                    </button>
+                    <button
+                      onClick={() => setStorageTarget('personal')}
+                      className={`flex-1 px-4 py-2 rounded-lg font-bold text-xs transition-all ${
+                        storageTarget === 'personal' ? 'bg-blue-600 text-white shadow' : 'text-gray-500'
+                      }`}
+                    >
+                      <User size={14} className="inline mr-1.5" /> Şahsi Kotam
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-2">
+                    {storageTarget === 'company'
+                      ? 'Satın alınan alan, şirketinizin ortak kotasına eklenir ve tüm ekip tarafından paylaşılır.'
+                      : 'Satın alınan alan sadece size ait şahsi kotanıza eklenir; şirketinizin kotasından bağımsız çalışır ve Evraklar sayfasında "Şahsi" belge yükleme izniniz olmasa bile kullanılabilir.'}
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto mb-8">
                 {storagePricing.packages.map((pack: any, index: number) => (
                   <div

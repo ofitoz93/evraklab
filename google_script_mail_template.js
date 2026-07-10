@@ -35,7 +35,7 @@ function doPost(e) {
     var email = data.email;
     var clientName = data.clientName;
     var loginLink = data.loginLink;
-    var type = data.type || 'invite'; // 'invite' | 'action_opened' | 'action_completed' | 'team_invite' | 'team_invite_register' | 'evaluation_invite'
+    var type = data.type || 'invite'; // 'invite' | 'action_opened' | 'action_completed' | 'team_invite' | 'team_invite_register' | 'evaluation_invite' | 'document_request_created' | 'document_request_fulfilled'
 
     var subject, htmlBody;
 
@@ -167,6 +167,96 @@ function doPost(e) {
             "</div>" +
             "<div style='background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 12px; text-align: center;'>" +
               "<a href='" + loginLink + "' style='display: inline-block; background-color: #4f46e5; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 10px; font-weight: 700; font-size: 14px;'>EvrakLAB Paneline Git</a>" +
+            "</div>" +
+          "</div>" +
+          "<div style='padding: 20px; text-align: center; background-color: #f8fafc; border-top: 1px solid #e2e8f0;'>" +
+            "<p style='margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.5;'>" +
+              "Bu e-posta EvrakLab portalı üzerinden otomatik olarak gönderilmiştir. Lütfen yanıtlamayınız." +
+            "</p>" +
+          "</div>" +
+        "</div>";
+    } else if (type === 'document_request_created') {
+      // Danışman personeli, hizmet verdiği bir işletmeden serbest metinli bir
+      // belge talep ettiğinde müşteriye gönderilir (bkz. ConsultantPanel.tsx
+      // handleCreateDocumentRequest).
+      var docReqTitle = data.title || 'Belge';
+      var docReqDesc = data.description || '';
+
+      subject = "EvrakLab - Yeni Evrak Talebi: " + docReqTitle;
+
+      htmlBody =
+        "<div style='font-family: \"Segoe UI\", Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #f8fafc; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>" +
+          "<div style='background: linear-gradient(135deg, #5856d6, #4f46e5); padding: 35px 20px; text-align: center; color: #ffffff;'>" +
+            "<h1 style='margin: 0; font-size: 32px; font-weight: 800; letter-spacing: -1px; line-height: 1.2;'>" +
+              "Evrak<span style='color: #a5f3fc;'>LAB</span>" +
+            "</h1>" +
+            "<p style='margin: 8px 0 0 0; font-size: 14px; font-weight: 600; opacity: 0.9; letter-spacing: 0.5px;'>" +
+              "Evrak Talebi Bildirimi" +
+            "</p>" +
+          "</div>" +
+          "<div style='padding: 30px 25px; background-color: #ffffff;'>" +
+            "<h2 style='margin: 0 0 16px 0; font-size: 20px; font-weight: 750; color: #0f172a;'>" +
+              "Sayın " + clientName + "," +
+            "</h2>" +
+            "<p style='margin: 0 0 20px 0; font-size: 14px; color: #475569; line-height: 1.6;'>" +
+              "Danışmanlık firmanız sizden aşağıdaki belgeyi talep etti. Belgeyi yüklemek için müşteri panelinize giriş yapabilirsiniz." +
+            "</p>" +
+            "<div style='border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; margin-bottom: 20px; background-color: #ffffff;'>" +
+              "<div style='padding: 16px;" + (docReqDesc ? " border-bottom: 1px solid #f1f5f9;" : "") + "'>" +
+                "<span style='font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;'>Talep Edilen Belge</span>" +
+                "<div style='font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 4px;'>" + docReqTitle + "</div>" +
+              "</div>" +
+              (docReqDesc ? (
+                "<div style='padding: 16px;'>" +
+                  "<span style='font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;'>Not</span>" +
+                  "<div style='font-size: 13px; color: #334155; margin-top: 4px;'>" + docReqDesc + "</div>" +
+                "</div>"
+              ) : "") +
+            "</div>" +
+            "<div style='background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 12px; text-align: center;'>" +
+              "<a href='" + loginLink + "' style='display: inline-block; background-color: #4f46e5; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 10px; font-weight: 700; font-size: 14px;'>Müşteri Paneline Git</a>" +
+            "</div>" +
+          "</div>" +
+          "<div style='padding: 20px; text-align: center; background-color: #f8fafc; border-top: 1px solid #e2e8f0;'>" +
+            "<p style='margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.5;'>" +
+              "Bu e-posta EvrakLab portalı üzerinden otomatik olarak gönderilmiştir. Lütfen yanıtlamayınız." +
+            "</p>" +
+          "</div>" +
+        "</div>";
+    } else if (type === 'document_request_fulfilled') {
+      // Müşteri, kendisinden talep edilen belgeyi müşteri panelinden yüklediğinde
+      // talebi açan danışman personeline gönderilir (bkz. ClientPanel.tsx
+      // handleFulfillDocumentRequest).
+      var fulfilledTitle = data.title || 'Belge';
+
+      subject = "EvrakLab - Evrak Talebi Karşılandı: " + fulfilledTitle;
+
+      htmlBody =
+        "<div style='font-family: \"Segoe UI\", Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #f8fafc; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>" +
+          "<div style='background: linear-gradient(135deg, #5856d6, #4f46e5); padding: 35px 20px; text-align: center; color: #ffffff;'>" +
+            "<h1 style='margin: 0; font-size: 32px; font-weight: 800; letter-spacing: -1px; line-height: 1.2;'>" +
+              "Evrak<span style='color: #a5f3fc;'>LAB</span>" +
+            "</h1>" +
+            "<p style='margin: 8px 0 0 0; font-size: 14px; font-weight: 600; opacity: 0.9; letter-spacing: 0.5px;'>" +
+              "Evrak Talebi Bildirimi" +
+            "</p>" +
+          "</div>" +
+          "<div style='padding: 30px 25px; background-color: #ffffff;'>" +
+            "<h2 style='margin: 0 0 16px 0; font-size: 20px; font-weight: 750; color: #0f172a;'>" +
+              "Merhaba," +
+            "</h2>" +
+            "<p style='margin: 0 0 20px 0; font-size: 14px; color: #475569; line-height: 1.6;'>" +
+              "<b>" + clientName + "</b> firması, sizin açtığınız aşağıdaki evrak talebine belge yükledi." +
+            "</p>" +
+            "<div style='border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; margin-bottom: 20px; background-color: #ffffff;'>" +
+              "<div style='padding: 16px; text-align: right;'>" +
+                "<span style='font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; float: left;'>Karşılanan Talep</span>" +
+                "<span style='display: inline-block; background-color: #ecfdf5; color: #10b981; border: 1px solid #10b981; padding: 4px 10px; font-size: 11px; font-weight: 700; border-radius: 6px;'>KARŞILANDI</span>" +
+                "<div style='clear: both; font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 4px; text-align: left;'>" + fulfilledTitle + "</div>" +
+              "</div>" +
+            "</div>" +
+            "<div style='background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 12px; text-align: center;'>" +
+              "<a href='" + loginLink + "' style='display: inline-block; background-color: #4f46e5; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 10px; font-weight: 700; font-size: 14px;'>Danışman Paneline Git</a>" +
             "</div>" +
           "</div>" +
           "<div style='padding: 20px; text-align: center; background-color: #f8fafc; border-top: 1px solid #e2e8f0;'>" +
