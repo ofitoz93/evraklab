@@ -1,0 +1,164 @@
+.ht-stage {
+  position: relative;
+}
+
+.ht-spotlight {
+  position: absolute;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 9999px rgba(10, 14, 24, 0.6),
+    0 0 0 3px #2563eb,
+    0 0 22px 2px rgba(37, 99, 235, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    left 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    top 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    width 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    height 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 0.2s ease;
+}
+
+.dark .ht-spotlight {
+  box-shadow:
+    0 0 0 9999px rgba(2, 6, 16, 0.72),
+    0 0 0 3px #5b8def,
+    0 0 22px 2px rgba(91, 141, 239, 0.45);
+}
+
+.ht-spotlight.is-visible {
+  opacity: 1;
+}
+
+.ht-cursor-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    left 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    top 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 0.2s ease;
+}
+
+.dark .ht-cursor-dot {
+  background: #5b8def;
+  box-shadow: 0 0 0 4px rgba(91, 141, 239, 0.3);
+}
+
+.ht-cursor-dot.is-visible {
+  opacity: 1;
+}
+
+.ht-cursor-dot::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 2px solid #2563eb;
+  opacity: 0;
+}
+
+.dark .ht-cursor-dot::after {
+  border-color: #5b8def;
+}
+
+.ht-cursor-dot.is-ping::after {
+  animation: ht-ping 0.7s ease-out;
+}
+
+@keyframes ht-ping {
+  from {
+    opacity: 0.9;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+}
+
+.ht-callout {
+  position: absolute;
+  z-index: 20;
+  max-width: min(320px, 80%);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    left 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    top 0.35s cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 0.2s ease;
+}
+
+.ht-callout.is-visible {
+  opacity: 1;
+}
+
+.ht-callout::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: inherit;
+  left: 1.1rem;
+  transform: rotate(45deg);
+}
+
+.ht-callout.placement-below::after {
+  top: -4px;
+}
+
+.ht-callout.placement-above::after {
+  bottom: -4px;
+}
+
+.ht-rail-item {
+  position: relative;
+  overflow: hidden;
+}
+
+.ht-rail-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: #2563eb;
+  width: 0%;
+}
+
+.dark .ht-rail-progress {
+  background: #5b8def;
+}
+
+.ht-rail-item.is-playing .ht-rail-progress {
+  animation: ht-fillbar 4.5s linear forwards;
+}
+
+@keyframes ht-fillbar {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ht-spotlight,
+  .ht-cursor-dot,
+  .ht-callout {
+    transition: none !important;
+  }
+  .ht-cursor-dot.is-ping::after {
+    animation: none !important;
+  }
+  .ht-rail-item.is-playing .ht-rail-progress {
+    animation: none !important;
+    width: 100%;
+  }
+}

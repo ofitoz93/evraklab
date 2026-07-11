@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import {
   HelpCircle,
   FileText,
   MessageCircle,
-  Plus,
   Eye,
   Edit,
   Trash2,
@@ -26,16 +25,23 @@ import {
   ChevronRight,
   UserPlus,
   Check,
-  X,
   Layers,
   Settings,
   Briefcase,
+  Play,
 } from 'lucide-react';
+import VideoGuideGrid from './components/HelpTour/VideoGuideGrid';
+import TourModal from './components/HelpTour/TourModal';
+import { ROLE_TOUR_IDS } from './components/HelpTour/tours';
+import type { TourId } from './components/HelpTour/types';
 
 export default function HelpPage() {
   const [role, setRole] = useState<string>('normal');
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>('normal');
+  const [activeTour, setActiveTour] = useState<{ id: TourId; roleLabel?: string } | null>(null);
+
+  const openTour = (id: TourId, roleLabel?: string) => setActiveTour({ id, roleLabel });
 
   useEffect(() => {
     async function getRole() {
@@ -140,9 +146,9 @@ export default function HelpPage() {
 
       {/* DİNAMİK İÇERİK SEKSİYONLARI */}
       <div className="mb-16">
-        {activeTab === 'manager' && <ManagerHelpSection />}
-        {activeTab === 'staff' && <StaffHelpSection />}
-        {activeTab === 'normal' && <NormalHelpSection />}
+        {activeTab === 'manager' && <ManagerHelpSection onOpenTour={openTour} />}
+        {activeTab === 'staff' && <StaffHelpSection onOpenTour={openTour} />}
+        {activeTab === 'normal' && <NormalHelpSection onOpenTour={openTour} />}
       </div>
 
       {/* SİMGELER SÖZLÜĞÜ - Tüm Rollere Ortak Arayüz Referansı */}
@@ -230,12 +236,20 @@ export default function HelpPage() {
           Destek Talebi Oluştur
         </a>
       </div>
+
+      {activeTour && (
+        <TourModal
+          tourId={activeTour.id}
+          roleLabel={activeTour.roleLabel}
+          onClose={() => setActiveTour(null)}
+        />
+      )}
     </div>
   );
 }
 
 // 1. Müşteri & Normal Üye Özellikleri Rehberi
-function NormalHelpSection() {
+function NormalHelpSection({ onOpenTour }: { onOpenTour: (id: TourId, roleLabel?: string) => void }) {
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* Özet Kart */}
@@ -253,6 +267,13 @@ function NormalHelpSection() {
           <Star className="text-yellow-500 fill-yellow-500" size={20} />
           <span className="text-sm font-bold text-gray-700 dark:text-gray-300">Premium ile Tam Kontrol</span>
         </div>
+      </div>
+
+      <div>
+        <h3 className="text-xl font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2">
+          <Play className="text-blue-600 dark:text-blue-400" size={20} /> Video Rehberler
+        </h3>
+        <VideoGuideGrid tourIds={ROLE_TOUR_IDS.normal} onOpenTour={onOpenTour} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -363,7 +384,7 @@ function NormalHelpSection() {
 }
 
 // 2. Danışman / Personel Özellikleri Rehberi
-function StaffHelpSection() {
+function StaffHelpSection({ onOpenTour }: { onOpenTour: (id: TourId, roleLabel?: string) => void }) {
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* Özet Kart */}
@@ -381,6 +402,13 @@ function StaffHelpSection() {
           <Briefcase className="text-teal-600 dark:text-teal-400" size={20} />
           <span className="text-sm font-bold text-gray-700 dark:text-gray-300">Danışman Modülü</span>
         </div>
+      </div>
+
+      <div>
+        <h3 className="text-xl font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2">
+          <Play className="text-teal-600 dark:text-teal-400" size={20} /> Video Rehberler
+        </h3>
+        <VideoGuideGrid tourIds={ROLE_TOUR_IDS.staff} roleLabel="Danışman İşlemleri" onOpenTour={onOpenTour} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -487,7 +515,7 @@ function StaffHelpSection() {
 }
 
 // 3. Yönetici & Firma Sahibi Özellikleri Rehberi
-function ManagerHelpSection() {
+function ManagerHelpSection({ onOpenTour }: { onOpenTour: (id: TourId, roleLabel?: string) => void }) {
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* Özet Kart */}
@@ -505,6 +533,13 @@ function ManagerHelpSection() {
           <Shield className="text-purple-600 dark:text-purple-400" size={20} />
           <span className="text-sm font-bold text-gray-700 dark:text-gray-300">Yönetici Modülü</span>
         </div>
+      </div>
+
+      <div>
+        <h3 className="text-xl font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2">
+          <Play className="text-purple-600 dark:text-purple-400" size={20} /> Video Rehberler
+        </h3>
+        <VideoGuideGrid tourIds={ROLE_TOUR_IDS.manager} roleLabel="Yönetici Paneli" onOpenTour={onOpenTour} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
