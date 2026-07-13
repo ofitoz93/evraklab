@@ -43,6 +43,7 @@ import {
   Table,
   GitBranch,
   GitBranchPlus,
+  Network,
   PenLine,
   Lock,
   HardDrive,
@@ -165,7 +166,7 @@ const getContractStatus = (startDateStr: string) => {
 };
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'team' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix' | 'opinions' | 'document_requests'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'storage_settings' | 'team' | 'org_chart' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix' | 'opinions' | 'document_requests'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
@@ -996,6 +997,12 @@ export default function ConsultantPanel() {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [savingManagerId, setSavingManagerId] = useState<string | null>(null);
+  const [googleDriveQuota, setGoogleDriveQuota] = useState<{ usage: number; limit: number | null } | null>(null);
+  const [loadingGoogleDriveQuota, setLoadingGoogleDriveQuota] = useState(false);
+  const [savingStorageSettings, setSavingStorageSettings] = useState(false);
+  const [connectingGoogleDriveOwner, setConnectingGoogleDriveOwner] = useState(false);
+  const [showGoogleDriveInfo, setShowGoogleDriveInfo] = useState(false);
   const [currentAssignments, setCurrentAssignments] = useState<string[]>([]);
   const [allAssignments, setAllAssignments] = useState<any[]>([]);
   const [clientSubView, setClientSubView] = useState<'grid' | 'personnel' | 'requests'>('grid');
@@ -1044,7 +1051,7 @@ export default function ConsultantPanel() {
   }, []);
 
   useEffect(() => {
-    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'definitions' || activeTab === 'document_matrix' || activeTab === 'legislations' || activeTab === 'inspections') && orgId) {
+    if ((activeTab === 'settings' || activeTab === 'team' || activeTab === 'org_chart' || activeTab === 'definitions' || activeTab === 'document_matrix' || activeTab === 'legislations' || activeTab === 'inspections') && orgId) {
       fetchTeamMembers();
     }
     if (activeTab === 'team' && orgId) {
@@ -1103,6 +1110,15 @@ export default function ConsultantPanel() {
     }
   }, [activeTab, legSubTab, orgId]);
 
+  // Şef (corporate_chief), kendisine atanan firmaların yanı sıra kendisine
+  // bağlı (manager_id) personelin atandığı firmaları da görebilsin diye
+  // consultant_assignments sorgularında kullanılacak user_id listesini üretir.
+  const getAssignmentUserIds = async (roleParam: string, uIdParam: string): Promise<string[]> => {
+    if (roleParam !== 'corporate_chief') return [uIdParam];
+    const { data: subs } = await supabase.from('profiles').select('id').eq('manager_id', uIdParam);
+    return [uIdParam, ...(subs?.map((s: any) => s.id) || [])];
+  };
+
   const fetchVisitSchedules = async () => {
     if (!orgId) return;
     setLoadingVisits(true);
@@ -1121,10 +1137,11 @@ export default function ConsultantPanel() {
 
       if (isRestrictedRole && !canViewAll) {
         // Fetch assigned clients from consultant_assignments
+        const assignmentUserIds = await getAssignmentUserIds(userRole, userId);
         const { data: assignments } = await supabase
           .from('consultant_assignments')
           .select('client_id')
-          .eq('user_id', userId);
+          .in('user_id', assignmentUserIds);
         const cIds = assignments?.map((a) => a.client_id) || [];
         if (cIds.length > 0) {
           query = query.in('client_id', cIds);
@@ -1323,7 +1340,7 @@ export default function ConsultantPanel() {
   const fetchTeamMembers = async () => {
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active')
+      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active, manager_id')
       .eq('organization_id', orgId);
 
     const sortedMembers = (members || []).sort((a, b) => {
@@ -2039,6 +2056,26 @@ export default function ConsultantPanel() {
     }
   };
 
+  const handleAssignManager = async (memberId: string, managerId: string | null) => {
+    if (userRole !== 'premium_corporate') {
+      alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+    setSavingManagerId(memberId);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ manager_id: managerId })
+        .eq('id', memberId);
+      if (error) throw error;
+      setTeamMembers((prev) => prev.map((m) => (m.id === memberId ? { ...m, manager_id: managerId } : m)));
+    } catch (err: any) {
+      alert('Organizasyon şeması güncellenirken hata oluştu: ' + err.message);
+    } finally {
+      setSavingManagerId(null);
+    }
+  };
+
   const handleTogglePremiumSeat = async (member: any) => {
     if (userRole !== 'premium_corporate') {
       alert('Bu işlem için yetkiniz bulunmamaktadır.');
@@ -2254,6 +2291,205 @@ export default function ConsultantPanel() {
       alert('Kaydedilirken hata: ' + err.message);
     } finally {
       setSavingOrg(false);
+    }
+  };
+
+  // Depolama sağlayıcısı Google Drive ise "Firma Ortak Alanı" kotasını biz
+  // belirlemediğimiz (Google'ın kendi kotası geçerli olduğu) için, mümkünse
+  // Google'ın kendi hesap kotasını (about.storageQuota) çekip gösteriyoruz;
+  // alamazsak (örn. Google Workspace'te limit alanı hiç dönmeyebilir) "Sınırsız" gösteriyoruz.
+  const fetchGoogleDriveQuota = async () => {
+    if (!orgData?.google_drive_refresh_token || !orgData?.google_client_id || !orgData?.google_client_secret) {
+      setGoogleDriveQuota(null);
+      return;
+    }
+    setLoadingGoogleDriveQuota(true);
+    try {
+      const tokenRes = await fetch('/api/google-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'refresh',
+          client_id: orgData.google_client_id,
+          client_secret: orgData.google_client_secret,
+          refresh_token: orgData.google_drive_refresh_token,
+        }),
+      });
+      const result = await tokenRes.json();
+      if (!result.success) throw new Error(result.error || 'Token yenilenemedi.');
+      const accessToken = result.data.access_token;
+
+      const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!aboutRes.ok) throw new Error('Google Drive kota bilgisi alınamadı.');
+      const aboutData = await aboutRes.json();
+      const quota = aboutData.storageQuota;
+      setGoogleDriveQuota({
+        usage: Number(quota?.usage) || 0,
+        limit: quota?.limit != null ? Number(quota.limit) : null,
+      });
+    } catch (err) {
+      console.error('Google Drive kota bilgisi alınamadı:', err);
+      setGoogleDriveQuota(null);
+    } finally {
+      setLoadingGoogleDriveQuota(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'team' && orgData?.storage_preference === 'google_drive' && orgData?.google_drive_refresh_token) {
+      fetchGoogleDriveQuota();
+    }
+  }, [activeTab, orgData?.storage_preference, orgData?.google_drive_refresh_token]);
+
+  const handleSaveStorageSettings = async () => {
+    if (userRole !== 'premium_corporate') return;
+    setSavingStorageSettings(true);
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({
+          storage_preference: orgData?.storage_preference || 'supabase',
+          google_client_id: orgData?.google_client_id || null,
+          google_client_secret: orgData?.google_client_secret || null,
+          google_drive_folder_id: orgData?.google_drive_folder_id || null,
+        })
+        .eq('id', orgId);
+      if (error) throw error;
+      alert('Depolama ayarları kaydedildi.');
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingStorageSettings(false);
+    }
+  };
+
+  // Google OAuth onay ekranını popup ile açar; App.tsx'teki genel popup
+  // dinleyicisi (window.opener.postMessage) koddan döndüğünde burada yakalanıp
+  // token değişimi yapılır ve organizations.google_drive_* alanlarına kaydedilir.
+  // "Owner manages org chart..." trigger'ının genişletilmiş hali sayesinde
+  // (bkz. allow_org_owner_manage_google_drive_settings migration) firma sahibi
+  // bu yazma işlemini artık admin olmadan da yapabiliyor.
+  const googleOauthRedirectUriOwner = `${window.location.origin}/`;
+
+  const handleConnectGoogleDriveOwner = () => {
+    if (!orgData?.google_client_id?.trim() || !orgData?.google_client_secret?.trim()) {
+      alert('Lütfen önce Google Client ID ve Client Secret alanlarını doldurup kaydedin.');
+      return;
+    }
+
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchParams({
+      client_id: orgData.google_client_id.trim(),
+      redirect_uri: googleOauthRedirectUriOwner,
+      response_type: 'code',
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email',
+      access_type: 'offline',
+      prompt: 'consent',
+    }).toString();
+
+    const popup = window.open(authUrl, 'google-oauth-connect-owner', 'width=520,height=680');
+    if (!popup) {
+      alert('Popup engellendi. Lütfen bu site için tarayıcınızda popup iznini açın.');
+      return;
+    }
+
+    setConnectingGoogleDriveOwner(true);
+
+    const handleMessage = async (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (!event.data || event.data.type !== 'GOOGLE_OAUTH_CODE') return;
+      window.removeEventListener('message', handleMessage);
+
+      const code = event.data.code;
+      if (!code) {
+        setConnectingGoogleDriveOwner(false);
+        alert('Google yetkilendirme kodu alınamadı.');
+        return;
+      }
+
+      try {
+        const exchangeRes = await fetch('/api/google-oauth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'exchange',
+            code,
+            client_id: orgData.google_client_id.trim(),
+            client_secret: orgData.google_client_secret.trim(),
+            redirect_uri: googleOauthRedirectUriOwner,
+          }),
+        });
+        const exchangeResult = await exchangeRes.json();
+        if (!exchangeRes.ok || !exchangeResult.success) {
+          throw new Error(exchangeResult.error || 'Google token değişimi başarısız oldu.');
+        }
+        const { access_token, refresh_token } = exchangeResult.data;
+        if (!refresh_token) {
+          throw new Error(
+            'Google bir refresh token döndürmedi. Google hesabınızdaki (myaccount.google.com/permissions) ' +
+            'bu uygulamaya ait mevcut izni iptal edip tekrar deneyin.'
+          );
+        }
+
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        const userInfo = await userInfoRes.json();
+        const connectedEmail = userInfo.email || '';
+
+        const { error: updateErr } = await supabase
+          .from('organizations')
+          .update({
+            storage_preference: 'google_drive',
+            google_client_id: orgData.google_client_id.trim(),
+            google_client_secret: orgData.google_client_secret.trim(),
+            google_drive_folder_id: orgData.google_drive_folder_id?.trim() || null,
+            google_drive_refresh_token: refresh_token,
+            google_drive_connected_email: connectedEmail,
+          })
+          .eq('id', orgId);
+        if (updateErr) throw updateErr;
+
+        setOrgData({
+          ...orgData,
+          storage_preference: 'google_drive',
+          google_drive_refresh_token: refresh_token,
+          google_drive_connected_email: connectedEmail,
+        });
+        alert(`✅ Google Drive başarıyla bağlandı!\nBağlı hesap: ${connectedEmail}`);
+      } catch (err: any) {
+        alert('Google Drive bağlantı hatası: ' + err.message);
+      } finally {
+        setConnectingGoogleDriveOwner(false);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+  };
+
+  const handleDisconnectGoogleDriveOwner = async () => {
+    if (
+      !window.confirm(
+        'Google Drive bağlantınızı kaldırmak istediğinize emin misiniz? ' +
+        'Bağlantı kaldırıldıktan sonra yeniden bağlanana kadar belge yükleyemezsiniz.'
+      )
+    )
+      return;
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({
+          google_drive_refresh_token: null,
+          google_drive_access_token: null,
+          google_drive_connected_email: null,
+        })
+        .eq('id', orgId);
+      if (error) throw error;
+      setOrgData({ ...orgData, google_drive_refresh_token: null, google_drive_connected_email: null });
+      alert('Google Drive bağlantısı kaldırıldı.');
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
     }
   };
 
@@ -2491,10 +2727,11 @@ export default function ConsultantPanel() {
       const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
       let clientIds: string[] = [];
       if (isRestrictedRole && !currentUserPerms?.can_view_all_clients) {
+        const assignmentUserIds = await getAssignmentUserIds(userRole, userId);
         const { data: assigns } = await supabase
           .from('consultant_assignments')
           .select('client_id')
-          .eq('user_id', userId);
+          .in('user_id', assignmentUserIds);
         clientIds = assigns?.map((a: any) => a.client_id) || [];
       } else {
         clientIds = clients.map((c: any) => c.id);
@@ -2551,10 +2788,11 @@ export default function ConsultantPanel() {
       const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
       let clientIds: string[] = [];
       if (isRestrictedRole && !currentUserPerms?.can_view_all_clients) {
+        const assignmentUserIds = await getAssignmentUserIds(userRole, userId);
         const { data: assigns } = await supabase
           .from('consultant_assignments')
           .select('client_id')
-          .eq('user_id', userId);
+          .in('user_id', assignmentUserIds);
         clientIds = assigns?.map((a: any) => a.client_id) || [];
       } else {
         clientIds = clients.map((c: any) => c.id);
@@ -3422,10 +3660,11 @@ export default function ConsultantPanel() {
       
       if (isRestrictedRole && !currentUserPerms?.can_view_all_clients) {
         // Query assignments to filter by client
+        const assignmentUserIds = await getAssignmentUserIds(userRole, userId);
         const { data: assignments } = await supabase
           .from('consultant_assignments')
           .select('client_id')
-          .eq('user_id', userId);
+          .in('user_id', assignmentUserIds);
         const cIds = assignments?.map((a) => a.client_id) || [];
         
         if (cIds.length > 0) {
@@ -4069,11 +4308,12 @@ export default function ConsultantPanel() {
     const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
 
     if (isRestrictedRole && !perms?.can_view_all_clients) {
-      // Sadece atandığı firmalar
+      // Sadece atandığı (ve şefse, altındaki personele atanan) firmalar
+      const assignmentUserIds = await getAssignmentUserIds(role, uId);
       const { data: assignments } = await supabase
         .from('consultant_assignments')
         .select('client_id')
-        .eq('user_id', uId);
+        .in('user_id', assignmentUserIds);
       const cIds = assignments?.map((a) => a.client_id) || [];
       if (cIds.length > 0) {
         query = query.in('id', cIds);
@@ -4115,10 +4355,11 @@ export default function ConsultantPanel() {
       
       const isRestrictedRole = currentRole === 'corporate_staff' || currentRole === 'corporate_chief';
       if (isRestrictedRole && !currentPerms?.can_view_all_clients) {
+        const assignmentUserIds = await getAssignmentUserIds(currentRole, currentUserId);
         const { data: assignments } = await supabase
           .from('consultant_assignments')
           .select('client_id')
-          .eq('user_id', currentUserId);
+          .in('user_id', assignmentUserIds);
         const cIds = assignments?.map((a) => a.client_id) || [];
         if (cIds.length > 0) {
           query = query.or(`client_id.in.(${cIds.join(',')}),requested_by.eq.${currentUserId}`);
@@ -4397,11 +4638,12 @@ export default function ConsultantPanel() {
     const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
 
     if (isRestrictedRole && !perms?.can_view_all_clients) {
-      // Sadece atandığı firmaların raporları
+      // Sadece atandığı (ve şefse, altındaki personele atanan) firmaların raporları
+      const assignmentUserIds = await getAssignmentUserIds(role, uId);
       const { data: assignments } = await supabase
         .from('consultant_assignments')
         .select('client_id')
-        .eq('user_id', uId);
+        .in('user_id', assignmentUserIds);
       const cIds = assignments?.map((a) => a.client_id) || [];
       if (cIds.length > 0) {
         query = query.in('client_id', cIds);
@@ -5400,7 +5642,7 @@ export default function ConsultantPanel() {
     if (tab === 'actions') return 'actions';
     if (['reports', 'document_matrix', 'opinions', 'definitions'].includes(tab)) return 'documents';
     if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
-    if (['team', 'evaluations'].includes(tab)) return 'hr';
+    if (['team', 'org_chart', 'evaluations'].includes(tab)) return 'hr';
     return 'settings';
   };
   const activeModule = getModuleForTab(activeTab);
@@ -5494,6 +5736,7 @@ export default function ConsultantPanel() {
       icon: <Users size={18} />,
       tabs: [
         { id: 'team', label: 'Ekip Yönetimi', icon: <Users size={14} />, show: canViewTeam },
+        { id: 'org_chart', label: 'Organizasyon Şeması', icon: <Network size={14} />, show: canViewTeam },
         {
           id: 'evaluations',
           label: 'Çalışan Değerlendirmeleri',
@@ -5508,6 +5751,7 @@ export default function ConsultantPanel() {
       icon: <SettingsIcon size={18} />,
       tabs: [
         { id: 'settings', label: 'Şirket Ayarları', icon: <SettingsIcon size={14} />, show: userRole === 'premium_corporate' },
+        { id: 'storage_settings', label: 'Depolama Ayarları', icon: <HardDrive size={14} />, show: userRole === 'premium_corporate' },
       ]
     }
   ];
@@ -6557,6 +6801,155 @@ export default function ConsultantPanel() {
         </div>
       )}
 
+      {activeTab === 'storage_settings' && orgData && (
+        <div className="max-w-4xl mx-auto space-y-6 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-600">
+              <HardDrive size={20} /> Depolama Ayarları
+            </h2>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold mb-2">Belgeleriniz Nerede Saklansın?</label>
+                <select
+                  value={orgData.storage_preference || 'supabase'}
+                  onChange={(e) => setOrgData({ ...orgData, storage_preference: e.target.value })}
+                  className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 font-semibold"
+                >
+                  <option value="supabase">EvrakLab Sistem Depolaması (Varsayılan)</option>
+                  <option value="google_drive">Kendi Google Drive'ım</option>
+                </select>
+              </div>
+
+              {orgData.storage_preference === 'google_drive' && (
+                <div className="space-y-4 pt-2">
+                  {orgData.google_drive_connected_email ? (
+                    <div className="flex items-center justify-between gap-2 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900 rounded-xl p-3 text-sm">
+                      <span className="text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1.5">
+                        <Check size={14} /> Bağlı: {orgData.google_drive_connected_email}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleDisconnectGoogleDriveOwner}
+                        className="text-red-600 text-xs font-bold hover:underline shrink-0"
+                      >
+                        Bağlantıyı Kaldır
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-400 font-semibold leading-relaxed">
+                      ⚠️ Bağlantı henüz tamamlanmadı. Bağlantı kurulana kadar ekibiniz belge yükleyemez.
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase">Google Client ID</label>
+                    <input
+                      type="text"
+                      value={orgData.google_client_id || ''}
+                      onChange={(e) => setOrgData({ ...orgData, google_client_id: e.target.value })}
+                      className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 text-sm"
+                      placeholder="xxxxxxxxxxxx.apps.googleusercontent.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase">Google Client Secret</label>
+                    <input
+                      type="password"
+                      value={orgData.google_client_secret || ''}
+                      onChange={(e) => setOrgData({ ...orgData, google_client_secret: e.target.value })}
+                      className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 text-sm"
+                      placeholder="GOCSPX-..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase">Drive Klasör ID (Opsiyonel)</label>
+                    <input
+                      type="text"
+                      value={orgData.google_drive_folder_id || ''}
+                      onChange={(e) => setOrgData({ ...orgData, google_drive_folder_id: e.target.value })}
+                      className="w-full border rounded-xl p-3 dark:bg-slate-900 dark:border-slate-700 text-sm"
+                      placeholder="Boş bırakılırsa Drive'ın ana dizini kullanılır"
+                    />
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <button
+                      onClick={handleSaveStorageSettings}
+                      disabled={savingStorageSettings}
+                      className="flex-1 flex items-center justify-center gap-2 bg-slate-600 hover:bg-slate-700 text-white px-4 py-2.5 rounded-xl font-bold text-sm transition disabled:opacity-50"
+                    >
+                      {savingStorageSettings ? 'Kaydediliyor...' : '💾 Alanları Kaydet'}
+                    </button>
+                    <button
+                      onClick={handleConnectGoogleDriveOwner}
+                      disabled={connectingGoogleDriveOwner}
+                      className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-xl font-bold text-sm transition"
+                    >
+                      {connectingGoogleDriveOwner
+                        ? 'Bağlanıyor...'
+                        : orgData.google_drive_connected_email
+                          ? 'Yeniden Bağla'
+                          : "Google Drive'a Bağlan"}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Google Cloud Console'da bu OAuth istemcisinin "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına şunu ekleyin:{' '}
+                    <span className="font-mono select-all">{googleOauthRedirectUriOwner}</span>
+                  </p>
+
+                  {/* Bilgi: adım adım nasıl bulunur */}
+                  <div className="border border-blue-100 dark:border-blue-900 rounded-xl overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowGoogleDriveInfo(!showGoogleDriveInfo)}
+                      className="w-full flex items-center justify-between p-3 bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 text-xs font-bold"
+                    >
+                      <span className="flex items-center gap-1.5"><HelpCircle size={14} /> Bu alanları nereden bulacağımı adım adım göster</span>
+                      {showGoogleDriveInfo ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    {showGoogleDriveInfo && (
+                      <div className="p-4 text-xs text-slate-600 dark:text-slate-300 space-y-2 leading-relaxed bg-white dark:bg-slate-900">
+                        <p><b>1.</b> <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="text-blue-600 underline">Google Cloud Console</a>'a girin, üstten yeni bir proje oluşturun (veya mevcut bir projeyi seçin).</p>
+                        <p><b>2.</b> Sol menüden "API'ler ve Hizmetler &gt; Kitaplık" bölümüne girin, "Google Drive API" araması yapıp etkinleştirin.</p>
+                        <p><b>3.</b> "API'ler ve Hizmetler &gt; OAuth izin ekranı" bölümünden bir onay ekranı (Kullanıcı Tipi: Dış/External) oluşturun, uygulama adı ve destek e-postanızı girin.</p>
+                        <p><b>4.</b> "API'ler ve Hizmetler &gt; Kimlik Bilgileri" bölümüne girin, "Kimlik Bilgisi Oluştur &gt; OAuth istemci kimliği" seçin, uygulama türü olarak "Web uygulaması" seçin.</p>
+                        <p><b>5.</b> "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına yukarıda gösterilen adresi (<span className="font-mono">{googleOauthRedirectUriOwner}</span>) ekleyin ve kaydedin.</p>
+                        <p><b>6.</b> Oluşturulan istemcinin "İstemci Kimliği" (Client ID) ve "İstemci Gizli Anahtarı" (Client Secret) değerlerini yukarıdaki alanlara yapıştırın.</p>
+                        <p><b>7.</b> (Opsiyonel) Belgelerinizin belirli bir klasöre gitmesini istiyorsanız, Google Drive'da o klasörü açın; tarayıcı adres çubuğundaki linkte <span className="font-mono">/folders/</span> sonrasındaki uzun kodu kopyalayıp "Drive Klasör ID" alanına yapıştırın.</p>
+                        <p><b>8.</b> Alanları kaydedip "Google Drive'a Bağlan" butonuna basın, açılan pencerede belgelerinin saklanmasını istediğiniz Google hesabınızla giriş yapıp izin verin.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-center pt-2 border-t border-gray-100 dark:border-slate-700">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Bu adımları kendiniz tamamlayamıyor musunuz?</p>
+                    <Link
+                      to="/support"
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:underline"
+                    >
+                      Destek Modülünden Adminden Yardım İsteyin →
+                    </Link>
+                  </div>
+                </div>
+              )}
+
+              {orgData.storage_preference !== 'google_drive' && (
+                <div className="flex justify-end pt-2">
+                  <button
+                    onClick={handleSaveStorageSettings}
+                    disabled={savingStorageSettings}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl font-bold transition disabled:opacity-50"
+                  >
+                    {savingStorageSettings ? 'Kaydediliyor...' : '💾 Depolama Ayarını Kaydet'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'team' && (
         <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -6586,6 +6979,47 @@ export default function ConsultantPanel() {
               </div>
 
               {(() => {
+                if (orgData?.storage_preference === 'google_drive') {
+                  // Kota bizim değil Google'ın kontrolünde: mümkünse Google'ın
+                  // kendi hesap kotasını gösteriyoruz, alamazsak "Sınırsız" gösteriyoruz.
+                  const hasRealQuota = googleDriveQuota && googleDriveQuota.limit != null;
+                  const gPercent = hasRealQuota
+                    ? Math.min(100, (googleDriveQuota!.usage / googleDriveQuota!.limit!) * 100)
+                    : 0;
+                  const gCritical = hasRealQuota && gPercent >= 90;
+                  return (
+                    <div className="mb-4 p-3 rounded-lg border bg-slate-50 dark:bg-slate-900/50 dark:border-slate-700">
+                      <div className="flex justify-between items-center mb-1.5">
+                        <span className="text-xs font-bold text-gray-600 dark:text-gray-300 flex items-center gap-1.5">
+                          <HardDrive size={13} /> Depolama Kotası (Google Drive)
+                        </span>
+                        <span className={`text-xs font-bold ${gCritical ? 'text-red-600' : 'text-gray-500 dark:text-gray-400'}`}>
+                          {loadingGoogleDriveQuota
+                            ? 'Yükleniyor...'
+                            : hasRealQuota
+                              ? `${formatBytes(googleDriveQuota!.usage)} / ${formatBytes(googleDriveQuota!.limit!)}`
+                              : googleDriveQuota
+                                ? `${formatBytes(googleDriveQuota.usage)} / Sınırsız`
+                                : 'Sınırsız'}
+                        </span>
+                      </div>
+                      {hasRealQuota && (
+                        <div className="w-full bg-gray-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                          <div
+                            style={{ width: `${gPercent}%` }}
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              gCritical ? 'bg-red-500' : gPercent > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                          />
+                        </div>
+                      )}
+                      <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5">
+                        Belgeleriniz Google Drive'ınızda tutulduğu için kota limiti tarafımızca belirlenmez, Google hesabınızın kendi kotasına tabidir.
+                      </div>
+                    </div>
+                  );
+                }
+
                 const storageLimit = orgData?.storage_limit || 524288000;
                 const storagePercent = Math.min(100, (orgStorageUsed / storageLimit) * 100);
                 const isStorageCritical = storagePercent >= 90;
@@ -7142,6 +7576,125 @@ export default function ConsultantPanel() {
       )}
 
 
+
+      {activeTab === 'org_chart' && (() => {
+        const owner = teamMembers.find((m) => m.role === 'premium_corporate');
+        const chiefs = teamMembers.filter((m) => m.role === 'corporate_chief');
+        const staff = teamMembers.filter((m) => m.role === 'corporate_staff');
+        const canEditOrgChart = userRole === 'premium_corporate';
+        const staffUnderChief = (chiefId: string) => staff.filter((s) => s.manager_id === chiefId);
+        const unassignedStaff = staff.filter((s) => !s.manager_id || !chiefs.some((c) => c.id === s.manager_id));
+
+        const AssignSelect = ({ member }: { member: any }) => (
+          <select
+            value={member.manager_id && chiefs.some((c) => c.id === member.manager_id) ? member.manager_id : ''}
+            onChange={(e) => handleAssignManager(member.id, e.target.value || null)}
+            disabled={savingManagerId === member.id}
+            className="text-[10px] border rounded px-1 py-1 dark:bg-slate-900 dark:border-slate-700 disabled:opacity-50"
+          >
+            <option value="">Doğrudan Firma Sahibi</option>
+            {chiefs.map((c) => (
+              <option key={c.id} value={c.id}>{c.full_name}</option>
+            ))}
+          </select>
+        );
+
+        return (
+          <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm">
+              <div className="flex items-center gap-3 border-b border-gray-100 dark:border-slate-700 pb-4 mb-6">
+                <div className="p-2.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                  <Network size={20} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-800 dark:text-gray-200 text-base">Organizasyon Şeması</h3>
+                  <p className="text-xs text-gray-500 mt-0.5 dark:text-gray-400">
+                    Ekibinizin hiyerarşik yapısını görüntüleyin{canEditOrgChart ? ' ve personeli şeflere atayın' : ''}.
+                  </p>
+                </div>
+              </div>
+
+              {owner && (
+                <div className="flex justify-center mb-8">
+                  <div className="px-5 py-3 rounded-xl bg-rose-600 text-white font-bold shadow-md flex items-center gap-2 text-sm">
+                    <Crown size={16} /> {owner.full_name}
+                    <span className="text-[10px] font-semibold opacity-80 uppercase">Firma Sahibi</span>
+                  </div>
+                </div>
+              )}
+
+              {chiefs.length === 0 ? (
+                <div className="text-center text-xs text-gray-400 italic p-8 border border-dashed border-gray-200 dark:border-slate-700 rounded-xl">
+                  Henüz bir şef/yönetici bulunmuyor. Ekip üyelerinden birine "Çevre Danışmanlık Firma Yöneticisi" ünvanı verildiğinde,
+                  personeli o şefe bağlayabilirsiniz.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {chiefs.map((chief) => (
+                    <div
+                      key={chief.id}
+                      className="border-2 border-purple-200 dark:border-purple-900 rounded-xl p-4 bg-purple-50/40 dark:bg-purple-950/10"
+                    >
+                      <div className="flex items-center gap-2 mb-3 pb-3 border-b border-purple-200 dark:border-purple-900">
+                        <div className="w-9 h-9 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold text-xs uppercase shrink-0">
+                          {chief.full_name?.charAt(0) || <User size={16} />}
+                        </div>
+                        <div>
+                          <div className="font-bold text-sm text-gray-800 dark:text-gray-200">{chief.full_name}</div>
+                          <div className="text-[10px] text-purple-600 dark:text-purple-400 uppercase font-semibold">Firma Yöneticisi (Şef)</div>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {staffUnderChief(chief.id).length === 0 && (
+                          <div className="text-[11px] text-gray-400 italic p-2">Bu yöneticiye bağlı personel yok.</div>
+                        )}
+                        {staffUnderChief(chief.id).map((s) => (
+                          <div
+                            key={s.id}
+                            className="flex items-center justify-between gap-2 bg-white dark:bg-slate-800 rounded-lg p-2 border border-gray-100 dark:border-slate-700"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/30 flex items-center justify-center font-bold text-[10px] uppercase shrink-0">
+                                {s.full_name?.charAt(0) || <User size={12} />}
+                              </div>
+                              <span className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{s.full_name}</span>
+                            </div>
+                            {canEditOrgChart && <AssignSelect member={s} />}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {unassignedStaff.length > 0 && (
+                <div className="mt-6 border-2 border-dashed border-gray-200 dark:border-slate-700 rounded-xl p-4">
+                  <div className="text-xs font-bold text-gray-500 dark:text-gray-400 mb-3 uppercase">
+                    Doğrudan Firma Sahibine Bağlı Personel
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {unassignedStaff.map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex items-center justify-between gap-2 bg-white dark:bg-slate-800 rounded-lg p-2 border border-gray-100 dark:border-slate-700"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/30 flex items-center justify-center font-bold text-[10px] uppercase shrink-0">
+                            {s.full_name?.charAt(0) || <User size={12} />}
+                          </div>
+                          <span className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{s.full_name}</span>
+                        </div>
+                        {canEditOrgChart && chiefs.length > 0 && <AssignSelect member={s} />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {activeTab === 'definitions' && (
         <div className="space-y-6 animate-fadeIn pb-12">

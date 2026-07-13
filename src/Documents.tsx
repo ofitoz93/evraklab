@@ -152,6 +152,26 @@ const getOrCreateDriveFolder = async (
   return createData.id;
 };
 
+// Drive'a yüklenen dosyalar varsayılan olarak sadece bağlanan Google hesabına
+// özeldir; şirketteki diğer personel farklı (veya hiç) Google hesabıyla
+// bağlantıyı açtığında "Bu sayfaya erişim izniniz yok" hatası alır. Bu yüzden
+// her yükleme sonrası dosyaya "bağlantıya sahip olan herkes görüntüleyebilir"
+// izni ekleniyor (best-effort; başarısız olursa yükleme geri alınmaz).
+const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) => {
+  try {
+    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+    });
+  } catch (err) {
+    console.error('Google Drive dosya izni ayarlanamadı:', err);
+  }
+};
+
   const fetchOnlyRequiredDocs = async () => {
     try {
       const { data: reqDocsData } = await supabase
@@ -535,6 +555,13 @@ const getOrCreateDriveFolder = async (
         const folder = selectedDocForRenew.organization_id || userId;
         const filePath = `${folder}/${fileName}`;
         
+        if (selectedDocForRenew.organization_id && orgSettings && orgSettings.storage_preference === 'google_drive' && !orgSettings.google_drive_refresh_token) {
+          throw new Error(
+            'Şirketiniz Google Drive depolama kullanacak şekilde ayarlanmış ancak bağlantı henüz tamamlanmadı. ' +
+            'Belge yükleyebilmek için lütfen sistem yöneticinizle iletişime geçip Google Drive bağlantısının tamamlanmasını isteyin.'
+          );
+        }
+
         if (selectedDocForRenew.organization_id && orgSettings && orgSettings.storage_preference === 'google_drive' && orgSettings.google_drive_refresh_token) {
           try {
             const tokenRes = await fetch('/api/google-oauth', {
@@ -585,6 +612,7 @@ const getOrCreateDriveFolder = async (
 
             const uploadData = await uploadRes.json();
             publicUrl = uploadData.webViewLink || `https://drive.google.com/file/d/${uploadData.id}/view`;
+            await makeDriveFileViewableByLink(accessToken, uploadData.id);
           } catch (err: any) {
             throw new Error('Google Drive depolama hatası: ' + err.message);
           }

@@ -276,6 +276,15 @@ export default function AdminPanel() {
   const [compDate, setCompDate] = useState('');
   const [compIsEnvConsultant, setCompIsEnvConsultant] = useState(false);
 
+  // --- Depolama Sağlayıcısı (Supabase / Firmanın kendi Google Drive'ı) ---
+  const [compStoragePreference, setCompStoragePreference] = useState<'supabase' | 'google_drive'>('supabase');
+  const [compGoogleClientId, setCompGoogleClientId] = useState('');
+  const [compGoogleClientSecret, setCompGoogleClientSecret] = useState('');
+  const [compGoogleDriveFolderId, setCompGoogleDriveFolderId] = useState('');
+  const [compGoogleDriveRefreshToken, setCompGoogleDriveRefreshToken] = useState('');
+  const [compGoogleDriveConnectedEmail, setCompGoogleDriveConnectedEmail] = useState('');
+  const [connectingGoogleDrive, setConnectingGoogleDrive] = useState(false);
+
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
   const [teamList, setTeamList] = useState<any[]>([]);
   const [newUserEmail, setNewUserEmail] = useState('');
@@ -1684,6 +1693,12 @@ export default function AdminPanel() {
     );
     setCompIsEnvConsultant(!!comp.is_environmental_consultant);
     setCompanyQuotaMB(Math.round((comp.storage_limit || 0) / 1048576));
+    setCompStoragePreference(comp.storage_preference === 'google_drive' ? 'google_drive' : 'supabase');
+    setCompGoogleClientId(comp.google_client_id || '');
+    setCompGoogleClientSecret(comp.google_client_secret || '');
+    setCompGoogleDriveFolderId(comp.google_drive_folder_id || '');
+    setCompGoogleDriveRefreshToken(comp.google_drive_refresh_token || '');
+    setCompGoogleDriveConnectedEmail(comp.google_drive_connected_email || '');
   };
 
   const handleSaveCompany = async () => {
@@ -1707,6 +1722,10 @@ export default function AdminPanel() {
               subscription_end_date: finalDate,
               storage_limit: companyQuotaMB * 1048576,
               is_environmental_consultant: compIsEnvConsultant,
+              storage_preference: compStoragePreference,
+              google_client_id: compGoogleClientId || null,
+              google_client_secret: compGoogleClientSecret || null,
+              google_drive_folder_id: compGoogleDriveFolderId || null,
             },
           ]);
         if (error) throw error;
@@ -1720,6 +1739,10 @@ export default function AdminPanel() {
             subscription_end_date: finalDate,
             storage_limit: companyQuotaMB * 1048576,
             is_environmental_consultant: compIsEnvConsultant,
+            storage_preference: compStoragePreference,
+            google_client_id: compGoogleClientId || null,
+            google_client_secret: compGoogleClientSecret || null,
+            google_drive_folder_id: compGoogleDriveFolderId || null,
           })
           .eq('id', editingCompany.id);
         if (error) throw error;
@@ -1738,6 +1761,138 @@ export default function AdminPanel() {
       } else {
         setCompanySaveError('Hata: ' + e.message);
       }
+    }
+  };
+
+  // Popup ile Google OAuth onay ekranını açar; App.tsx'teki genel popup dinleyicisi
+  // (window.opener.postMessage) koddan döndüğünde burada yakalanıp token değişimi
+  // ve firma'nın (organizations) google_drive_* alanlarına kayıt yapılır. Bu işlem
+  // sadece admin oturumu açıkken çalıştığından "protect_google_drive_settings"
+  // trigger'ı (is_admin() kontrolü) engele takılmaz.
+  const googleOauthRedirectUri = `${window.location.origin}/`;
+
+  const handleConnectGoogleDrive = () => {
+    if (!compGoogleClientId.trim() || !compGoogleClientSecret.trim()) {
+      alert('Lütfen önce Google Client ID ve Client Secret alanlarını doldurun.');
+      return;
+    }
+    if (!editingCompany || editingCompany.id === 'new') {
+      alert('Google Drive bağlantısı için önce şirketi oluşturup kaydedin, ardından tekrar düzenleyin.');
+      return;
+    }
+
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchParams({
+      client_id: compGoogleClientId.trim(),
+      redirect_uri: googleOauthRedirectUri,
+      response_type: 'code',
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email',
+      access_type: 'offline',
+      prompt: 'consent',
+    }).toString();
+
+    const popup = window.open(authUrl, 'google-oauth-connect', 'width=520,height=680');
+    if (!popup) {
+      alert('Popup engellendi. Lütfen bu site için tarayıcınızda popup iznini açın.');
+      return;
+    }
+
+    setConnectingGoogleDrive(true);
+
+    const handleMessage = async (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (!event.data || event.data.type !== 'GOOGLE_OAUTH_CODE') return;
+      window.removeEventListener('message', handleMessage);
+
+      const code = event.data.code;
+      if (!code) {
+        setConnectingGoogleDrive(false);
+        alert('Google yetkilendirme kodu alınamadı.');
+        return;
+      }
+
+      try {
+        const exchangeRes = await fetch('/api/google-oauth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'exchange',
+            code,
+            client_id: compGoogleClientId.trim(),
+            client_secret: compGoogleClientSecret.trim(),
+            redirect_uri: googleOauthRedirectUri,
+          }),
+        });
+        const exchangeResult = await exchangeRes.json();
+        if (!exchangeRes.ok || !exchangeResult.success) {
+          throw new Error(exchangeResult.error || 'Google token değişimi başarısız oldu.');
+        }
+        const { access_token, refresh_token } = exchangeResult.data;
+        if (!refresh_token) {
+          throw new Error(
+            'Google bir refresh token döndürmedi. Bu genellikle firma bu uygulamaya daha önce izin verdiyse olur; ' +
+            'Google hesabındaki (myaccount.google.com/permissions) mevcut izni iptal edip tekrar deneyin.'
+          );
+        }
+
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        const userInfo = await userInfoRes.json();
+        const connectedEmail = userInfo.email || '';
+
+        const { error: updateErr } = await supabase
+          .from('organizations')
+          .update({
+            storage_preference: 'google_drive',
+            google_client_id: compGoogleClientId.trim(),
+            google_client_secret: compGoogleClientSecret.trim(),
+            google_drive_folder_id: compGoogleDriveFolderId.trim() || null,
+            google_drive_refresh_token: refresh_token,
+            google_drive_connected_email: connectedEmail,
+          })
+          .eq('id', editingCompany.id);
+        if (updateErr) throw updateErr;
+
+        setCompStoragePreference('google_drive');
+        setCompGoogleDriveRefreshToken(refresh_token);
+        setCompGoogleDriveConnectedEmail(connectedEmail);
+        fetchCompanies();
+        alert(`✅ Google Drive başarıyla bağlandı!\nBağlı hesap: ${connectedEmail}`);
+      } catch (err: any) {
+        alert('Google Drive bağlantı hatası: ' + err.message);
+      } finally {
+        setConnectingGoogleDrive(false);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+  };
+
+  const handleDisconnectGoogleDrive = async () => {
+    if (!editingCompany || editingCompany.id === 'new') return;
+    if (
+      !window.confirm(
+        'Bu firmanın Google Drive bağlantısını kaldırmak istediğinize emin misiniz? ' +
+        'Bağlantı kaldırıldıktan sonra yeniden bağlanana kadar bu firma belge yükleyemeyecek.'
+      )
+    )
+      return;
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({
+          google_drive_refresh_token: null,
+          google_drive_access_token: null,
+          google_drive_connected_email: null,
+        })
+        .eq('id', editingCompany.id);
+      if (error) throw error;
+      setCompGoogleDriveRefreshToken('');
+      setCompGoogleDriveConnectedEmail('');
+      fetchCompanies();
+      alert('Google Drive bağlantısı kaldırıldı.');
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
     }
   };
 
@@ -4622,6 +4777,91 @@ export default function AdminPanel() {
                   />
                   <span className="text-xs font-bold text-purple-700 bg-purple-100 px-3 py-2 rounded-xl">MB</span>
                 </div>
+              </div>
+
+              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 space-y-3">
+                <label className="block text-xs font-bold text-blue-900 uppercase tracking-wider flex items-center gap-1.5">
+                  <Database size={14} className="text-blue-600" />
+                  Depolama Sağlayıcısı
+                </label>
+                <select
+                  className="w-full p-2.5 rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-sm font-semibold text-slate-700 bg-white"
+                  value={compStoragePreference}
+                  onChange={(e) => setCompStoragePreference(e.target.value as 'supabase' | 'google_drive')}
+                >
+                  <option value="supabase">EvrakLab Sistem Depolaması (Supabase)</option>
+                  <option value="google_drive">Firmanın Kendi Google Drive'ı</option>
+                </select>
+
+                {compStoragePreference === 'google_drive' && (
+                  <div className="space-y-2.5 pt-2 border-t border-blue-100">
+                    {compGoogleDriveConnectedEmail ? (
+                      <div className="flex items-center justify-between gap-2 bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 text-xs">
+                        <span className="text-emerald-700 font-semibold flex items-center gap-1.5">
+                          <Check size={13} /> Bağlı: {compGoogleDriveConnectedEmail}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleDisconnectGoogleDrive}
+                          className="text-red-600 text-[10px] font-bold hover:underline shrink-0"
+                        >
+                          Bağlantıyı Kaldır
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-[10px] text-amber-700 font-semibold leading-relaxed">
+                        ⚠️ Bağlantı henüz tamamlanmadı. Bağlantı kurulana kadar bu firma belge yükleyemez.
+                      </div>
+                    )}
+
+                    <input
+                      type="text"
+                      placeholder="Google Client ID"
+                      className="w-full p-2.5 rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-xs font-medium"
+                      value={compGoogleClientId}
+                      onChange={(e) => setCompGoogleClientId(e.target.value)}
+                    />
+                    <input
+                      type="password"
+                      placeholder="Google Client Secret"
+                      className="w-full p-2.5 rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-xs font-medium"
+                      value={compGoogleClientSecret}
+                      onChange={(e) => setCompGoogleClientSecret(e.target.value)}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Drive Klasör ID (opsiyonel, boşsa 'Ana Dizin')"
+                      className="w-full p-2.5 rounded-xl border border-blue-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition text-xs font-medium"
+                      value={compGoogleDriveFolderId}
+                      onChange={(e) => setCompGoogleDriveFolderId(e.target.value)}
+                    />
+
+                    {editingCompany.id !== 'new' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleConnectGoogleDrive}
+                          disabled={connectingGoogleDrive}
+                          className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white py-2.5 rounded-xl font-bold text-xs transition"
+                        >
+                          {connectingGoogleDrive
+                            ? 'Bağlanıyor...'
+                            : compGoogleDriveConnectedEmail
+                              ? 'Yeniden Bağla'
+                              : "Google Drive'a Bağlan"}
+                        </button>
+                        <p className="text-[9px] text-slate-400 leading-relaxed">
+                          Google Cloud Console'da bu OAuth istemcisinin "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına şunu ekleyin:{' '}
+                          <span className="font-mono select-all">{googleOauthRedirectUri}</span>
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-[10px] text-slate-400 italic">
+                        Google Drive bağlantısını tamamlamak için önce şirketi kaydedin, ardından tekrar düzenleyin.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {editingCompany.id !== 'new' && (

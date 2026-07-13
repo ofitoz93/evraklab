@@ -96,6 +96,10 @@ export default function Pricing() {
   const [targetSeats, setTargetSeats] = useState(5);
   const [companyName, setCompanyName] = useState('');
 
+  // Kurumsal firma ilk kez oluşturulurken zorunlu depolama sağlayıcısı seçimi.
+  // '' = henüz seçim yapılmadı (satın alma butonu bu durumda devre dışı kalır).
+  const [corpStorageProvider, setCorpStorageProvider] = useState<'' | 'supabase' | 'google_drive'>('');
+
   // Depolama Seçimi
   const [selectedStorageIndex, setSelectedStorageIndex] = useState(1); // Varsayılan 1 GB
   const [storageQuantity, setStorageQuantity] = useState(1); // Kaç adet alınacak?
@@ -223,6 +227,10 @@ export default function Pricing() {
         alert('Lütfen şirket ünvanını giriniz.');
         return;
       }
+      if (selectedPlan === 'corporate' && !corpStorageProvider) {
+        alert('Lütfen belgelerinizin nerede saklanacağını seçiniz (EvrakLab Sistem Depolaması veya Kendi Google Drive\'ım).');
+        return;
+      }
       if (profile?.organization_id && selectedPlan === 'individual') {
         setShowLeaveWarning(true);
         return;
@@ -300,12 +308,40 @@ export default function Pricing() {
                   subscription_end_date: finalDate,
                   storage_limit: 1073741824, // 1 GB default
                   is_environmental_consultant: false,
+                  storage_preference: corpStorageProvider || 'supabase',
                 },
               ])
               .select()
               .single();
 
             if (orgErr) throw orgErr;
+
+            // Firma kendi Google Drive'ını seçtiyse, bağlantıyı sadece admin
+            // panelinden tamamlayabildiğimiz için ekibimize otomatik bir destek
+            // talebi düşürülür (bkz. AdminPanel > Şirketler > Depolama Ayarları).
+            if (corpStorageProvider === 'google_drive') {
+              const { data: driveTicket } = await supabase
+                .from('tickets')
+                .insert([
+                  {
+                    user_id: user.id,
+                    subject: `Google Drive Bağlantısı Talebi - ${companyName}`,
+                    status: 'open',
+                    message: `"${companyName}" firması kurulum sırasında depolama sağlayıcısı olarak kendi Google Drive'ını seçti. Lütfen Admin Panel > Şirketler > Depolama Ayarları üzerinden bu firmanın Google Drive bağlantısını tamamlayın. Bağlantı tamamlanana kadar bu firma belge yükleyemez.`,
+                  },
+                ])
+                .select()
+                .single();
+              if (driveTicket) {
+                await supabase.from('ticket_messages').insert([
+                  {
+                    ticket_id: driveTicket.id,
+                    sender_role: 'user',
+                    message: `"${companyName}" firması kurulum sırasında depolama sağlayıcısı olarak kendi Google Drive'ını seçti. Lütfen Admin Panel > Şirketler > Depolama Ayarları üzerinden bu firmanın Google Drive bağlantısını tamamlayın. Bağlantı tamamlanana kadar bu firma belge yükleyemez.`,
+                  },
+                ]);
+              }
+            }
 
             // 2. Kullanıcı profilini güncelle (premium_corporate rolü ve organization_id)
             const { error: profErr } = await supabase
@@ -328,7 +364,11 @@ export default function Pricing() {
               seats: targetSeats,
             });
 
-            alert(`✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.`);
+            alert(
+              corpStorageProvider === 'google_drive'
+                ? `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.\n\n⚠️ Google Drive bağlantınız henüz tamamlanmadı. Ekibimiz kısa süre içinde sizinle iletişime geçip bağlantıyı kuracak; bağlantı tamamlanana kadar belge yükleyemezsiniz.`
+                : `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.`
+            );
           } else {
             // Dashboard mode - extend subscription and seats
             if (!profile?.organization_id) throw new Error('Şirketiniz bulunamadı.');
@@ -658,6 +698,43 @@ export default function Pricing() {
                       <span>Max: 50</span>
                     </div>
                   </div>
+
+                  <div className="mt-5 pt-5 border-t border-purple-200">
+                    <label className="block text-left text-sm font-bold text-purple-900 mb-2">
+                      Belgeleriniz Nerede Saklansın? <span className="text-red-500">*</span>
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setCorpStorageProvider('supabase')}
+                        className={`text-left p-4 rounded-xl border-2 transition ${
+                          corpStorageProvider === 'supabase'
+                            ? 'border-purple-600 bg-white shadow-md'
+                            : 'border-purple-100 bg-white/60 hover:border-purple-300'
+                        }`}
+                      >
+                        <div className="font-bold text-sm text-purple-900 mb-1">EvrakLab Sistem Depolaması</div>
+                        <div className="text-xs text-gray-500">Belgeleriniz bizim güvenli sunucularımızda tutulur. Ek depolama ihtiyacında paket satın alabilirsiniz.</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCorpStorageProvider('google_drive')}
+                        className={`text-left p-4 rounded-xl border-2 transition ${
+                          corpStorageProvider === 'google_drive'
+                            ? 'border-purple-600 bg-white shadow-md'
+                            : 'border-purple-100 bg-white/60 hover:border-purple-300'
+                        }`}
+                      >
+                        <div className="font-bold text-sm text-purple-900 mb-1">Kendi Google Drive'ım</div>
+                        <div className="text-xs text-gray-500">Belgeleriniz bizde değil, kendi Google Drive hesabınızda saklanır. Bağlantı ekibimiz tarafından sizinle iletişime geçilerek tamamlanır.</div>
+                      </button>
+                    </div>
+                    {corpStorageProvider === 'google_drive' && (
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5 mt-3 font-medium leading-relaxed">
+                        ⚠️ Google Drive bağlantısı tamamlanana kadar ekibiniz belge yükleyemez. Şirketiniz oluşturulduktan sonra ekibimiz sizinle iletişime geçerek bağlantıyı kuracaktır.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -809,8 +886,14 @@ export default function Pricing() {
           </div>
           <button
             onClick={initiatePurchase}
-            disabled={processing}
-            className={`px-8 py-3 rounded-xl font-bold text-white text-lg shadow-lg transition flex items-center gap-2 ${
+            disabled={
+              processing ||
+              (purchaseType === 'subscription' &&
+                viewMode === 'selection' &&
+                selectedPlan === 'corporate' &&
+                !corpStorageProvider)
+            }
+            className={`px-8 py-3 rounded-xl font-bold text-white text-lg shadow-lg transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
               selectedPlan === 'corporate' && purchaseType === 'subscription'
                 ? 'bg-purple-600 hover:bg-purple-700'
                 : 'bg-blue-600 hover:bg-blue-700'
