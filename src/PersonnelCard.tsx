@@ -21,7 +21,22 @@ import {
   LogOut,
   AlertTriangle,
   ShieldCheck,
+  Paperclip,
+  Upload,
+  ExternalLink,
 } from 'lucide-react';
+import ExitDateModal from './ExitDateModal';
+
+type CardTab = 'genel' | 'rol' | 'gorev' | 'raporlar' | 'giderler' | 'belgeler';
+
+const CARD_TABS: { id: CardTab; label: string; icon: React.ReactNode }[] = [
+  { id: 'genel', label: 'Genel Bilgiler', icon: <Briefcase size={13} /> },
+  { id: 'rol', label: 'Rol & Yetkiler', icon: <ShieldCheck size={13} /> },
+  { id: 'gorev', label: 'Görev & Atamalar', icon: <Building size={13} /> },
+  { id: 'raporlar', label: 'Raporlar & Performans', icon: <FileText size={13} /> },
+  { id: 'giderler', label: 'Giderler', icon: <Wallet size={13} /> },
+  { id: 'belgeler', label: 'Belgeler', icon: <Paperclip size={13} /> },
+];
 
 interface ClientRef {
   id: string;
@@ -75,7 +90,6 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const [hireDate, setHireDate] = useState('');
   const [position, setPosition] = useState('');
   const [department, setDepartment] = useState('');
-  const [monthlySalary, setMonthlySalary] = useState('');
   const [notes, setNotes] = useState('');
   const [exitDate, setExitDate] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -102,10 +116,38 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const [savingPerm, setSavingPerm] = useState<string | null>(null);
   const [togglingPremium, setTogglingPremium] = useState(false);
   const [kicking, setKicking] = useState(false);
+  const [showExitModal, setShowExitModal] = useState(false);
+
+  // Kart karışık göründüğü için bölüm bölüm sekmelere ayrıldı; kimlik
+  // başlığı ve "Şirketten Çıkar" footer'ı sekmelerden bağımsız sabit kalır.
+  const [activeCardTab, setActiveCardTab] = useState<CardTab>('genel');
+
+  // Personel Belgeleri (Belgeler sekmesi) — belge türleri organizasyon
+  // genelinde paylaşılır (user_definitions, category='personnel_doc_type'),
+  // bir personel için oluşturulan tür diğer personellerin kartında da çıkar.
+  const [docTypes, setDocTypes] = useState<{ id: string; label: string }[]>([]);
+  const [employeeDocs, setEmployeeDocs] = useState<any[]>([]);
+  const [selectedDocTypeId, setSelectedDocTypeId] = useState('');
+  const [showNewDocType, setShowNewDocType] = useState(false);
+  const [newDocTypeLabel, setNewDocTypeLabel] = useState('');
+  const [savingDocType, setSavingDocType] = useState(false);
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+
+  // Maaş Geçmişi — tarih-etkili satırlar (bkz. employee_salary_history).
+  // Her satır "şu aydan itibaren maaş şu kadar" demek; bir ay için geçerli
+  // tutar, o aya <= olan en güncel effective_date satırıdır. Yeni bir satır
+  // eklemek (örn. yıl ortasında zam) daha önce otomatik üretilmiş giderleri
+  // de geriye dönük düzeltir (bkz. generate_missing_salary_expenses).
+  const [salaryHistory, setSalaryHistory] = useState<{ id: string; effective_date: string; monthly_salary: number }[]>([]);
+  const [newSalaryMonth, setNewSalaryMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [newSalaryAmount, setNewSalaryAmount] = useState('');
+  const [savingSalary, setSavingSalary] = useState(false);
 
   useEffect(() => {
     fetchAll();
     setAmountsVisible(false);
+    setActiveCardTab('genel');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personnelId]);
 
@@ -120,6 +162,9 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
         { count: docsCount },
         { data: evals },
         { data: exp },
+        { data: docTypesData },
+        { data: employeeDocsData },
+        { data: salaryHistoryData },
       ] = await Promise.all([
         supabase
           .from('profiles')
@@ -137,6 +182,9 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
         supabase.from('documents').select('id', { count: 'exact', head: true }).eq('uploader_id', personnelId),
         supabase.from('evaluations').select('scores').eq('evaluatee_id', personnelId),
         supabase.from('company_expenses').select('*').eq('employee_id', personnelId).order('expense_date', { ascending: false }),
+        supabase.from('user_definitions').select('id, label').eq('category', 'personnel_doc_type').eq('organization_id', orgId).order('label', { ascending: true }),
+        supabase.from('employee_documents').select('*, doc_type:doc_type_id(label)').eq('employee_id', personnelId).order('created_at', { ascending: false }),
+        supabase.from('employee_salary_history').select('id, effective_date, monthly_salary').eq('profile_id', personnelId).order('effective_date', { ascending: false }),
       ]);
 
       setProfile(profileData);
@@ -144,14 +192,12 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
         setHireDate(detailData.hire_date || '');
         setPosition(detailData.position || '');
         setDepartment(detailData.department || '');
-        setMonthlySalary(detailData.monthly_salary != null ? String(detailData.monthly_salary) : '');
         setNotes(detailData.notes || '');
         setExitDate(detailData.exit_date || null);
       } else {
         setHireDate('');
         setPosition('');
         setDepartment('');
-        setMonthlySalary('');
         setNotes('');
         setExitDate(null);
       }
@@ -176,6 +222,11 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
       });
 
       setExpenses(exp || []);
+      setDocTypes(docTypesData || []);
+      setEmployeeDocs(employeeDocsData || []);
+      setSalaryHistory(salaryHistoryData || []);
+      setNewSalaryMonth(new Date().toISOString().slice(0, 7));
+      setNewSalaryAmount('');
     } catch (err: any) {
       alert('Personel bilgileri yüklenirken hata: ' + err.message);
     } finally {
@@ -196,7 +247,6 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
           hire_date: hireDate || null,
           position: position.trim() || null,
           department: department.trim() || null,
-          monthly_salary: monthlySalary ? parseFloat(monthlySalary) : null,
           notes: notes.trim() || null,
           exit_date: hireDate ? null : exitDate,
           updated_at: new Date().toISOString(),
@@ -210,6 +260,36 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
       alert('Kaydedilirken hata: ' + err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Yeni bir "şu aydan itibaren maaş şu kadar" satırı ekler/düzeltir.
+  // Sunucu tarafındaki trigger (employee_salary_history_trigger) bunu
+  // otomatik olarak zaten üretilmiş aylara da (o aydan itibaren) işler.
+  const handleAddSalaryHistory = async () => {
+    if (!newSalaryAmount || parseFloat(newSalaryAmount) <= 0) {
+      alert('Lütfen geçerli bir tutar girin.');
+      return;
+    }
+    setSavingSalary(true);
+    try {
+      const effectiveDate = `${newSalaryMonth}-01`;
+      const { error } = await supabase.from('employee_salary_history').upsert(
+        {
+          profile_id: personnelId,
+          organization_id: orgId,
+          effective_date: effectiveDate,
+          monthly_salary: parseFloat(newSalaryAmount),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'profile_id,effective_date' }
+      );
+      if (error) throw error;
+      await fetchAll();
+    } catch (err: any) {
+      alert('Maaş kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingSalary(false);
     }
   };
 
@@ -307,21 +387,25 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
     }
   };
 
-  const handleKick = async () => {
+  const handleOpenKick = () => {
     if (profile?.role === 'premium_corporate') {
       alert('Firma sahibi çıkarılamaz.');
       return;
     }
-    if (!window.confirm(`${profile?.full_name} adlı personeli şirketten çıkarmak istiyor musunuz?`)) return;
+    setShowExitModal(true);
+  };
+
+  const handleKick = async (exitDate: string) => {
     setKicking(true);
     try {
-      const { error } = await supabase.from('profiles').update({ organization_id: null, role: 'normal' }).eq('id', personnelId);
+      const { error } = await supabase.rpc('kick_employee_with_exit_date', {
+        p_profile_id: personnelId,
+        p_org_id: orgId,
+        p_exit_date: exitDate,
+      });
       if (error) throw error;
       await supabase.rpc('clear_membership_notifications', { target_user_id: personnelId });
-      await supabase.from('employee_details').upsert(
-        { profile_id: personnelId, organization_id: orgId, exit_date: new Date().toISOString().split('T')[0] },
-        { onConflict: 'profile_id' }
-      );
+      setShowExitModal(false);
       onMemberChanged();
       onClose();
     } catch (err: any) {
@@ -365,6 +449,81 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
     setExpenses((prev) => prev.filter((e) => e.id !== id));
   };
 
+  const handleAddDocType = async () => {
+    const label = newDocTypeLabel.trim();
+    if (!label) return;
+    const exists = docTypes.some((t) => t.label.trim().toLowerCase() === label.toLowerCase());
+    if (exists) {
+      alert(`"${label}" zaten listede mevcut.`);
+      return;
+    }
+    setSavingDocType(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      const { data, error } = await supabase
+        .from('user_definitions')
+        .insert([{ user_id: session.user.id, category: 'personnel_doc_type', label, organization_id: orgId }])
+        .select()
+        .single();
+      if (error) throw error;
+      setDocTypes((prev) => [...prev, data].sort((a, b) => a.label.localeCompare(b.label)));
+      setSelectedDocTypeId(data.id);
+      setNewDocTypeLabel('');
+      setShowNewDocType(false);
+    } catch (err: any) {
+      alert('Belge türü eklenirken hata: ' + err.message);
+    } finally {
+      setSavingDocType(false);
+    }
+  };
+
+  const handleUploadDoc = async () => {
+    if (!selectedDocTypeId) {
+      alert('Lütfen önce bir belge türü seçin.');
+      return;
+    }
+    if (!docFile) {
+      alert('Lütfen bir dosya seçin.');
+      return;
+    }
+    setUploadingDoc(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      const filePath = `personnel-docs/${orgId}/${personnelId}/${Date.now()}-${docFile.name}`;
+      const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, docFile);
+      if (uploadError) throw uploadError;
+      const { data: urlData } = supabase.storage.from('documents').getPublicUrl(filePath);
+      const { error } = await supabase.from('employee_documents').insert({
+        employee_id: personnelId,
+        organization_id: orgId,
+        doc_type_id: selectedDocTypeId,
+        file_url: urlData.publicUrl,
+        file_name: docFile.name,
+        uploaded_by: session.user.id,
+      });
+      if (error) throw error;
+      setDocFile(null);
+      fetchAll();
+    } catch (err: any) {
+      alert('Belge yüklenirken hata: ' + err.message);
+    } finally {
+      setUploadingDoc(false);
+    }
+  };
+
+  const handleDeleteDoc = async (id: string) => {
+    if (!window.confirm('Bu belgeyi silmek istediğinize emin misiniz?')) return;
+    const { error } = await supabase.from('employee_documents').delete().eq('id', id);
+    if (error) return alert('Silinirken hata: ' + error.message);
+    setEmployeeDocs((prev) => prev.filter((d) => d.id !== id));
+  };
+
   if (viewerRole !== 'premium_corporate') return null;
 
   const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
@@ -377,6 +536,9 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const quotaPercent = Math.min((totalQuotaDays / 16) * 100, 100);
   const quotaExceeded = totalQuotaDays > 16;
   const permList = profile?.role === 'corporate_chief' ? PERMS_CHIEF : profile?.role === 'corporate_staff' ? PERMS_STAFF : [];
+  // salaryHistory effective_date DESC sıralı geldiği için, bugüne <= olan ilk satır güncel maaştır.
+  const todayStr = new Date().toISOString().split('T')[0];
+  const currentSalary = salaryHistory.find((s) => s.effective_date <= todayStr)?.monthly_salary ?? null;
 
   const AmountMask = ({ value }: { value: string }) =>
     amountsVisible ? (
@@ -447,7 +609,26 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
               </div>
             )}
 
-            {/* İşe alım bilgileri (düzenlenebilir) */}
+            {/* Sekme çubuğu */}
+            <div className="flex gap-1.5 overflow-x-auto whitespace-nowrap scrollbar-thin -mx-1 px-1 pb-1">
+              {CARD_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveCardTab(tab.id)}
+                  className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide transition ${
+                    activeCardTab === tab.id
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {tab.icon} {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Genel Bilgiler: İşe alım bilgileri (düzenlenebilir) */}
+            {activeCardTab === 'genel' && (
+            <>
             <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4 space-y-3">
               <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
                 <Briefcase size={13} /> İşe Alım Bilgileri
@@ -483,26 +664,15 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Aylık Maaş (TL)</label>
-                  {amountsVisible ? (
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={monthlySalary}
-                      onChange={(e) => setMonthlySalary(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setAmountsVisible(true)}
-                      className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold text-slate-400 flex items-center justify-between"
-                    >
-                      <AmountMask value={monthlySalary ? `${monthlySalary} TL` : '0.00'} />
-                      <Eye size={13} />
-                    </button>
-                  )}
+                  <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Güncel Maaş (TL)</label>
+                  <button
+                    type="button"
+                    onClick={() => setAmountsVisible((v) => !v)}
+                    className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold text-slate-500 flex items-center justify-between"
+                  >
+                    <AmountMask value={currentSalary != null ? `${Number(currentSalary).toLocaleString('tr-TR')} TL` : 'Belirlenmedi'} />
+                    <Eye size={13} />
+                  </button>
                 </div>
               </div>
               <div>
@@ -526,8 +696,69 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
               </div>
             </div>
 
-            {/* Deneyim yılı + iş günü kotası */}
-            {profile?.role !== 'normal' && (
+            {/* Maaş Geçmişi: tarih-etkili maaş/zam satırları */}
+            <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4 space-y-3">
+              <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
+                <Wallet size={13} /> Maaş Geçmişi
+              </h4>
+              <p className="text-[10px] text-slate-400">
+                Yeni bir satır eklemek, seçtiğiniz aydan itibaren (o ay dahil, bugüne kadar zaten oluşmuş otomatik giderler dahil) maaşı günceller — öncesindeki aylar etkilenmez.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Geçerlilik Ayı</label>
+                  <input
+                    type="month"
+                    value={newSalaryMonth}
+                    onChange={(e) => setNewSalaryMonth(e.target.value)}
+                    className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Aylık Maaş (TL)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={newSalaryAmount}
+                    onChange={(e) => setNewSalaryAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={handleAddSalaryHistory}
+                    disabled={savingSalary}
+                    className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                  >
+                    {savingSalary ? <Loader size={14} className="animate-spin" /> : <Plus size={14} />}
+                    {savingSalary ? 'Kaydediliyor...' : 'Ekle / Düzelt'}
+                  </button>
+                </div>
+              </div>
+
+              {salaryHistory.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">Henüz maaş girilmemiş.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {salaryHistory.map((s) => (
+                    <div key={s.id} className="flex justify-between items-center text-xs p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-700">
+                      <span className="font-bold text-gray-700 dark:text-gray-300">
+                        {new Date(s.effective_date + 'T00:00:00').toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}'dan itibaren
+                      </span>
+                      <span className="font-bold text-blue-600">
+                        <AmountMask value={`${Number(s.monthly_salary).toLocaleString('tr-TR')} TL`} />
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            </>
+            )}
+
+            {/* Görev & Atamalar: Deneyim yılı + iş günü kotası */}
+            {activeCardTab === 'gorev' && profile?.role !== 'normal' && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-3 px-4 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 text-xs">
                 <div className="flex items-center gap-2">
                   <span className="text-gray-400 font-bold uppercase tracking-wider text-[10px]">Deneyim Yılı:</span>
@@ -563,6 +794,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
             )}
 
             {/* Rol & Yetkiler */}
+            {activeCardTab === 'rol' && (
             <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4 space-y-3">
               <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
                 <ShieldCheck size={13} /> Rol &amp; Yetkiler
@@ -628,8 +860,10 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                 </div>
               )}
             </div>
+            )}
 
-            {/* Atandığı işletmeler */}
+            {/* Görev & Atamalar: Atandığı işletmeler */}
+            {activeCardTab === 'gorev' && (
             <div>
               <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5 mb-2">
                 <Building size={13} /> Atandığı İşletmeler ({assignedClientIds.length})
@@ -659,8 +893,11 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                 </div>
               )}
             </div>
+            )}
 
-            {/* Raporlar & Değerlendirme */}
+            {/* Raporlar & Performans */}
+            {activeCardTab === 'raporlar' && (
+            <>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-3 text-center">
                 <FileText size={16} className="mx-auto text-blue-600 mb-1" />
@@ -697,8 +934,60 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                 ))}
               </div>
             )}
+            </>
+            )}
 
-            {/* Personel Giderleri */}
+            {/* Giderler: Maaş Geçmişi (Yıl/Ay) + Personel Giderleri */}
+            {activeCardTab === 'giderler' && (
+            <>
+            <div className="mb-4">
+              <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5 mb-2">
+                <Wallet size={13} /> Maaş Geçmişi (Yıl/Ay)
+              </h4>
+              {(() => {
+                const autoSalaryExpenses = expenses.filter((e) => e.is_auto_salary);
+                if (autoSalaryExpenses.length === 0) {
+                  return <p className="text-xs text-slate-400 italic">Henüz otomatik oluşmuş maaş gideri yok.</p>;
+                }
+                const byYear = new Map<string, any[]>();
+                autoSalaryExpenses.forEach((e) => {
+                  const year = String(new Date(e.expense_date).getFullYear());
+                  if (!byYear.has(year)) byYear.set(year, []);
+                  byYear.get(year)!.push(e);
+                });
+                const years = Array.from(byYear.keys()).sort((a, b) => Number(b) - Number(a));
+                return (
+                  <div className="space-y-3">
+                    {years.map((year) => {
+                      const rows = byYear.get(year)!.sort((a, b) => new Date(a.expense_date).getTime() - new Date(b.expense_date).getTime());
+                      const yearTotal = rows.reduce((sum, r) => sum + Number(r.amount), 0);
+                      return (
+                        <div key={year} className="bg-white dark:bg-slate-900 rounded-lg border border-slate-100 dark:border-slate-700 overflow-hidden">
+                          <div className="flex justify-between items-center px-3 py-2 bg-slate-100 dark:bg-slate-800">
+                            <span className="text-xs font-black text-slate-600 dark:text-slate-300">{year}</span>
+                            <span className="text-xs font-bold text-blue-600">
+                              <AmountMask value={`${yearTotal.toLocaleString('tr-TR')} TL`} />
+                            </span>
+                          </div>
+                          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {rows.map((r) => (
+                              <div key={r.id} className="flex justify-between items-center px-3 py-1.5 text-xs">
+                                <span className="text-slate-500 dark:text-slate-400">
+                                  {new Date(r.expense_date).toLocaleDateString('tr-TR', { month: 'long' })}
+                                </span>
+                                <span className="font-bold text-gray-700 dark:text-gray-300">
+                                  <AmountMask value={`${Number(r.amount).toLocaleString('tr-TR')} TL`} />
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
             <div>
               <div className="flex justify-between items-center mb-2">
                 <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
@@ -777,12 +1066,113 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                 </div>
               )}
             </div>
+            </>
+            )}
+
+            {/* Belgeler */}
+            {activeCardTab === 'belgeler' && (
+            <div className="space-y-4">
+              <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4 space-y-3">
+                <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
+                  <Paperclip size={13} /> Belge Yükle
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Belge Türü</label>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={selectedDocTypeId}
+                        onChange={(e) => setSelectedDocTypeId(e.target.value)}
+                        className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="">Seçiniz...</option>
+                        {docTypes.map((t) => (
+                          <option key={t.id} value={t.id}>{t.label}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setShowNewDocType((v) => !v)}
+                        title="Yeni Belge Türü Ekle"
+                        className="shrink-0 p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/20 transition"
+                      >
+                        <Plus size={14} />
+                      </button>
+                    </div>
+                    {showNewDocType && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <input
+                          type="text"
+                          value={newDocTypeLabel}
+                          onChange={(e) => setNewDocTypeLabel(e.target.value)}
+                          placeholder="Örn: SGK Sicil Belgesi"
+                          className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                        <button
+                          onClick={handleAddDocType}
+                          disabled={savingDocType || !newDocTypeLabel.trim()}
+                          className="shrink-0 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                        >
+                          {savingDocType ? '...' : 'Ekle'}
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-slate-400 mt-1">Oluşturduğunuz belge türü diğer personellerin kartında da seçenek olarak görünür.</p>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Dosya</label>
+                    <input
+                      type="file"
+                      onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+                      className="w-full p-1.5 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleUploadDoc}
+                    disabled={uploadingDoc}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                  >
+                    {uploadingDoc ? <Loader size={14} className="animate-spin" /> : <Upload size={14} />}
+                    {uploadingDoc ? 'Yükleniyor...' : 'Yükle'}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5 mb-2">
+                  <Paperclip size={13} /> Yüklü Belgeler ({employeeDocs.length})
+                </h4>
+                {employeeDocs.length === 0 ? (
+                  <p className="text-xs text-slate-400 italic">Bu personele bağlı bir belge yok.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {employeeDocs.map((d) => (
+                      <div key={d.id} className="flex justify-between items-center text-xs p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700">
+                        <div className="min-w-0">
+                          <div className="font-bold text-gray-700 dark:text-gray-300">{d.doc_type?.label || 'Belirtilmemiş Tür'}</div>
+                          <a href={d.file_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline flex items-center gap-1 truncate">
+                            <ExternalLink size={11} /> {d.file_name}
+                          </a>
+                          <div className="text-slate-400">{new Date(d.created_at).toLocaleDateString('tr-TR')}</div>
+                        </div>
+                        <button onClick={() => handleDeleteDoc(d.id)} className="shrink-0 text-red-400 hover:text-red-600 transition">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            )}
 
             {/* Çıkar */}
             {profile?.role !== 'premium_corporate' && (
               <div className="pt-4 border-t border-slate-100 dark:border-slate-700 flex justify-end">
                 <button
-                  onClick={handleKick}
+                  onClick={handleOpenKick}
                   disabled={kicking}
                   className="flex items-center gap-2 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-100 px-4 py-2 rounded-lg transition disabled:opacity-50 dark:bg-red-950/20 dark:border-red-900"
                 >
@@ -793,6 +1183,15 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
           </div>
         )}
       </div>
+
+      {showExitModal && (
+        <ExitDateModal
+          memberName={profile?.full_name || ''}
+          loading={kicking}
+          onConfirm={handleKick}
+          onCancel={() => setShowExitModal(false)}
+        />
+      )}
     </div>
   );
 }

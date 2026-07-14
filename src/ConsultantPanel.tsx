@@ -48,6 +48,7 @@ import {
   Lock,
   HardDrive,
   Inbox,
+  LogOut,
 } from 'lucide-react';
 
 import QRCode from 'qrcode';
@@ -61,6 +62,7 @@ import { parseLegislationText } from './parserUtils';
 import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
 import PersonnelCard from './PersonnelCard';
+import ExitDateModal from './ExitDateModal';
 
 const TR_MONTH_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
 
@@ -1006,6 +1008,10 @@ export default function ConsultantPanel() {
   const [savingManagerId, setSavingManagerId] = useState<string | null>(null);
   // Personel Kartı (sadece firma sahibi/premium_corporate görebilir, bkz. Ekip Yönetimi satırları ve PersonnelCard.tsx)
   const [selectedPersonnelId, setSelectedPersonnelId] = useState<string | null>(null);
+  // Satırdaki hızlı "İşten Çıkar" ikonu için bekleyen kişi (tarih seçim modalı onaylanınca kick RPC'si çağrılır)
+  const [pendingKickMember, setPendingKickMember] = useState<any>(null);
+  const [kickingQuick, setKickingQuick] = useState(false);
+  const [departedEmployees, setDepartedEmployees] = useState<any[]>([]);
   const [googleDriveQuota, setGoogleDriveQuota] = useState<{ usage: number; limit: number | null } | null>(null);
   const [loadingGoogleDriveQuota, setLoadingGoogleDriveQuota] = useState(false);
   const [savingStorageSettings, setSavingStorageSettings] = useState(false);
@@ -1064,6 +1070,9 @@ export default function ConsultantPanel() {
     }
     if (activeTab === 'team' && orgId) {
       fetchInvitations();
+    }
+    if (activeTab === 'departed' && orgId) {
+      fetchDepartedEmployees();
     }
     if ((activeTab === 'definitions' || activeTab === 'document_matrix') && orgId) {
       fetchDefinitionsTab();
@@ -1375,6 +1384,49 @@ export default function ConsultantPanel() {
           setMemberStorage(map);
         });
     }
+  };
+
+  // Ekip Yönetimi satırından, Personel Kartı'nı açmadan tek tıkla çıkarma.
+  // Personel Kartı'ndaki "Şirketten Çıkar" ile aynı RPC'yi (kick_employee_with_exit_date)
+  // kullanır — geçmişe dönük çıkış tarihi seçilebilir, bkz. ExitDateModal.
+  const handleQuickKick = async (exitDate: string) => {
+    if (!pendingKickMember) return;
+    setKickingQuick(true);
+    try {
+      const { error } = await supabase.rpc('kick_employee_with_exit_date', {
+        p_profile_id: pendingKickMember.id,
+        p_org_id: orgId,
+        p_exit_date: exitDate,
+      });
+      if (error) throw error;
+      await supabase.rpc('clear_membership_notifications', { target_user_id: pendingKickMember.id });
+      setPendingKickMember(null);
+      fetchTeamMembers();
+    } catch (err: any) {
+      alert('Çıkarılırken hata oluştu: ' + err.message);
+    } finally {
+      setKickingQuick(false);
+    }
+  };
+
+  // Ekip Yönetimi satırından, kart açmadan hızlı premium koltuk aç/kapa.
+  // PersonnelCard.tsx'teki handleTogglePremiumSeat ile aynı sorgu.
+  const handleQuickTogglePremium = async (member: any) => {
+    const newValue = member.premium_seat_active === false;
+    const { error } = await supabase.from('profiles').update({ premium_seat_active: newValue }).eq('id', member.id);
+    if (error) return alert('Premium koltuk güncellenirken hata: ' + error.message);
+    fetchTeamMembers();
+  };
+
+  const fetchDepartedEmployees = async () => {
+    const { data, error } = await supabase
+      .from('employee_details')
+      .select('*, profile:profile_id(full_name, email, phone)')
+      .eq('organization_id', orgId)
+      .not('exit_date', 'is', null)
+      .order('exit_date', { ascending: false });
+    if (error) return console.error('fetchDepartedEmployees error:', error.message);
+    setDepartedEmployees(data || []);
   };
 
   const fetchInvitations = async () => {
@@ -5635,7 +5687,7 @@ export default function ConsultantPanel() {
     if (tab === 'actions') return 'actions';
     if (['reports', 'document_matrix', 'opinions', 'definitions'].includes(tab)) return 'documents';
     if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
-    if (['team', 'org_chart', 'evaluations'].includes(tab)) return 'hr';
+    if (['team', 'org_chart', 'evaluations', 'departed'].includes(tab)) return 'hr';
     return 'settings';
   };
   const activeModule = getModuleForTab(activeTab);
@@ -5736,6 +5788,7 @@ export default function ConsultantPanel() {
           icon: <Star size={14} />,
           show: ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole)
         },
+        { id: 'departed', label: 'Ayrılan Personeller', icon: <LogOut size={14} />, show: userRole === 'premium_corporate' },
       ]
     },
     {
@@ -7101,13 +7154,37 @@ export default function ConsultantPanel() {
                       </div>
                       
                       {userRole === 'premium_corporate' && member.id !== userId && (
-                        <button
-                          onClick={() => setSelectedPersonnelId(member.id)}
-                          className="text-xs bg-slate-100 text-slate-600 p-2 rounded border border-slate-200 hover:bg-slate-200 transition dark:bg-slate-900 dark:border-slate-700 dark:text-slate-300"
-                          title="Personel Kartı"
-                        >
-                          <User size={14} />
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setSelectedPersonnelId(member.id)}
+                            className="text-xs bg-slate-100 text-slate-600 p-2 rounded border border-slate-200 hover:bg-slate-200 transition dark:bg-slate-900 dark:border-slate-700 dark:text-slate-300"
+                            title="Personel Kartı"
+                          >
+                            <User size={14} />
+                          </button>
+                          {member.role !== 'normal' && (
+                            <button
+                              onClick={() => handleQuickTogglePremium(member)}
+                              className={`text-xs p-2 rounded border transition ${
+                                member.premium_seat_active === false
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/20 dark:border-emerald-900'
+                                  : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 dark:bg-slate-900 dark:border-slate-700'
+                              }`}
+                              title={member.premium_seat_active === false ? 'Premium Ver' : 'Premium Al'}
+                            >
+                              <Crown size={14} />
+                            </button>
+                          )}
+                          {member.role !== 'premium_corporate' && (
+                            <button
+                              onClick={() => setPendingKickMember(member)}
+                              className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-100 hover:bg-red-100 transition dark:bg-red-950/20 dark:border-red-900"
+                              title="İşten Çıkar"
+                            >
+                              <LogOut size={14} />
+                            </button>
+                          )}
+                        </div>
                       )}
                       {userRole !== 'premium_corporate' && member.id === userId && (
                         <button
@@ -7256,6 +7333,53 @@ export default function ConsultantPanel() {
       )}
 
 
+
+      {activeTab === 'departed' && (
+        <div className="max-w-4xl mx-auto space-y-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
+            <h3 className="font-bold text-gray-700 dark:text-white mb-1 flex items-center gap-2 text-lg">
+              <LogOut className="text-rose-600" /> Ayrılan Personeller
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+              Bu kişiler artık ekibinizin bir parçası değil (salt görüntüleme). Yeniden işe almak için normal davet akışıyla (e-posta veya manuel kod) tekrar organizasyona ekleyebilirsiniz.
+            </p>
+            {departedEmployees.length === 0 ? (
+              <p className="text-sm text-slate-400 italic">Ayrılan personel bulunmuyor.</p>
+            ) : (
+              <div className="space-y-2">
+                {departedEmployees.map((d) => {
+                  const months = d.hire_date
+                    ? Math.max(0, Math.round((new Date(d.exit_date).getTime() - new Date(d.hire_date).getTime()) / (1000 * 60 * 60 * 24 * 30.44)))
+                    : null;
+                  return (
+                    <div key={d.id} className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl border border-gray-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-xs uppercase text-slate-500 shrink-0">
+                          {d.profile?.full_name?.charAt(0) || <User size={16} />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-gray-700 dark:text-white text-sm truncate">{d.profile?.full_name}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                            {d.profile?.email}
+                            {d.position ? ` — ${d.position}` : ''}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right text-xs shrink-0">
+                        <div className="text-gray-500 dark:text-gray-400">
+                          {d.hire_date ? new Date(d.hire_date).toLocaleDateString('tr-TR') : '?'} →{' '}
+                          <span className="font-bold text-rose-600">{new Date(d.exit_date).toLocaleDateString('tr-TR')}</span>
+                        </div>
+                        {months != null && <div className="text-slate-400">{months} ay çalıştı</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {activeTab === 'org_chart' && (() => {
         const owner = teamMembers.find((m) => m.role === 'premium_corporate');
@@ -14775,6 +14899,15 @@ export default function ConsultantPanel() {
           clients={clients}
           onMemberChanged={fetchTeamMembers}
           onClose={() => setSelectedPersonnelId(null)}
+        />
+      )}
+
+      {pendingKickMember && (
+        <ExitDateModal
+          memberName={pendingKickMember.full_name}
+          loading={kickingQuick}
+          onConfirm={handleQuickKick}
+          onCancel={() => setPendingKickMember(null)}
         />
       )}
       </div>
