@@ -60,6 +60,7 @@ import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
 import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
+import PersonnelCard from './PersonnelCard';
 
 const TR_MONTH_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
 
@@ -585,13 +586,18 @@ export default function ConsultantPanel() {
   const [financePayments, setFinancePayments] = useState<any[]>([]);
   const [financeExpenses, setFinanceExpenses] = useState<any[]>([]);
   const [loadingFinance, setLoadingFinance] = useState(false);
+  // Gider Yönetimi / Müşteri Ödemeleri / Finansal Özet — ortak ay/yıl filtresi
+  const [financePeriodType, setFinancePeriodType] = useState<'all' | 'monthly' | 'yearly'>('all');
+  const [financeSelectedMonth, setFinanceSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [financeSelectedYear, setFinanceSelectedYear] = useState(String(new Date().getFullYear()));
   const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
   const [newExpense, setNewExpense] = useState({
     title: '',
     category: 'Ofis/Kira',
     amount: '',
     expense_date: new Date().toISOString().split('T')[0],
-    notes: ''
+    notes: '',
+    employee_id: ''
   });
   const [savingExpense, setSavingExpense] = useState(false);
   const [updatingClientFee, setUpdatingClientFee] = useState<string | null>(null);
@@ -998,6 +1004,8 @@ export default function ConsultantPanel() {
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [savingManagerId, setSavingManagerId] = useState<string | null>(null);
+  // Personel Kartı (sadece firma sahibi/premium_corporate görebilir, bkz. Ekip Yönetimi satırları ve PersonnelCard.tsx)
+  const [selectedPersonnelId, setSelectedPersonnelId] = useState<string | null>(null);
   const [googleDriveQuota, setGoogleDriveQuota] = useState<{ usage: number; limit: number | null } | null>(null);
   const [loadingGoogleDriveQuota, setLoadingGoogleDriveQuota] = useState(false);
   const [savingStorageSettings, setSavingStorageSettings] = useState(false);
@@ -2035,27 +2043,6 @@ export default function ConsultantPanel() {
     alert('Kopyalandı: ' + code);
   };
 
-  const handleKick = async (id: string, role: string) => {
-    if (userRole !== 'premium_corporate') {
-      alert('Bu işlem için yetkiniz bulunmamaktadır.');
-      return;
-    }
-    if (role === 'premium_corporate') return alert('Yöneticiyi silemezsiniz.');
-    if (window.confirm('Bu personeli şirketten çıkarmak istiyor musunuz?')) {
-      try {
-        const { error } = await supabase
-          .from('profiles')
-          .update({ organization_id: null, role: 'normal' })
-          .eq('id', id);
-        if (error) throw error;
-        await supabase.rpc('clear_membership_notifications', { target_user_id: id });
-        setTeamMembers((prev) => prev.filter((m) => m.id !== id));
-      } catch (err: any) {
-        alert('Çıkarılırken hata oluştu: ' + err.message);
-      }
-    }
-  };
-
   const handleAssignManager = async (memberId: string, managerId: string | null) => {
     if (userRole !== 'premium_corporate') {
       alert('Bu işlem için yetkiniz bulunmamaktadır.');
@@ -2073,51 +2060,6 @@ export default function ConsultantPanel() {
       alert('Organizasyon şeması güncellenirken hata oluştu: ' + err.message);
     } finally {
       setSavingManagerId(null);
-    }
-  };
-
-  const handleTogglePremiumSeat = async (member: any) => {
-    if (userRole !== 'premium_corporate') {
-      alert('Bu işlem için yetkiniz bulunmamaktadır.');
-      return;
-    }
-    const newValue = member.premium_seat_active === false;
-    const { error } = await supabase
-      .from('profiles')
-      .update({ premium_seat_active: newValue })
-      .eq('id', member.id);
-    if (error) {
-      alert('Hata: ' + error.message);
-      return;
-    }
-    setTeamMembers((prev) =>
-      prev.map((m) =>
-        m.id === member.id ? { ...m, premium_seat_active: newValue } : m
-      )
-    );
-  };
-
-  const handleUpdateRole = async (memberId: string, role: string) => {
-    if (userRole !== 'premium_corporate') {
-      alert('Bu işlem için yetkiniz bulunmamaktadır.');
-      return;
-    }
-    try {
-      const updates: any = { role };
-      if (role === 'normal') {
-        updates.organization_id = null;
-      }
-      
-      const { error } = await supabase
-        .from('profiles')
-        .update(updates)
-        .eq('id', memberId);
-
-      if (error) throw error;
-      alert('Kullanıcı rolü başarıyla güncellendi.');
-      fetchTeamMembers();
-    } catch (err: any) {
-      alert('Rol güncellenemedi: ' + err.message);
     }
   };
 
@@ -5456,6 +5398,55 @@ export default function ConsultantPanel() {
   };
 
   // --- FİNANS & MALİYET FONKSİYONLARI ---
+  // Gider Yönetimi / Müşteri Ödemeleri / Finansal Özet sekmelerinde ortak
+  // kullanılan ay/yıl filtresi. Veri hacmi küçük olduğu için filtre
+  // client-side uygulanıyor (bkz. fetchFinanceData — tüm kayıtlar zaten tek
+  // seferde çekiliyor), sorgu tarafında değişikliğe gerek yok.
+  const matchesFinancePeriod = (dateStr: string | null | undefined) => {
+    if (!dateStr) return financePeriodType === 'all';
+    if (financePeriodType === 'all') return true;
+    if (financePeriodType === 'monthly') return dateStr.slice(0, 7) === financeSelectedMonth;
+    return dateStr.slice(0, 4) === financeSelectedYear;
+  };
+
+  const renderFinancePeriodSelector = () => (
+    <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-2">
+      <div className="flex gap-1 p-1 bg-white dark:bg-slate-800 rounded-lg border border-slate-100 dark:border-slate-700">
+        {(['all', 'monthly', 'yearly'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setFinancePeriodType(t)}
+            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
+              financePeriodType === t ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            {t === 'all' ? 'Tümü' : t === 'monthly' ? 'Aylık' : 'Yıllık'}
+          </button>
+        ))}
+      </div>
+      {financePeriodType === 'monthly' && (
+        <input
+          type="month"
+          value={financeSelectedMonth}
+          onChange={(e) => setFinanceSelectedMonth(e.target.value)}
+          className="border rounded-lg p-2 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold outline-none focus:ring-1 focus:ring-blue-500"
+        />
+      )}
+      {financePeriodType === 'yearly' && (
+        <select
+          value={financeSelectedYear}
+          onChange={(e) => setFinanceSelectedYear(e.target.value)}
+          className="border rounded-lg p-2 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          {Array.from({ length: 10 }, (_, i) => String(new Date().getFullYear() - i)).map((y) => (
+            <option key={y} value={y}>{y}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+
   const fetchFinanceData = async () => {
     if (!orgId) return;
     setLoadingFinance(true);
@@ -5556,17 +5547,19 @@ export default function ConsultantPanel() {
           category: newExpense.category,
           amount: parseFloat(newExpense.amount),
           expense_date: newExpense.expense_date,
-          notes: newExpense.notes.trim() || null
+          notes: newExpense.notes.trim() || null,
+          employee_id: newExpense.category === 'Maaş/Personel' && newExpense.employee_id ? newExpense.employee_id : null
         });
       if (error) throw error;
-      
+
       setShowAddExpenseModal(false);
       setNewExpense({
         title: '',
         category: 'Ofis/Kira',
         amount: '',
         expense_date: new Date().toISOString().split('T')[0],
-        notes: ''
+        notes: '',
+        employee_id: ''
       });
       await fetchFinanceData();
       alert('Gider kaydı başarıyla eklendi!');
@@ -5993,29 +5986,35 @@ export default function ConsultantPanel() {
       </div>
 
       {/* Modüller (Ana Kategoriler) */}
-      <div className="bg-slate-100/80 dark:bg-slate-900/50 p-2 rounded-2xl border border-gray-200 dark:border-slate-800 flex gap-2 overflow-x-auto whitespace-nowrap scrollbar-thin">
-        {modules.filter(m => m.tabs.some(t => t.show)).map((mod) => {
-          const isActive = activeModule === mod.id;
-          return (
-            <button
-              key={mod.id}
-              onClick={() => selectModule(mod.id as any)}
-              className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
-                isActive
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10 scale-[1.02]'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-blue-600 hover:bg-slate-50 dark:hover:bg-slate-800'
-              }`}
-            >
-              {mod.icon}
-              <span>{mod.label}</span>
-              {mod.id === 'actions' && newActionsCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
-                  {newActionsCount > 99 ? '99+' : newActionsCount}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      {/* Mobilde tüm modüller sığmıyor; sağdaki fade, çubuğun kaydırılabilir
+          olduğunu görsel olarak belli eder (aksi halde son etiket ekran
+          kenarında keskin biçimde kesilip "bozuk" görünüyordu). */}
+      <div className="relative">
+        <div className="bg-slate-100/80 dark:bg-slate-900/50 p-2 rounded-2xl border border-gray-200 dark:border-slate-800 flex gap-2 overflow-x-auto whitespace-nowrap scrollbar-thin">
+          {modules.filter(m => m.tabs.some(t => t.show)).map((mod) => {
+            const isActive = activeModule === mod.id;
+            return (
+              <button
+                key={mod.id}
+                onClick={() => selectModule(mod.id as any)}
+                className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer shrink-0 ${
+                  isActive
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10 scale-[1.02]'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-blue-600 hover:bg-slate-50 dark:hover:bg-slate-800'
+                }`}
+              >
+                {mod.icon}
+                <span>{mod.label}</span>
+                {mod.id === 'actions' && newActionsCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
+                    {newActionsCount > 99 ? '99+' : newActionsCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 rounded-r-2xl bg-gradient-to-l from-slate-100 dark:from-slate-900 to-transparent sm:hidden" />
       </div>
 
       {/* Alt Sayfalar / Modül Sekmeleri (Yalnızca 1'den fazla gösterilebilir sekme varsa) */}
@@ -7102,26 +7101,13 @@ export default function ConsultantPanel() {
                       </div>
                       
                       {userRole === 'premium_corporate' && member.id !== userId && (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleTogglePremiumSeat(member)}
-                            className={`text-xs px-2 py-2 rounded border flex items-center gap-1 transition ${
-                              member.premium_seat_active === false
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/20 dark:border-emerald-900'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-slate-900 dark:border-slate-700'
-                            }`}
-                            title={member.premium_seat_active === false ? 'Premium Ver' : 'Premium Al'}
-                          >
-                            <Crown size={14} />
-                          </button>
-                          <button
-                            onClick={() => handleKick(member.id, member.role)}
-                            className="text-xs bg-red-50 text-red-600 p-2 rounded border border-red-100 hover:bg-red-100 transition dark:bg-red-950/20 dark:border-red-900"
-                            title="Çıkar"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => setSelectedPersonnelId(member.id)}
+                          className="text-xs bg-slate-100 text-slate-600 p-2 rounded border border-slate-200 hover:bg-slate-200 transition dark:bg-slate-900 dark:border-slate-700 dark:text-slate-300"
+                          title="Personel Kartı"
+                        >
+                          <User size={14} />
+                        </button>
                       )}
                       {userRole !== 'premium_corporate' && member.id === userId && (
                         <button
@@ -7137,312 +7123,6 @@ export default function ConsultantPanel() {
                       )}
                     </div>
 
-                    {member.role !== 'normal' && (() => {
-                      const totalDays = getPersonnelQuota(member.id);
-                      const percentage = Math.min((totalDays / 16) * 100, 100);
-                      const isExceeded = totalDays > 16;
-                      return (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2 px-3 bg-slate-50/70 dark:bg-slate-900/50 rounded-lg border border-slate-100 dark:border-slate-800 text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider text-[10px]">Deneyim Yılı:</span>
-                            {userRole === 'premium_corporate' ? (
-                              <div className="flex items-center gap-1">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="80"
-                                  value={member.experience_years !== undefined && member.experience_years !== null ? member.experience_years : 0}
-                                  onChange={async (e) => {
-                                    const val = parseInt(e.target.value) || 0;
-                                    setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, experience_years: val } : m));
-                                    const { error } = await supabase
-                                      .from('profiles')
-                                      .update({ experience_years: val })
-                                      .eq('id', member.id);
-                                    if (error) {
-                                      alert('Deneyim yılı güncellenirken hata: ' + error.message);
-                                      fetchTeamMembers();
-                                    }
-                                  }}
-                                  className="w-16 border rounded px-1.5 py-0.5 text-center bg-white dark:bg-slate-900 dark:border-slate-700 font-bold outline-none focus:ring-1 focus:ring-blue-500"
-                                />
-                                <span className="font-medium text-gray-500">Yıl</span>
-                              </div>
-                            ) : (
-                              <span className="font-bold text-gray-700 dark:text-gray-300">
-                                {member.experience_years || 0} Yıl
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="space-y-1">
-                            <div className="flex justify-between font-bold text-[10px] uppercase text-gray-400 tracking-wider">
-                              <span>İş Günü Kotası</span>
-                              <span className={isExceeded ? "text-rose-600 dark:text-rose-455 font-black" : "text-gray-650 dark:text-gray-300 font-black"}>
-                                {totalDays} / 16 Gün ({((totalDays / 16) * 100).toFixed(0)}%)
-                              </span>
-                            </div>
-                            <div className="w-full bg-gray-250 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
-                              <div
-                                style={{ width: `${percentage}%` }}
-                                className={`h-full rounded-full transition-all duration-300 ${
-                                  isExceeded 
-                                    ? 'bg-rose-500' 
-                                    : totalDays > 12 
-                                      ? 'bg-amber-500' 
-                                      : 'bg-emerald-500'
-                                }`}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Rol & Yetkiler */}
-                    {userRole === 'premium_corporate' && member.id !== userId && (
-                      <div className="mt-2 pt-3 border-t border-gray-50 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-400 font-bold">ROL:</span>
-                          {userRole === 'premium_corporate' ? (
-                            <select
-                              value={member.role}
-                              onChange={(e) => handleUpdateRole(member.id, e.target.value)}
-                              className="border rounded px-2 py-1 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold text-blue-700 dark:text-blue-400 outline-none focus:ring-1 focus:ring-blue-500"
-                            >
-                              <option value="premium_corporate">Çevre Danışmanlık Firma Sahibi</option>
-                              <option value="corporate_chief">Çevre Danışmanlık Firma Yöneticisi</option>
-                              <option value="corporate_staff">Çevre Danışmanlık Personeli</option>
-                              <option value="normal">Normal (Ekip Dışı)</option>
-                            </select>
-                          ) : (
-                            <span className="text-xs font-bold text-gray-700 dark:text-gray-300">
-                              {roleLabels[member.role] || member.role}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap gap-3">
-                          {member.role === 'corporate_chief' ? (
-                            <>
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_view_clients !== false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                İşletmeleri Görüntüleme
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_view_all_clients || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Tüm Firmaları Görebilir
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_create_clients || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_create_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Yeni İşletme Oluşturma
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_edit_clients || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_edit_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                İşletme Düzenleme
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_assign_clients || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_assign_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Personel Atama
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_delete_clients || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_delete_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                İşletme Silme (Kritik)
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_view_reports !== false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_reports: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Raporları Görüntüleme
-                              </label>
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_view_team !== false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_team: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Ekip Yönetimini Görüntüleme
-                              </label>
-
-
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.receive_reminder_cc || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), receive_reminder_cc: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Hatırlatma Maillerinde CC'de Yer Alsın
-                              </label>
-                            </>
-                          ) : (
-                            <>
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.can_view_all_clients || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), can_view_all_clients: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Tüm Firmaları Görebilir
-                              </label>
-
-
-                              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  disabled={userRole !== 'premium_corporate'}
-                                  checked={member.extra_permissions?.receive_reminder_cc || false}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.checked;
-                                    const updatedPerms = { ...(member.extra_permissions || {}), receive_reminder_cc: newVal };
-                                    const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                                    if (error) alert('Hata: ' + error.message);
-                                    else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                                  }}
-                                  className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                                />
-                                Hatırlatma Maillerinde CC'de Yer Alsın
-                              </label>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Personel Şahsi Belge Yükleme Yetkisi - Yönetici veya Şef verebilir */}
-                    {canManageStaffDocPerm && member.role === 'corporate_staff' && member.id !== userId && (
-                      <div className="mt-2 pt-3 border-t border-gray-50 dark:border-slate-700">
-                        <span className="text-[10px] font-bold text-gray-400 block mb-1 uppercase tracking-wider">Personel Yetkileri</span>
-                        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer w-fit">
-                          <input
-                            type="checkbox"
-                            checked={member.extra_permissions?.can_upload_personal_docs || false}
-                            onChange={async (e) => {
-                              const newVal = e.target.checked;
-                              const updatedPerms = { ...(member.extra_permissions || {}), can_upload_personal_docs: newVal };
-                              const { error } = await supabase.from('profiles').update({ extra_permissions: updatedPerms }).eq('id', member.id);
-                              if (error) alert('Hata: ' + error.message);
-                              else setTeamMembers(prev => prev.map(m => m.id === member.id ? { ...m, extra_permissions: updatedPerms } : m));
-                            }}
-                            className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                          />
-                          Şahsi Belge Yükleme
-                        </label>
-                      </div>
-                    )}
                   </div>
                 ))}
 
@@ -10178,7 +9858,9 @@ export default function ConsultantPanel() {
                   <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 mb-4 flex items-center gap-2">
                     <PieChart className="text-blue-600" size={18} /> Aylık Finansal Özet Tablosu
                   </h3>
-                  
+
+                  <div className="mb-4">{renderFinancePeriodSelector()}</div>
+
                   {loadingFinance ? (
                     <div className="flex justify-center py-12">
                       <Loader className="animate-spin text-blue-600" size={24} />
@@ -10199,14 +9881,27 @@ export default function ConsultantPanel() {
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
                           {(() => {
                             const monthsList: { year: number, month: number, label: string }[] = [];
-                            const dateCursor = new Date();
-                            for (let i = 0; i < 12; i++) {
-                              monthsList.push({
-                                year: dateCursor.getFullYear(),
-                                month: dateCursor.getMonth() + 1,
-                                label: dateCursor.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })
-                              });
-                              dateCursor.setMonth(dateCursor.getMonth() - 1);
+                            if (financePeriodType === 'monthly') {
+                              const [y, m] = financeSelectedMonth.split('-').map(Number);
+                              const d = new Date(y, m - 1, 1);
+                              monthsList.push({ year: y, month: m, label: d.toLocaleString('tr-TR', { month: 'long', year: 'numeric' }) });
+                            } else if (financePeriodType === 'yearly') {
+                              const y = parseInt(financeSelectedYear);
+                              for (let m = 12; m >= 1; m--) {
+                                const d = new Date(y, m - 1, 1);
+                                monthsList.push({ year: y, month: m, label: d.toLocaleString('tr-TR', { month: 'long', year: 'numeric' }) });
+                              }
+                            } else {
+                              // Tümü: son 12 ay (varsayılan davranış korunuyor)
+                              const dateCursor = new Date();
+                              for (let i = 0; i < 12; i++) {
+                                monthsList.push({
+                                  year: dateCursor.getFullYear(),
+                                  month: dateCursor.getMonth() + 1,
+                                  label: dateCursor.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })
+                                });
+                                dateCursor.setMonth(dateCursor.getMonth() - 1);
+                              }
                             }
 
                             return monthsList.map(item => {
@@ -10268,6 +9963,8 @@ export default function ConsultantPanel() {
             <p className="text-xs text-slate-500 mt-1">İşletmelerin aylık sözleşme tutarlarını yönetin ve ödeme geçmişini denetleyin.</p>
           </div>
 
+          {renderFinancePeriodSelector()}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -10280,7 +9977,8 @@ export default function ConsultantPanel() {
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
                 {clients.map((client) => {
-                  const monthsList = getMonthsSinceServiceStart(client.service_start_date);
+                  const monthsList = getMonthsSinceServiceStart(client.service_start_date)
+                    .filter((item) => matchesFinancePeriod(`${item.year}-${String(item.month).padStart(2, '0')}`));
                   const isEditing = updatingClientFee === client.id;
                   const amount = Number(client.monthly_fee || 0);
 
@@ -10488,13 +10186,48 @@ export default function ConsultantPanel() {
             </button>
           </div>
 
+          {renderFinancePeriodSelector()}
+
+          {/* Personel Giderleri — sadece firma sahibi (maaş bilgisi hassas) */}
+          {userRole === 'premium_corporate' && (() => {
+            const byEmployee: Record<string, number> = {};
+            financeExpenses
+              .filter((exp) => exp.category === 'Maaş/Personel' && exp.employee_id && matchesFinancePeriod(exp.expense_date))
+              .forEach((exp) => {
+                byEmployee[exp.employee_id] = (byEmployee[exp.employee_id] || 0) + Number(exp.amount);
+              });
+            const rows = Object.entries(byEmployee)
+              .map(([empId, total]) => ({ empId, total, name: teamMembers.find((m) => m.id === empId)?.full_name || 'Bilinmeyen Personel' }))
+              .sort((a, b) => b.total - a.total);
+            if (rows.length === 0) return null;
+            return (
+              <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4">
+                <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Personel Giderleri (Kişi Bazlı Toplam)</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {rows.map((r) => (
+                    <button
+                      key={r.empId}
+                      onClick={() => setSelectedPersonnelId(r.empId)}
+                      className="flex justify-between items-center text-xs p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-800 transition text-left"
+                    >
+                      <span className="font-bold text-gray-700 dark:text-gray-300 truncate">{r.name}</span>
+                      <span className="font-bold text-rose-600 shrink-0 ml-2">{r.total.toLocaleString('tr-TR')} TL</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {loadingFinance ? (
             <div className="flex justify-center py-12">
               <Loader className="animate-spin text-blue-600" size={24} />
             </div>
-          ) : financeExpenses.length === 0 ? (
+          ) : financeExpenses.filter((exp) => matchesFinancePeriod(exp.expense_date)).length === 0 ? (
             <div className="text-center text-slate-400 italic text-sm py-12">
-              Henüz herhangi bir gider kaydı eklenmemiş. "Yeni Gider Ekle" butonuna basarak başlayabilirsiniz.
+              {financeExpenses.length === 0
+                ? 'Henüz herhangi bir gider kaydı eklenmemiş. "Yeni Gider Ekle" butonuna basarak başlayabilirsiniz.'
+                : 'Seçilen dönemde gider kaydı yok.'}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -10510,7 +10243,7 @@ export default function ConsultantPanel() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
-                  {financeExpenses.map((exp) => (
+                  {financeExpenses.filter((exp) => matchesFinancePeriod(exp.expense_date)).map((exp) => (
                     <tr key={exp.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
                       <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">{exp.title}</td>
                       <td className="py-3.5">
@@ -10620,6 +10353,23 @@ export default function ConsultantPanel() {
                   />
                 </div>
               </div>
+
+              {newExpense.category === 'Maaş/Personel' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Personel (Opsiyonel)</label>
+                  <select
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                    value={newExpense.employee_id}
+                    onChange={(e) => setNewExpense(prev => ({ ...prev, employee_id: e.target.value }))}
+                  >
+                    <option value="">-- Belirli bir personele bağlama --</option>
+                    {teamMembers.filter(m => m.role !== 'normal').map(m => (
+                      <option key={m.id} value={m.id}>{m.full_name}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">Bir personel seçerseniz bu gider, o personelin kartındaki "Personel Giderleri" listesinde de görünür.</p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Gider Tarihi *</label>
@@ -15015,6 +14765,17 @@ export default function ConsultantPanel() {
             )}
           </div>
         </div>
+      )}
+
+      {selectedPersonnelId && orgId && (
+        <PersonnelCard
+          personnelId={selectedPersonnelId}
+          orgId={orgId}
+          viewerRole={userRole}
+          clients={clients}
+          onMemberChanged={fetchTeamMembers}
+          onClose={() => setSelectedPersonnelId(null)}
+        />
       )}
       </div>
     </div>
