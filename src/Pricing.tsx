@@ -870,12 +870,12 @@ export default function Pricing() {
 
       {/* ALT BAR (ÖDEME) */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.1)]">
-        <div className="max-w-4xl mx-auto flex justify-between items-center">
-          <div>
+        <div className="max-w-4xl mx-auto flex justify-between items-center gap-3">
+          <div className="whitespace-nowrap shrink-0">
             <div className="text-xs text-gray-400 font-bold uppercase">
               Toplam Tutar
             </div>
-            <div className="text-3xl font-black text-gray-900">
+            <div className="text-2xl sm:text-3xl font-black text-gray-900">
               {calculateTotal()} TL
             </div>
             <div className="text-xs text-green-600 font-bold">
@@ -893,7 +893,7 @@ export default function Pricing() {
                 selectedPlan === 'corporate' &&
                 !corpStorageProvider)
             }
-            className={`px-8 py-3 rounded-xl font-bold text-white text-lg shadow-lg transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
+            className={`px-4 sm:px-8 py-3 rounded-xl font-bold text-white text-sm sm:text-lg shadow-lg transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 ${
               selectedPlan === 'corporate' && purchaseType === 'subscription'
                 ? 'bg-purple-600 hover:bg-purple-700'
                 : 'bg-blue-600 hover:bg-blue-700'
@@ -903,7 +903,7 @@ export default function Pricing() {
               'İşleniyor...'
             ) : (
               <>
-                <CreditCard /> Ödeme Sistemi (Yakında) <ChevronRight />
+                <CreditCard size={18} /> <span className="hidden sm:inline">Ödeme Sistemi (Yakında)</span><span className="sm:hidden">Ödeme (Yakında)</span> <ChevronRight size={18} />
               </>
             )}
           </button>

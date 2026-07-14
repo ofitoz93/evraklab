@@ -2994,29 +2994,35 @@ export default function CompanyPanel() {
       </div>
 
       {/* Modüller (Ana Kategoriler) */}
-      <div className="bg-slate-100/80 dark:bg-slate-900/50 p-2 rounded-2xl border border-gray-200 dark:border-slate-800 flex gap-2 overflow-x-auto whitespace-nowrap scrollbar-thin">
-        {modules.filter(m => m.tabs.some(t => t.show)).map((mod) => {
-          const isActive = activeModule === mod.id;
-          return (
-            <button
-              key={mod.id}
-              onClick={() => selectModule(mod.id as any)}
-              className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer ${
-                isActive
-                  ? 'bg-purple-600 text-white shadow-md shadow-purple-600/10 scale-[1.02]'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-purple-600 hover:bg-slate-50 dark:hover:bg-slate-800'
-              }`}
-            >
-              {mod.icon}
-              <span>{mod.label}</span>
-              {mod.id === 'actions' && newActionsCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
-                  {newActionsCount > 99 ? '99+' : newActionsCount}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      {/* Mobilde tüm modüller sığmıyor; sağdaki fade, çubuğun kaydırılabilir
+          olduğunu görsel olarak belli eder (aksi halde son etiket ekran
+          kenarında keskin biçimde kesilip "bozuk" görünüyordu). */}
+      <div className="relative">
+        <div className="bg-slate-100/80 dark:bg-slate-900/50 p-2 rounded-2xl border border-gray-200 dark:border-slate-800 flex gap-2 overflow-x-auto whitespace-nowrap scrollbar-thin">
+          {modules.filter(m => m.tabs.some(t => t.show)).map((mod) => {
+            const isActive = activeModule === mod.id;
+            return (
+              <button
+                key={mod.id}
+                onClick={() => selectModule(mod.id as any)}
+                className={`relative px-5 py-3 text-xs font-bold rounded-xl flex items-center gap-2 transition-all duration-200 cursor-pointer shrink-0 ${
+                  isActive
+                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/10 scale-[1.02]'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-purple-600 hover:bg-slate-50 dark:hover:bg-slate-800'
+                }`}
+              >
+                {mod.icon}
+                <span>{mod.label}</span>
+                {mod.id === 'actions' && newActionsCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
+                    {newActionsCount > 99 ? '99+' : newActionsCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 rounded-r-2xl bg-gradient-to-l from-slate-100 dark:from-slate-900 to-transparent sm:hidden" />
       </div>
 
       {/* Alt Sayfalar / Modül Sekmeleri (Yalnızca 1'den fazla gösterilebilir sekme varsa) */}

@@ -1335,7 +1335,7 @@ export default function EnvReportForm() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 pb-24">
+    <div className="max-w-5xl mx-auto space-y-6 pb-28">
       {/* Header */}
       <div className="flex items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 sticky top-[72px] z-10">
         <button onClick={() => navigate(userMode === 'personal' ? '/documents' : '/consultant')} className="p-2 text-gray-500 hover:text-gray-900 bg-gray-100 rounded-lg">
@@ -1366,39 +1366,44 @@ export default function EnvReportForm() {
         {renderSteps()}
       </div>
 
-      {/* Footer Navigation */}
-      <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 sticky bottom-4 z-10">
-        <button
-          onClick={handlePrev}
-          disabled={(currentStep === 1 && !previewMode) || loading}
-          className="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50"
-        >
-          <ChevronLeft size={18} /> {previewMode ? 'Düzenlemeye Dön' : 'Geri'}
-        </button>
+      {/* Footer Navigation — her zaman viewport altına sabit; içeriğin ne kadar
+          kısa olduğuna bakılmaksızın (bkz. `pb-28` üst kapsayıcıda) üstüne
+          binmez. Önceki `sticky bottom-4` deseni kısa adımlarda (örn. Adım 1)
+          hiç kaydırmadan içeriğin üstüne biniyordu. */}
+      <div className="fixed bottom-0 inset-x-0 z-20 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
+        <div className="max-w-5xl mx-auto flex justify-between items-center p-4">
+          <button
+            onClick={handlePrev}
+            disabled={(currentStep === 1 && !previewMode) || loading}
+            className="flex items-center gap-2 px-4 sm:px-6 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50 text-sm sm:text-base"
+          >
+            <ChevronLeft size={18} /> {previewMode ? 'Düzenlemeye Dön' : 'Geri'}
+          </button>
 
-        {previewMode || (currentStep === getMaxSteps() && isManualUpload) ? (
-          <button
-            onClick={handleSave}
-            disabled={loading}
-            className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-8 py-2 rounded-lg font-bold shadow-lg transition disabled:opacity-50"
-          >
-            {loading ? 'Kaydediliyor...' : 'Onayla ve Kaydet'} <Save size={18} />
-          </button>
-        ) : currentStep === getMaxSteps() ? (
-          <button
-            onClick={handleNext}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-8 py-2 rounded-lg font-bold shadow-lg transition"
-          >
-            <Eye size={18} /> Önizleme
-          </button>
-        ) : (
-          <button
-            onClick={handleNext}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-8 py-2 rounded-lg font-bold shadow-lg transition"
-          >
-            İleri <ChevronRight size={18} />
-          </button>
-        )}
+          {previewMode || (currentStep === getMaxSteps() && isManualUpload) ? (
+            <button
+              onClick={handleSave}
+              disabled={loading}
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 sm:px-8 py-2 rounded-lg font-bold shadow-lg transition disabled:opacity-50 text-sm sm:text-base"
+            >
+              {loading ? 'Kaydediliyor...' : 'Onayla ve Kaydet'} <Save size={18} />
+            </button>
+          ) : currentStep === getMaxSteps() ? (
+            <button
+              onClick={handleNext}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 sm:px-8 py-2 rounded-lg font-bold shadow-lg transition text-sm sm:text-base"
+            >
+              <Eye size={18} /> Önizleme
+            </button>
+          ) : (
+            <button
+              onClick={handleNext}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 sm:px-8 py-2 rounded-lg font-bold shadow-lg transition text-sm sm:text-base"
+            >
+              İleri <ChevronRight size={18} />
+            </button>
+          )}
+        </div>
       </div>
 
       {pendingManualFile && (
