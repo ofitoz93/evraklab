@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -12,7 +12,12 @@ import {
   CheckCircle,
   Plus,
   Trash2,
+  Eye,
+  ImagePlus,
+  Loader,
+  X,
 } from 'lucide-react';
+import DocumentPreviewModal from './DocumentPreviewModal';
 
 interface Client {
   id: string;
@@ -20,6 +25,136 @@ interface Client {
   address: string;
   tax_no: string;
   phone: string;
+}
+
+// Tailwind JIT tam class adını kaynak kodda göremezse (örn. `text-${color}-600`
+// gibi bir template literal) o class'ı üretmez. Bu yüzden renkler burada statik
+// bir haritadan seçiliyor.
+const SECTION_COLOR_CLASSES: Record<string, string> = {
+  blue: 'text-blue-600 border-blue-100',
+  green: 'text-green-600 border-green-100',
+  amber: 'text-amber-600 border-amber-100',
+  purple: 'text-purple-600 border-purple-100',
+};
+
+// Bir alt-bölümü (B.1, B.2, 6.1 vb.) tutarlı bir kart içine alır. Component
+// tanımı BİLEREK modül seviyesinde (EnvReportForm'un dışında) tutuluyor:
+// eğer bu component EnvReportForm'un içinde tanımlansaydı her render'da
+// (örn. her tuş vuruşunda) yeni bir fonksiyon referansı oluşur, React da
+// <Section> etiketini "farklı bir component tipi" sanıp tüm alt ağacı
+// unmount/mount ederdi — bu da içindeki text input'ların her karakterde
+// focus kaybetmesine (yazarken sürekli tekrar tıklama gerekmesine) sebep olurdu.
+const Section = ({ children }: { children: React.ReactNode }) => (
+  <div className="bg-white dark:bg-slate-800/60 rounded-2xl border border-gray-100 dark:border-slate-700 p-5 space-y-4">
+    {children}
+  </div>
+);
+
+type FieldImage = { url: string; width: number };
+
+// Her form alanının altında, isteğe bağlı olarak sürükle-bırak (veya tıkla)
+// ile görsel eklenebilen ve köşesinden boyutlandırılabilen küçük bir blok.
+// "İş Akım Şeması" gibi görsel/şema gerektiren alanlarda kullanılmak üzere
+// TÜM alanlara (renderTextInput üzerinden) eklendi. Modül seviyesinde
+// tanımlı olmasının sebebi Section ile aynı: EnvReportForm içinde
+// tanımlansaydı her tuş vuruşunda yeniden yaratılıp input focus'unu
+// kaybettirirdi.
+function FieldImageBlock({
+  image,
+  uploading,
+  readOnly,
+  onUpload,
+  onResize,
+  onRemove,
+}: {
+  image: FieldImage | null;
+  uploading: boolean;
+  readOnly: boolean;
+  onUpload: (file: File) => void;
+  onResize: (width: number) => void;
+  onRemove: () => void;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleResizePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragStateRef.current = { startX: e.clientX, startWidth: image?.width || 240 };
+  };
+  const handleResizePointerMove = (e: React.PointerEvent) => {
+    const st = dragStateRef.current;
+    if (!st) return;
+    const newWidth = Math.max(80, Math.min(720, st.startWidth + (e.clientX - st.startX)));
+    onResize(newWidth);
+  };
+  const handleResizePointerUp = () => {
+    dragStateRef.current = null;
+  };
+
+  if (!image && readOnly) return null;
+
+  if (image) {
+    return (
+      <div className="mt-2 relative inline-block group" style={{ width: image.width, maxWidth: '100%' }}>
+        <img src={image.url} style={{ width: '100%', height: 'auto', display: 'block' }} className="rounded-lg border border-gray-200 dark:border-slate-700" alt="Eklenen görsel" />
+        {!readOnly && (
+          <>
+            <button
+              type="button"
+              onClick={onRemove}
+              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition shadow"
+              title="Görseli Kaldır"
+            >
+              <X size={12} />
+            </button>
+            <div
+              onPointerDown={handleResizePointerDown}
+              onPointerMove={handleResizePointerMove}
+              onPointerUp={handleResizePointerUp}
+              onPointerLeave={handleResizePointerUp}
+              className="absolute -right-1.5 -bottom-1.5 w-4 h-4 bg-blue-600 rounded-full border-2 border-white cursor-nwse-resize touch-none"
+              title="Sürükleyerek Boyutlandır"
+            />
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (readOnly) return null;
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const f = e.dataTransfer.files?.[0];
+        if (f) onUpload(f);
+      }}
+      onClick={() => fileInputRef.current?.click()}
+      className={`mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border-2 border-dashed text-[11px] font-bold cursor-pointer transition ${dragOver ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 dark:border-slate-700 text-gray-400 hover:border-blue-300 hover:text-blue-500'
+        }`}
+    >
+      {uploading ? <Loader size={13} className="animate-spin" /> : <ImagePlus size={13} />}
+      {uploading ? 'Yükleniyor...' : 'Görseli sürükleyip bırakın veya tıklayın'}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) onUpload(f);
+        }}
+      />
+    </div>
+  );
 }
 
 export default function EnvReportForm() {
@@ -34,12 +169,18 @@ export default function EnvReportForm() {
   const [reportDate, setReportDate] = useState(new Date().toISOString().split('T')[0]);
   const [isManualUpload, setIsManualUpload] = useState(false);
   const [fileUrl, setFileUrl] = useState('');
+  // Manuel rapor dosyası (PDF/görsel) seçildiğinde direkt yüklemek yerine önce
+  // önizleme + kaşe/imza/logo ekleme ekranı açılır.
+  const [pendingManualFile, setPendingManualFile] = useState<File | null>(null);
 
   // Kompleks JSON verisi
   const [formData, setFormData] = useState<any>({});
   const [currentStep, setCurrentStep] = useState(1);
   const [uploading, setUploading] = useState(false);
   const [attachmentUrls, setAttachmentUrls] = useState<string[]>([]);
+  // Sistem formu (adım adım) yolunda, son içerik adımından sonra kaydetmeden
+  // önce tüm girilen verilerin salt-okunur bir dökümünü gösteren önizleme ekranı.
+  const [previewMode, setPreviewMode] = useState(false);
 
   const [userMode, setUserMode] = useState<'personal' | 'consultant' | 'loading'>('loading');
   const [noAssignedClients, setNoAssignedClients] = useState(false);
@@ -189,35 +330,92 @@ export default function EnvReportForm() {
     });
   };
 
+  const uploadToClientAssets = async (file: File, prefix: string): Promise<string> => {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${prefix}_${Math.random()}.${fileExt}`;
+    const filePath = `reports/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('client_assets')
+      .upload(filePath, file);
+    if (uploadError) throw uploadError;
+
+    const { data } = supabase.storage.from('client_assets').getPublicUrl(filePath);
+    return data.publicUrl;
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, isAttachment = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploading(true);
     try {
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${isAttachment ? 'attach' : 'report'}_${Math.random()}.${fileExt}`;
-      const filePath = `reports/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('client_assets')
-        .upload(filePath, file);
-
-      if (uploadError) throw uploadError;
-
-      const { data } = supabase.storage
-        .from('client_assets')
-        .getPublicUrl(filePath);
-
+      const publicUrl = await uploadToClientAssets(file, isAttachment ? 'attach' : 'report');
       if (isAttachment) {
-        setAttachmentUrls(prev => [...prev, data.publicUrl]);
+        setAttachmentUrls(prev => [...prev, publicUrl]);
       } else {
-        setFileUrl(data.publicUrl);
+        setFileUrl(publicUrl);
       }
     } catch (err: any) {
       alert('Dosya yüklenirken hata: ' + err.message + '\nLütfen "client_assets" bucket\'ının mevcut olduğundan emin olun.');
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleManualFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (e.target) e.target.value = '';
+    if (!f) return;
+    setPendingManualFile(f);
+  };
+
+  const uploadReportFile = async (file: File) => {
+    setUploading(true);
+    try {
+      const publicUrl = await uploadToClientAssets(file, 'report');
+      setFileUrl(publicUrl);
+    } catch (err: any) {
+      alert('Dosya yüklenirken hata: ' + err.message + '\nLütfen "client_assets" bucket\'ının mevcut olduğundan emin olun.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // --- ALAN BAZLI GÖRSEL EKLEME (örn. "İş Akım Şeması") ---
+  // Her formData alanının yanında, o alana özel sürükle-bırak ile eklenip
+  // boyutlandırılabilen bir görsel tutulabilir. Görsel bilgisi formData
+  // içinde `${fieldKey}__img` anahtarıyla saklanır; böylece raporun geri
+  // kalanıyla birlikte otomatik olarak kaydedilir/yüklenir, ayrı bir
+  // sütun/tablo gerekmez.
+  const [uploadingFieldKey, setUploadingFieldKey] = useState<string | null>(null);
+
+  const getFieldImage = (fieldKey: string): FieldImage | null => formData[`${fieldKey}__img`] || null;
+
+  const setFieldImage = (fieldKey: string, img: FieldImage | null) => {
+    setFormData((prev: any) => {
+      const next = { ...prev };
+      if (img) next[`${fieldKey}__img`] = img;
+      else delete next[`${fieldKey}__img`];
+      return next;
+    });
+  };
+
+  const handleFieldImageUpload = async (fieldKey: string, file: File) => {
+    setUploadingFieldKey(fieldKey);
+    try {
+      const url = await uploadToClientAssets(file, `field_${fieldKey}`);
+      const probe = new Image();
+      probe.onload = () => {
+        const width = Math.min(320, probe.width || 320);
+        setFieldImage(fieldKey, { url, width });
+      };
+      probe.onerror = () => setFieldImage(fieldKey, { url, width: 240 });
+      probe.src = url;
+    } catch (err: any) {
+      alert('Görsel yüklenirken hata: ' + err.message + '\nLütfen "client_assets" bucket\'ının mevcut olduğundan emin olun.');
+    } finally {
+      setUploadingFieldKey(null);
     }
   };
 
@@ -424,140 +622,221 @@ export default function EnvReportForm() {
   };
 
   // ----- RENDER YARDIMCILARI -----
-  const renderTextInput = (label: string, fieldKey: string, placeholder: string = '', isTextArea = false, note: string = '') => (
-    <div className="mb-4">
-      <div className="flex flex-col mb-1">
-        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">{label}</label>
-        {note && <span className="text-[11px] text-gray-500 italic leading-tight">{note}</span>}
+  const renderTextInput = (label: string, fieldKey: string, placeholder: string = '', isTextArea = false, note: string = '') => {
+    const value = formData[fieldKey] || '';
+    const fieldImage = getFieldImage(fieldKey);
+    const imageBlock = (
+      <FieldImageBlock
+        image={fieldImage}
+        uploading={uploadingFieldKey === fieldKey}
+        readOnly={previewMode}
+        onUpload={(file) => handleFieldImageUpload(fieldKey, file)}
+        onResize={(width) => setFieldImage(fieldKey, { url: fieldImage!.url, width })}
+        onRemove={() => setFieldImage(fieldKey, null)}
+      />
+    );
+
+    // Önizleme ekranında alanlar düzenlenemez, sadece girilen değer (ve varsa eklenen görsel) gösterilir.
+    if (previewMode) {
+      return (
+        <div>
+          <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+            {label}
+          </label>
+          <div className={`w-full p-2.5 rounded-xl border border-gray-100 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 text-sm whitespace-pre-wrap ${value ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 italic'}`}>
+            {value || 'Boş bırakıldı'}
+          </div>
+          {imageBlock}
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+          {label}
+        </label>
+        {isTextArea ? (
+          <textarea
+            value={value}
+            onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
+            placeholder={placeholder}
+            className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 min-h-[100px] outline-none focus:ring-1 focus:ring-blue-500 text-sm text-gray-700 dark:text-gray-300 resize-y"
+          />
+        ) : (
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
+            placeholder={placeholder}
+            className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+          />
+        )}
+        {imageBlock}
+        {note && <p className="text-[10px] text-gray-400 mt-1 leading-tight italic">{note}</p>}
       </div>
-      {isTextArea ? (
-        <textarea
-          value={formData[fieldKey] || ''}
-          onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
-          placeholder={placeholder}
-          className="w-full border rounded-lg p-3 min-h-[100px] dark:bg-slate-900 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-        />
-      ) : (
-        <input
-          type="text"
-          value={formData[fieldKey] || ''}
-          onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
-          placeholder={placeholder}
-          className="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-        />
-      )}
-    </div>
-  );
+    );
+  };
 
   const renderSectionHeader = (title: string, color: string = 'blue') => (
-    <h4 className={`font-bold text-lg text-${color}-600 mt-6 mb-3 border-b pb-1 border-${color}-100`}>{title}</h4>
+    <h4 className={`font-bold text-base ${SECTION_COLOR_CLASSES[color] || SECTION_COLOR_CLASSES.blue} mb-3`}>{title}</h4>
+  );
+
+  const renderAttachments = () => (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-4">
+        {attachmentUrls.map((url, idx) => (
+          <div key={idx} className="relative group w-24 h-24 border rounded-lg overflow-hidden bg-gray-50">
+            <img src={url} alt="Ek" className="w-full h-full object-cover" />
+            <button
+              onClick={() => setAttachmentUrls(prev => prev.filter((_, i) => i !== idx))}
+              className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ))}
+        <label className="w-24 h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:border-blue-500 hover:text-blue-500 cursor-pointer transition">
+          {uploading ? <RefreshCw size={20} className="animate-spin" /> : <Plus size={20} />}
+          <span className="text-[10px] font-bold mt-1">{uploading ? 'Yükleniyor' : 'Dosya Ekle'}</span>
+          <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, true)} disabled={uploading} />
+        </label>
+      </div>
+      <p className="text-[10px] text-gray-400 italic">Fotoğraf, analiz raporu veya MOTAT ekran görüntülerini ekleyebilirsiniz.</p>
+    </div>
   );
 
   // --- AYLIK RAPOR ADIMLARI ---
   const renderMonthlyStep2 = () => (
     <div className="space-y-6 animate-fadeIn">
       <h3 className="text-xl font-bold border-b pb-2">A - İŞLETME BİLGİLERİ</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {renderTextInput('Faaliyet Konusu', 'A_faaliyet_konusu')}
-        {renderTextInput('Çevre İzin ve Lisans Yönetmeliği Kapsamındaki Yeri', 'A_cevre_izin_yeri', '', false, 'İşletmenin, Çevre İzin ve Lisans Yönetmeliğindeki ek listelerindeki kapsamı, bölüm numarası ve faaliyetin adı ile birlikte tam olarak belirtilmelidir.')}
-        {renderTextInput('ÇED Yönetmeliği Kapsamındaki Değerlendirmesi', 'A_ced_durumu', '', true, '1- Kapasite artışları dahil faaliyet ile ilgili olarak işletmenin ÇED Yönetmeliği kapsamındaki durumu (ÇED Olumlu, ÇED Gerekli Değildir ve kapsam dışı vb) belirtilmeli, konuya ilişkin Bakanlık merkez veya il müdürlüklerinden alınmış tüm resmi belgeler alındıkları mercii, tarih, sayı ve konusu ile birlikte tam olarak yazılmalıdır.')}
-        {renderTextInput('Çalışan Personel Sayısı', 'A_personel_sayisi')}
-        {renderTextInput('İşletme Yetkilisi', 'A_yetkili_ad_soyad')}
-        {renderTextInput('Son Ay Yapılan Ziyarete Ait Fatura Tarihi ve Numarası', 'A_fatura_bilgisi')}
-        {renderTextInput('Faturaya ait Hizmet Verilen Ay', 'A_fatura_ayi', 'Örn: Ocak 2024')}
-      </div>
+      <Section>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {renderTextInput('Faaliyet Konusu', 'A_faaliyet_konusu')}
+          {renderTextInput('Çevre İzin ve Lisans Yönetmeliği Kapsamındaki Yeri', 'A_cevre_izin_yeri', '', false, 'İşletmenin, Çevre İzin ve Lisans Yönetmeliğindeki ek listelerindeki kapsamı, bölüm numarası ve faaliyetin adı ile birlikte tam olarak belirtilmelidir.')}
+          {renderTextInput('ÇED Yönetmeliği Kapsamındaki Değerlendirmesi', 'A_ced_durumu', '', true, '1- Kapasite artışları dahil faaliyet ile ilgili olarak işletmenin ÇED Yönetmeliği kapsamındaki durumu (ÇED Olumlu, ÇED Gerekli Değildir ve kapsam dışı vb) belirtilmeli, konuya ilişkin Bakanlık merkez veya il müdürlüklerinden alınmış tüm resmi belgeler alındıkları mercii, tarih, sayı ve konusu ile birlikte tam olarak yazılmalıdır.')}
+          {renderTextInput('Çalışan Personel Sayısı', 'A_personel_sayisi')}
+          {renderTextInput('İşletme Yetkilisi', 'A_yetkili_ad_soyad')}
+          {renderTextInput('Son Ay Yapılan Ziyarete Ait Fatura Tarihi ve Numarası', 'A_fatura_bilgisi')}
+          {renderTextInput('Faturaya ait Hizmet Verilen Ay', 'A_fatura_ayi', 'Örn: Ocak 2024')}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">B - FAALİYETİN ÇEVRESEL ETKİLERİ VE ALINAN/ALINACAK ÖNLEMLER</h3>
-      {renderSectionHeader('B.1 - SU VE ATIKSU YÖNETİMİ')}
-      {renderTextInput('B.1.1 SU TÜKETİMİ', 'B11_su_tuketimi', '', true, 'Rapor dönemi içinde su tüketim miktarı (kaynak bilgisiyle birlikte) hakkında bilgi verilmelidir.')}
-      {renderTextInput('B.1.2 EVSEL ATIKSU', 'B12_evsel_atiksu', '', true, 'Rapor dönemi içinde işletmede oluşan evsel atıksuların miktarı, kaynakları, kirlilik yükleri ve bertarafları hakkında bilgi verilmelidir.')}
-      {renderTextInput('B.1.3 ENDÜSTRİYEL ATIKSU', 'B13_end_atiksu', '', true, 'Rapor dönemi içinde işletmede oluşan endüstriyel atıksuların miktarı, kaynakları, kirlilik yükleri ve bertarafları hakkında bilgi verilmelidir.')}
-      {renderTextInput('B.1.4 DİĞER ATIKSULAR', 'B14_diger_atiksu', '', true, 'Rapor dönemi içinde soğutma suyu, blöf suyu vb. miktarı, kaynakları, bertarafları hakkında bilgi verilmelidir.')}
-      {renderTextInput('B.1.5 ATIKSU ARITMA TESİSİ HAKKINDA BİLGİ', 'B15_aritma_tesisi', '', true, 'Rapor dönemi içinde deşarj edilen su miktarı, SKKY tablosu, var ise sürekli ölçüm sonuçlarına ilişkin değerlendirme, arıtma çamurunun türü (tehlikeli/tehlikesiz), miktarı ve bertaraf yöntemi hakkında bilgi verilmelidir.')}
-      {renderTextInput('B.1.6 İÇ İZLEME', 'B16_ic_izleme', '', true, 'Her bir atıksu kaynağının Çevre İzin koşullarında da yer alan iç izleme numune alma periyotları belirtilerek numune alma tarihleri ve analiz sonuçları tablo halinde sunulmalıdır.')}
-      {renderTextInput('B.1.7 YERALTI SUYU İZLEME', 'B17_yeralti_suyu', '', true, 'Rapor dönemi içinde numune alınan yeraltı suyu gözlem kuyusu bilgisi, numune alma tarihi ve ölçüm sonuçları hakkında bilgi verilmelidir.')}
-      {renderTextInput('B.1.8 DENİZ SUYU KALİTESİ', 'B18_deniz_suyu', '', true, 'Rapor dönemi içinde deniz suyundan numune alınan nokta bilgisi, numune alma tarihi ve ölçüm sonuçları hakkında bilgi verilmelidir.')}
+      <Section>
+        {renderSectionHeader('B.1 - SU VE ATIKSU YÖNETİMİ')}
+        <div className="space-y-4">
+          {renderTextInput('B.1.1 SU TÜKETİMİ', 'B11_su_tuketimi', '', true, 'Rapor dönemi içinde su tüketim miktarı (kaynak bilgisiyle birlikte) hakkında bilgi verilmelidir.')}
+          {renderTextInput('B.1.2 EVSEL ATIKSU', 'B12_evsel_atiksu', '', true, 'Rapor dönemi içinde işletmede oluşan evsel atıksuların miktarı, kaynakları, kirlilik yükleri ve bertarafları hakkında bilgi verilmelidir.')}
+          {renderTextInput('B.1.3 ENDÜSTRİYEL ATIKSU', 'B13_end_atiksu', '', true, 'Rapor dönemi içinde işletmede oluşan endüstriyel atıksuların miktarı, kaynakları, kirlilik yükleri ve bertarafları hakkında bilgi verilmelidir.')}
+          {renderTextInput('B.1.4 DİĞER ATIKSULAR', 'B14_diger_atiksu', '', true, 'Rapor dönemi içinde soğutma suyu, blöf suyu vb. miktarı, kaynakları, bertarafları hakkında bilgi verilmelidir.')}
+          {renderTextInput('B.1.5 ATIKSU ARITMA TESİSİ HAKKINDA BİLGİ', 'B15_aritma_tesisi', '', true, 'Rapor dönemi içinde deşarj edilen su miktarı, SKKY tablosu, var ise sürekli ölçüm sonuçlarına ilişkin değerlendirme, arıtma çamurunun türü (tehlikeli/tehlikesiz), miktarı ve bertaraf yöntemi hakkında bilgi verilmelidir.')}
+          {renderTextInput('B.1.6 İÇ İZLEME', 'B16_ic_izleme', '', true, 'Her bir atıksu kaynağının Çevre İzin koşullarında da yer alan iç izleme numune alma periyotları belirtilerek numune alma tarihleri ve analiz sonuçları tablo halinde sunulmalıdır.')}
+          {renderTextInput('B.1.7 YERALTI SUYU İZLEME', 'B17_yeralti_suyu', '', true, 'Rapor dönemi içinde numune alınan yeraltı suyu gözlem kuyusu bilgisi, numune alma tarihi ve ölçüm sonuçları hakkında bilgi verilmelidir.')}
+          {renderTextInput('B.1.8 DENİZ SUYU KALİTESİ', 'B18_deniz_suyu', '', true, 'Rapor dönemi içinde deniz suyundan numune alınan nokta bilgisi, numune alma tarihi ve ölçüm sonuçları hakkında bilgi verilmelidir.')}
+        </div>
+      </Section>
     </div>
   );
 
   const renderMonthlyStep3 = () => (
     <div className="space-y-6 animate-fadeIn">
-      {renderSectionHeader('B.2 - HAVA YÖNETİMİ')}
-      {renderTextInput('B.2.1 TEYİT ÖLÇÜMÜ', 'B21_teyit_olcumu', '', true, 'Çevre İznine esas emisyon ölçüm rapor tarihi ve bunu izleyen sonraki teyit ölçüm rapor tarihleri belirtilmelidir.')}
-      {renderTextInput('B.2.2 SÜREKLİ EMİSYON ÖLÇÜMÜ', 'B22_surekli_emisyon', '', true, 'İşletme, Sürekli Emisyon Ölçüm Sistemleri Tebliği kapsamında ise rapor döneminde yapılan KGS3 testler değerlendirilmeli.')}
-      
-      <div className="pl-4 border-l-4 border-blue-200">
-        <h5 className="font-bold text-sm mb-3">B.2.3 İÇ İZLEME AMACIYLA YAPILAN ÖLÇÜMLER</h5>
-        {renderTextInput('HAVA KALİTESİ ÖLÇÜMLERİ', 'B231_hava_kalitesi', '', true, 'İşletmede hava kalitesi ölçüm istasyonu var ise, kalibrasyon bilgisi ve verilerin yönetmeliğe göre değerlendirilmesi.')}
-        {renderTextInput('BACA GAZI ÖLÇÜMLERİ', 'B232_baca_gazi', '', true, 'Rapor dönemi içerisinde gerçekleştirilen baca gazı ölçümlerine ilişkin değerlendirme yapılmalıdır.')}
-      </div>
-      
-      {renderTextInput('B.2.4 KONTROLSÜZ EMİSYON KAYNAKLARI', 'B24_kontrolsuz_emisyon', '', true, 'Tesiste oluşan kontrolsüz emisyonlar ile bu emisyonların giderilmesi için alınacak önlemler.')}
+      <Section>
+        {renderSectionHeader('B.2 - HAVA YÖNETİMİ')}
+        <div className="space-y-4">
+          {renderTextInput('B.2.1 TEYİT ÖLÇÜMÜ', 'B21_teyit_olcumu', '', true, 'Çevre İznine esas emisyon ölçüm rapor tarihi ve bunu izleyen sonraki teyit ölçüm rapor tarihleri belirtilmelidir.')}
+          {renderTextInput('B.2.2 SÜREKLİ EMİSYON ÖLÇÜMÜ', 'B22_surekli_emisyon', '', true, 'İşletme, Sürekli Emisyon Ölçüm Sistemleri Tebliği kapsamında ise rapor döneminde yapılan KGS3 testler değerlendirilmeli.')}
 
-      {renderSectionHeader('B.3 - ATIK YÖNETİMİ')}
-      {renderTextInput('B.3.1 GENEL ATIKLAR', 'B31_genel_atiklar', '', true, 'Evsel, ambalaj vb. atıklar, Atık Yönetimi Yönetmeliği göre atık kodları, kaynakları, miktarları.')}
-      {renderTextInput('B.3.2 PROSES ATIKLARI', 'B32_proses_atiklari', '', true, 'Proseslerden kaynaklanan atıklar (tehlikeli atık, atık yağ vb) Atık Yönetimi Yönetmeliği göre atık kodları.')}
-      {renderTextInput('B.3.3 ATIK ANALİZLERİ', 'B33_atik_analizleri', '', true, 'Rapor dönemi içinde atıklara ilişkin yaptırılan analizler ve sonuçları.')}
+          <div className="bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-gray-100 dark:border-slate-700 p-4 space-y-4">
+            <h5 className="font-bold text-sm text-gray-700 dark:text-gray-300">B.2.3 İÇ İZLEME AMACIYLA YAPILAN ÖLÇÜMLER</h5>
+            {renderTextInput('HAVA KALİTESİ ÖLÇÜMLERİ', 'B231_hava_kalitesi', '', true, 'İşletmede hava kalitesi ölçüm istasyonu var ise, kalibrasyon bilgisi ve verilerin yönetmeliğe göre değerlendirilmesi.')}
+            {renderTextInput('BACA GAZI ÖLÇÜMLERİ', 'B232_baca_gazi', '', true, 'Rapor dönemi içerisinde gerçekleştirilen baca gazı ölçümlerine ilişkin değerlendirme yapılmalıdır.')}
+          </div>
 
-      {renderSectionHeader('DİĞER YÖNETİMLER')}
-      {renderTextInput('B.4 GÜRÜLTÜ YÖNETİMİ', 'B4_gurultu', '', true, 'Şikayet ya da talep üzerine yapılmış ölçüm/arka plan ölçümü bilgisi.')}
-      {renderTextInput('B.5 TOPRAK KİRLİLİĞİ', 'B5_toprak', '', true, 'Saha içinde toprak kirliliği olup olmadığının tespit edilmesi.')}
-      {renderTextInput('B.6 KİMYASALLAR YÖNETİMİ', 'B6_kimyasallar', '', true, 'Kullanılan tüm kimyasallara ait güvenlik bilgi formları, depolama şartları.')}
-      {renderTextInput('B.7 BÜYÜK ENDÜSTRİYEL KAZALARIN KONTROLÜ (BEKRA)', 'B7_bekra', '', true, 'BEKRA bildiriminin güncellenmesine ilişkin kontrol ve değerlendirmeler.')}
+          {renderTextInput('B.2.4 KONTROLSÜZ EMİSYON KAYNAKLARI', 'B24_kontrolsuz_emisyon', '', true, 'Tesiste oluşan kontrolsüz emisyonlar ile bu emisyonların giderilmesi için alınacak önlemler.')}
+        </div>
+      </Section>
+
+      <Section>
+        {renderSectionHeader('B.3 - ATIK YÖNETİMİ')}
+        <div className="space-y-4">
+          {renderTextInput('B.3.1 GENEL ATIKLAR', 'B31_genel_atiklar', '', true, 'Evsel, ambalaj vb. atıklar, Atık Yönetimi Yönetmeliği göre atık kodları, kaynakları, miktarları.')}
+          {renderTextInput('B.3.2 PROSES ATIKLARI', 'B32_proses_atiklari', '', true, 'Proseslerden kaynaklanan atıklar (tehlikeli atık, atık yağ vb) Atık Yönetimi Yönetmeliği göre atık kodları.')}
+          {renderTextInput('B.3.3 ATIK ANALİZLERİ', 'B33_atik_analizleri', '', true, 'Rapor dönemi içinde atıklara ilişkin yaptırılan analizler ve sonuçları.')}
+        </div>
+      </Section>
+
+      <Section>
+        {renderSectionHeader('DİĞER YÖNETİMLER')}
+        <div className="space-y-4">
+          {renderTextInput('B.4 GÜRÜLTÜ YÖNETİMİ', 'B4_gurultu', '', true, 'Şikayet ya da talep üzerine yapılmış ölçüm/arka plan ölçümü bilgisi.')}
+          {renderTextInput('B.5 TOPRAK KİRLİLİĞİ', 'B5_toprak', '', true, 'Saha içinde toprak kirliliği olup olmadığının tespit edilmesi.')}
+          {renderTextInput('B.6 KİMYASALLAR YÖNETİMİ', 'B6_kimyasallar', '', true, 'Kullanılan tüm kimyasallara ait güvenlik bilgi formları, depolama şartları.')}
+          {renderTextInput('B.7 BÜYÜK ENDÜSTRİYEL KAZALARIN KONTROLÜ (BEKRA)', 'B7_bekra', '', true, 'BEKRA bildiriminin güncellenmesine ilişkin kontrol ve değerlendirmeler.')}
+        </div>
+      </Section>
     </div>
   );
 
   const renderMonthlyStep4 = () => (
     <div className="space-y-6 animate-fadeIn">
-      {renderSectionHeader('B.8 - KIYI TESİSLERİ')}
-      {renderTextInput('B.8.1 DENİZ KİRLİLİĞİ İLE MÜCADELE', 'B81_deniz_kirliligi', '', true, 'Tatbikat bilgisi, uygulama ve kontroller.')}
-      {renderTextInput('B.8.2 ATIK KABUL TESİSİ', 'B82_atik_kabul', '', true, 'Atık kabul tesisine alınan ve bertarafa gönderilen atık türleri ve miktarları.')}
+      <Section>
+        {renderSectionHeader('B.8 - KIYI TESİSLERİ')}
+        <div className="space-y-4">
+          {renderTextInput('B.8.1 DENİZ KİRLİLİĞİ İLE MÜCADELE', 'B81_deniz_kirliligi', '', true, 'Tatbikat bilgisi, uygulama ve kontroller.')}
+          {renderTextInput('B.8.2 ATIK KABUL TESİSİ', 'B82_atik_kabul', '', true, 'Atık kabul tesisine alınan ve bertarafa gönderilen atık türleri ve miktarları.')}
+        </div>
+      </Section>
 
-      {renderSectionHeader('B.9 - MADEN İŞLETMELERİ')}
-      {renderTextInput('B.9.1 KOORDİNATLAR', 'B91_koordinatlar', '', true, 'Stok, pasa, bitkisel toprak, ruhsat alanı vb. koordinat bilgisi.')}
-      {renderTextInput('B.9.2 PATLATMA BİLGİLERİ', 'B92_patlatma', '', true, 'Patlatma dizaynı, kullanılan patlayıcı miktarı, sıklığı.')}
+      <Section>
+        {renderSectionHeader('B.9 - MADEN İŞLETMELERİ')}
+        <div className="space-y-4">
+          {renderTextInput('B.9.1 KOORDİNATLAR', 'B91_koordinatlar', '', true, 'Stok, pasa, bitkisel toprak, ruhsat alanı vb. koordinat bilgisi.')}
+          {renderTextInput('B.9.2 PATLATMA BİLGİLERİ', 'B92_patlatma', '', true, 'Patlatma dizaynı, kullanılan patlayıcı miktarı, sıklığı.')}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">C - GFB / ÇEVRE İZNİ İŞLEMLERİ</h3>
-      {renderTextInput('C.1 GFB İşlemleri', 'C1_gfb_islemleri', '', true, 'Geçici faaliyet belgesi ile ilgili olarak dönem içinde yapılan iş ve işlemler.')}
-      {renderTextInput('C.2 Çevre İzni / Çevre İzin ve Lisansı İşlemleri', 'C2_izin_islemleri', '', true, 'Çevre İzni/Lisansı ile ilgili olarak dönem içinde yapılan iş ve işlemler.')}
+      <Section>
+        <div className="space-y-4">
+          {renderTextInput('C.1 GFB İşlemleri', 'C1_gfb_islemleri', '', true, 'Geçici faaliyet belgesi ile ilgili olarak dönem içinde yapılan iş ve işlemler.')}
+          {renderTextInput('C.2 Çevre İzni / Çevre İzin ve Lisansı İşlemleri', 'C2_izin_islemleri', '', true, 'Çevre İzni/Lisansı ile ilgili olarak dönem içinde yapılan iş ve işlemler.')}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">Ç - KAZA, KAÇAK, ARIZA, BAKIM VE ONARIM</h3>
-      {renderTextInput('Ç.1 KAZA VE KAÇAKLAR', 'C1_kaza_kacaklar', '', true, 'Yaşanan kaza ve kaçaklara ilişkin bilgi, alınan önlemler.')}
-      {renderTextInput('Ç.2 ARIZA, BAKIM VE ONARIM', 'C2_ariza_bakim', '', true, 'Çevresel etki yaratan arıza, bakım ve onarım işlemlerine dair bilgi.')}
+      <Section>
+        <div className="space-y-4">
+          {renderTextInput('Ç.1 KAZA VE KAÇAKLAR', 'C1_kaza_kacaklar', '', true, 'Yaşanan kaza ve kaçaklara ilişkin bilgi, alınan önlemler.')}
+          {renderTextInput('Ç.2 ARIZA, BAKIM VE ONARIM', 'C2_ariza_bakim', '', true, 'Çevresel etki yaratan arıza, bakım ve onarım işlemlerine dair bilgi.')}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">D - ŞİKAYETLER</h3>
-      {renderTextInput('D.1 İŞLETMEYE GELEN ŞİKAYETLER', 'D1_isletme_sikayet', '', true, 'İşletmeye iletilen şikayetlerin konusu ve yapılan işlemler.')}
-      {renderTextInput('D.2 BAKANLIĞA İLETİLEN ŞİKAYETLER', 'D2_bakanlik_sikayet', '', true, 'Şikayet sonucunda yetkili otorite tarafından yapılan denetimler.')}
+      <Section>
+        <div className="space-y-4">
+          {renderTextInput('D.1 İŞLETMEYE GELEN ŞİKAYETLER', 'D1_isletme_sikayet', '', true, 'İşletmeye iletilen şikayetlerin konusu ve yapılan işlemler.')}
+          {renderTextInput('D.2 BAKANLIĞA İLETİLEN ŞİKAYETLER', 'D2_bakanlik_sikayet', '', true, 'Şikayet sonucunda yetkili otorite tarafından yapılan denetimler.')}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">E - EĞİTİMLER</h3>
-      {renderTextInput('E.1 EĞİTİMLER', 'E1_egitimler', '', true, 'Gerçekleştirilen eğitimlerin tarihi, katılımcı sayısı ve konuları.')}
-      {renderTextInput('E.2 BİLİNÇLENDİRME ÇALIŞMALARI', 'E2_bilinclendirme', '', true, 'Çevre duyarlılığını arttırmak amacıyla yapılan faaliyetler.')}
+      <Section>
+        <div className="space-y-4">
+          {renderTextInput('E.1 EĞİTİMLER', 'E1_egitimler', '', true, 'Gerçekleştirilen eğitimlerin tarihi, katılımcı sayısı ve konuları.')}
+          {renderTextInput('E.2 BİLİNÇLENDİRME ÇALIŞMALARI', 'E2_bilinclendirme', '', true, 'Çevre duyarlılığını arttırmak amacıyla yapılan faaliyetler.')}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8 text-green-600">F - SONUÇ VE ÖNERİLER</h3>
-      {renderTextInput('Sonuç ve Öneriler', 'F_sonuc_oneriler', '', true, 'Olumsuzluk, eksiklik ve giderilmesine yönelik öneriler.')}
+      <Section>
+        {renderTextInput('Sonuç ve Öneriler', 'F_sonuc_oneriler', '', true, 'Olumsuzluk, eksiklik ve giderilmesine yönelik öneriler.')}
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">G - EKLER</h3>
-      <div className="space-y-4">
-        <div className="flex flex-wrap gap-4">
-          {attachmentUrls.map((url, idx) => (
-            <div key={idx} className="relative group w-24 h-24 border rounded-lg overflow-hidden bg-gray-50">
-              <img src={url} alt="Ek" className="w-full h-full object-cover" />
-              <button 
-                onClick={() => setAttachmentUrls(prev => prev.filter((_, i) => i !== idx))}
-                className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          <label className="w-24 h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:border-blue-500 hover:text-blue-500 cursor-pointer transition">
-            {uploading ? <RefreshCw size={20} className="animate-spin" /> : <Plus size={20} />}
-            <span className="text-[10px] font-bold mt-1">{uploading ? 'Yükleniyor' : 'Dosya Ekle'}</span>
-            <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, true)} disabled={uploading} />
-          </label>
-        </div>
-        <p className="text-[10px] text-gray-400 italic">Fotoğraf, analiz raporu veya MOTAT ekran görüntülerini ekleyebilirsiniz.</p>
-      </div>
+      <Section>
+        {renderAttachments()}
+      </Section>
     </div>
   );
 
@@ -565,170 +844,195 @@ export default function EnvReportForm() {
   const renderYearlyStep2 = () => (
     <div className="space-y-6 animate-fadeIn">
       <h3 className="text-xl font-bold border-b pb-2">1 - İŞLETME BİLGİLERİ</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {renderTextInput('Vergi Dairesi ve Numarası', 'Y1_vergi_bilgisi')}
-        {renderTextInput('Çevre Kimlik Numarası (ÇKN)', 'Y1_ckn')}
-        {renderTextInput('Beldesi / İlçesi / İli', 'Y1_il_ilce')}
-        {renderTextInput('Koordinat Bilgileri (UTM)', 'Y1_koordinat')}
-        {renderTextInput('Kurulu Olduğu Yer', 'Y1_kurulus_yeri', 'OSB, İOSB, Yerleşim alanı vb.')}
-        {renderTextInput('Çalışma Şekli', 'Y1_calisma_sekli', 'Sürekli / Mevsimlik')}
-        {renderTextInput('Vardiya Sayısı', 'Y1_vardiya')}
-        {renderTextInput('Üretim Konusu', 'Y1_uretim')}
-      </div>
-      
-      <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border mt-4">
-        <h5 className="font-bold text-sm mb-3">Alan Bilgileri (m²)</h5>
-        <div className="grid grid-cols-3 gap-4">
-          {renderTextInput('Açık Alan', 'Y1_alan_acik')}
-          {renderTextInput('Kapalı Alan', 'Y1_alan_kapali')}
-          {renderTextInput('Toplam Alan', 'Y1_alan_toplam')}
-        </div>
-      </div>
-
-      <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border mt-4">
-        <h5 className="font-bold text-sm mb-3">Personel Sayıları</h5>
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-          {renderTextInput('İdari', 'Y1_p_idari')}
-          {renderTextInput('Mühendis', 'Y1_p_muh')}
-          {renderTextInput('Teknisyen', 'Y1_p_tek')}
-          {renderTextInput('Usta', 'Y1_p_usta')}
-          {renderTextInput('İşçi', 'Y1_p_isci')}
-          {renderTextInput('Toplam', 'Y1_p_toplam')}
-        </div>
-      </div>
-
-      <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border mt-4">
-        <h5 className="font-bold text-sm mb-3">NACE Kodları</h5>
+      <Section>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {renderTextInput('NACE Kodu', 'Y1_nace_kod')}
-          {renderTextInput('NACE Adı', 'Y1_nace_adi')}
+          {renderTextInput('Vergi Dairesi ve Numarası', 'Y1_vergi_bilgisi')}
+          {renderTextInput('Çevre Kimlik Numarası (ÇKN)', 'Y1_ckn')}
+          {renderTextInput('Beldesi / İlçesi / İli', 'Y1_il_ilce')}
+          {renderTextInput('Koordinat Bilgileri (UTM)', 'Y1_koordinat')}
+          {renderTextInput('Kurulu Olduğu Yer', 'Y1_kurulus_yeri', 'OSB, İOSB, Yerleşim alanı vb.')}
+          {renderTextInput('Çalışma Şekli', 'Y1_calisma_sekli', 'Sürekli / Mevsimlik')}
+          {renderTextInput('Vardiya Sayısı', 'Y1_vardiya')}
+          {renderTextInput('Üretim Konusu', 'Y1_uretim')}
         </div>
-      </div>
 
-      <h5 className="font-bold text-sm mt-6">Kapasite ve Belgeler</h5>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {renderTextInput('ÇED Kararı Yazısı', 'Y1_kap_ced')}
-        {renderTextInput('Çevre İzni/Lisansı', 'Y1_kap_izin')}
-        {renderTextInput('Kapasite Raporu', 'Y1_kap_rapor')}
-        {renderTextInput('Çevre Yönetim Sistemi Belgesi', 'Y1_cys_belge')}
-        {renderTextInput('Teşvik ve Ödüller', 'Y1_tesvik_odul')}
-      </div>
+        <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
+          <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">Alan Bilgileri (m²)</h5>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            {renderTextInput('Açık Alan', 'Y1_alan_acik')}
+            {renderTextInput('Kapalı Alan', 'Y1_alan_kapali')}
+            {renderTextInput('Toplam Alan', 'Y1_alan_toplam')}
+          </div>
+        </div>
 
-      <h3 className="text-xl font-bold border-b pb-2 mt-10">2 - İŞLETME HAKKINDA GENEL BİLGİLER</h3>
-      {renderTextInput('Genel Bilgiler', 'Y2_genel_bilgiler', 'Pafta, parsel, ada no ve mülkiyet durumu...', true)}
-      {renderTextInput('Faaliyet Sahibi Bilgisi', 'Y2_faaliyet_sahibi', 'Unvan değişikliği vb. bilgiler', true)}
+        <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
+          <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">Personel Sayıları</h5>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+            {renderTextInput('İdari', 'Y1_p_idari')}
+            {renderTextInput('Mühendis', 'Y1_p_muh')}
+            {renderTextInput('Teknisyen', 'Y1_p_tek')}
+            {renderTextInput('Usta', 'Y1_p_usta')}
+            {renderTextInput('İşçi', 'Y1_p_isci')}
+            {renderTextInput('Toplam', 'Y1_p_toplam')}
+          </div>
+        </div>
+
+        <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
+          <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">NACE Kodları</h5>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {renderTextInput('NACE Kodu', 'Y1_nace_kod')}
+            {renderTextInput('NACE Adı', 'Y1_nace_adi')}
+          </div>
+        </div>
+
+        <div>
+          <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">Kapasite ve Belgeler</h5>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {renderTextInput('ÇED Kararı Yazısı', 'Y1_kap_ced')}
+            {renderTextInput('Çevre İzni/Lisansı', 'Y1_kap_izin')}
+            {renderTextInput('Kapasite Raporu', 'Y1_kap_rapor')}
+            {renderTextInput('Çevre Yönetim Sistemi Belgesi', 'Y1_cys_belge')}
+            {renderTextInput('Teşvik ve Ödüller', 'Y1_tesvik_odul')}
+          </div>
+        </div>
+      </Section>
+
+      <h3 className="text-xl font-bold border-b pb-2 mt-8">2 - İŞLETME HAKKINDA GENEL BİLGİLER</h3>
+      <Section>
+        <div className="space-y-4">
+          {renderTextInput('Genel Bilgiler', 'Y2_genel_bilgiler', 'Pafta, parsel, ada no ve mülkiyet durumu...', true)}
+          {renderTextInput('Faaliyet Sahibi Bilgisi', 'Y2_faaliyet_sahibi', 'Unvan değişikliği vb. bilgiler', true)}
+        </div>
+      </Section>
     </div>
   );
 
   const renderYearlyStep3 = () => (
     <div className="space-y-6 animate-fadeIn">
       <h3 className="text-xl font-bold border-b pb-2">3 - ÇED YÖNETMELİĞİNE GÖRE DURUMU</h3>
-      {renderTextInput('ÇED Değerlendirmesi', 'Y3_ced_durumu', 'ÇED Olumlu/Gerekli Değildir vb. resmi belgeler, tarih ve sayıları ile...', true, 'Son Kapasite Raporunda yer alan kapasiteye göre değerlendirilme yapılmalıdır.')}
+      <Section>
+        {renderTextInput('ÇED Değerlendirmesi', 'Y3_ced_durumu', 'ÇED Olumlu/Gerekli Değildir vb. resmi belgeler, tarih ve sayıları ile...', true, 'Son Kapasite Raporunda yer alan kapasiteye göre değerlendirilme yapılmalıdır.')}
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">4 - ÇEVRE İZİN VE LİSANS YÖNETMELİĞİNE (ÇİLY) GÖRE DURUMU</h3>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {renderTextInput('Ek Liste', 'Y4_ek_liste')}
-        {renderTextInput('Bölüm No', 'Y4_bolum_no')}
-        {renderTextInput('Faaliyet Adı', 'Y4_faaliyet_adi')}
-      </div>
-      {renderTextInput('İzin Konuları', 'Y4_izin_konulari', 'Hava emisyonu, atıksu deşarjı vb.')}
-      {renderTextInput('Geçici Faaliyet Belgesi İşlemleri', 'Y4_gfb_islemleri', 'Alındığı mercii, tarih, sayı ve konusu...', true)}
-      {renderTextInput('Çevre İzni / Lisans İşlemleri', 'Y4_izin_lisans_islemleri', 'Alındığı mercii, tarih, sayı ve konusu...', true)}
+      <Section>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {renderTextInput('Ek Liste', 'Y4_ek_liste')}
+          {renderTextInput('Bölüm No', 'Y4_bolum_no')}
+          {renderTextInput('Faaliyet Adı', 'Y4_faaliyet_adi')}
+        </div>
+        <div className="space-y-4">
+          {renderTextInput('İzin Konuları', 'Y4_izin_konulari', 'Hava emisyonu, atıksu deşarjı vb.')}
+          {renderTextInput('Geçici Faaliyet Belgesi İşlemleri', 'Y4_gfb_islemleri', 'Alındığı mercii, tarih, sayı ve konusu...', true)}
+          {renderTextInput('Çevre İzni / Lisans İşlemleri', 'Y4_izin_lisans_islemleri', 'Alındığı mercii, tarih, sayı ve konusu...', true)}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">5 - İŞ AKIM ŞEMASI VE PROSES ÖZETİ</h3>
-      {renderTextInput('İş Akımı ve Proses', 'Y5_proses_ozeti', 'Faaliyet alanı, vaziyet planı, üretim süreçleri ve emisyon çıkışları...', true)}
+      <Section>
+        {renderTextInput('İş Akımı ve Proses', 'Y5_proses_ozeti', 'Faaliyet alanı, vaziyet planı, üretim süreçleri ve emisyon çıkışları...', true)}
+      </Section>
     </div>
   );
 
   const renderYearlyStep4 = () => (
     <div className="space-y-6 animate-fadeIn">
-      <h3 className="text-xl font-bold border-b pb-2">6 - ÇEVRESEL ETKİLER VE ÖNLEMLER</h3>
-      <p className="text-xs text-amber-600 italic mb-4">Not: Rapor kontrol listesi şeklinde olmamalı, net ifadeler ve rakamlarla değerlendirme yapılmalıdır.</p>
-      
-      {renderSectionHeader('6.1 - SU VE ATIKSU YÖNETİMİ')}
-      {renderTextInput('6.1.1 SU TÜKETİMİ', 'Y611_su_tuketimi', '', true, 'Temin edilen kaynaklar, tüketim miktarı ve kuyu izinleri.')}
-      {renderTextInput('6.1.2 EVSEL ATIKSU', 'Y612_evsel_atiksu', '', true, 'Miktar, kaynak, arıtma/kanal/vidanjör bilgileri.')}
-      {renderTextInput('6.1.3 ENDÜSTRİYEL ATIKSU', 'Y613_end_atiksu', '', true, 'Miktar, kaynak, arıtma/kanal/vidanjör bilgileri.')}
-      {renderTextInput('6.1.4 YAĞMUR VE YIKAMA SULARI', 'Y614_yagmur_suyu', '', true, 'Toplanması ve bertaraf yöntemi.')}
-      {renderTextInput('6.1.5 DİĞER ATIKSULAR', 'Y615_diger_atiksu', '', true, 'Soğutma suyu, blöf suyu vb.')}
-      {renderTextInput('6.1.6 ATIKSU ARITMA TESİSİ BİLGİSİ', 'Y616_aritma_bilgi', '', true, 'Kapasite, deşarj yeri, sürekli ölçüm, arıtma çamuru bertarafı.')}
-      {renderTextInput('6.1.7 İÇ İZLEME', 'Y617_ic_izleme', '', true, 'Numune alma periyotları ve analiz sonuçları tablosu.')}
-      {renderTextInput('6.1.8 YERALTI SUYU İZLEME', 'Y618_yeralti_izleme', '', true, 'Gözlem kuyuları ve ölçüm sonuçları.')}
-      {renderTextInput('6.1.9 DENİZ SUYU KALİTESİ', 'Y619_deniz_izleme', '', true, 'Ölçümler ve su kalitesi değişimi.')}
+      <div>
+        <h3 className="text-xl font-bold border-b pb-2">6 - ÇEVRESEL ETKİLER VE ÖNLEMLER</h3>
+        <p className="text-xs text-amber-600 italic mt-2">Not: Rapor kontrol listesi şeklinde olmamalı, net ifadeler ve rakamlarla değerlendirme yapılmalıdır.</p>
+      </div>
 
-      {renderSectionHeader('6.2 - HAVA YÖNETİMİ')}
-      {renderTextInput('6.2.1 EMİSYON KAYNAKLARI', 'Y621_emisyon_kaynaklari', '', true, 'Yakıt türleri, tüketim, emisyon azaltıcı tedbirler.')}
-      {renderTextInput('6.2.2 KONTROLSÜZ EMİSYONLAR', 'Y622_kontrolsuz_emisyon', '', true, 'Giderilmesi için alınan önlemler.')}
-      {renderTextInput('6.2.3 TEYİT ÖLÇÜMÜ', 'Y623_teyit_olcumu', '', true, 'Tarih ve sonuç değerlendirmesi.')}
-      {renderTextInput('6.2.4 SÜREKLİ EMİSYON ÖLÇÜMÜ', 'Y624_surekli_emisyon', '', true, 'SEÖS verilerinin değerlendirilmesi.')}
-      {renderTextInput('6.2.5 İÇ İZLEME ÖLÇÜMLERİ', 'Y625_hava_ic_izleme', '', true, 'Hava kalitesi ve baca gazı ölçümleri.')}
-      {renderTextInput('6.2.6 TESİS İÇİ YOLLAR', 'Y626_yollar', '', true, 'SKHKKY Ek-1 değerlendirmesi.')}
-      {renderTextInput('6.2.7 YIĞMA MALZEME', 'Y627_yigma_malzeme', '', true, 'Açıkta depolanan yığma malzeme önlemleri.')}
+      <Section>
+        {renderSectionHeader('6.1 - SU VE ATIKSU YÖNETİMİ')}
+        <div className="space-y-4">
+          {renderTextInput('6.1.1 SU TÜKETİMİ', 'Y611_su_tuketimi', '', true, 'Temin edilen kaynaklar, tüketim miktarı ve kuyu izinleri.')}
+          {renderTextInput('6.1.2 EVSEL ATIKSU', 'Y612_evsel_atiksu', '', true, 'Miktar, kaynak, arıtma/kanal/vidanjör bilgileri.')}
+          {renderTextInput('6.1.3 ENDÜSTRİYEL ATIKSU', 'Y613_end_atiksu', '', true, 'Miktar, kaynak, arıtma/kanal/vidanjör bilgileri.')}
+          {renderTextInput('6.1.4 YAĞMUR VE YIKAMA SULARI', 'Y614_yagmur_suyu', '', true, 'Toplanması ve bertaraf yöntemi.')}
+          {renderTextInput('6.1.5 DİĞER ATIKSULAR', 'Y615_diger_atiksu', '', true, 'Soğutma suyu, blöf suyu vb.')}
+          {renderTextInput('6.1.6 ATIKSU ARITMA TESİSİ BİLGİSİ', 'Y616_aritma_bilgi', '', true, 'Kapasite, deşarj yeri, sürekli ölçüm, arıtma çamuru bertarafı.')}
+          {renderTextInput('6.1.7 İÇ İZLEME', 'Y617_ic_izleme', '', true, 'Numune alma periyotları ve analiz sonuçları tablosu.')}
+          {renderTextInput('6.1.8 YERALTI SUYU İZLEME', 'Y618_yeralti_izleme', '', true, 'Gözlem kuyuları ve ölçüm sonuçları.')}
+          {renderTextInput('6.1.9 DENİZ SUYU KALİTESİ', 'Y619_deniz_izleme', '', true, 'Ölçümler ve su kalitesi değişimi.')}
+        </div>
+      </Section>
+
+      <Section>
+        {renderSectionHeader('6.2 - HAVA YÖNETİMİ')}
+        <div className="space-y-4">
+          {renderTextInput('6.2.1 EMİSYON KAYNAKLARI', 'Y621_emisyon_kaynaklari', '', true, 'Yakıt türleri, tüketim, emisyon azaltıcı tedbirler.')}
+          {renderTextInput('6.2.2 KONTROLSÜZ EMİSYONLAR', 'Y622_kontrolsuz_emisyon', '', true, 'Giderilmesi için alınan önlemler.')}
+          {renderTextInput('6.2.3 TEYİT ÖLÇÜMÜ', 'Y623_teyit_olcumu', '', true, 'Tarih ve sonuç değerlendirmesi.')}
+          {renderTextInput('6.2.4 SÜREKLİ EMİSYON ÖLÇÜMÜ', 'Y624_surekli_emisyon', '', true, 'SEÖS verilerinin değerlendirilmesi.')}
+          {renderTextInput('6.2.5 İÇ İZLEME ÖLÇÜMLERİ', 'Y625_hava_ic_izleme', '', true, 'Hava kalitesi ve baca gazı ölçümleri.')}
+          {renderTextInput('6.2.6 TESİS İÇİ YOLLAR', 'Y626_yollar', '', true, 'SKHKKY Ek-1 değerlendirmesi.')}
+          {renderTextInput('6.2.7 YIĞMA MALZEME', 'Y627_yigma_malzeme', '', true, 'Açıkta depolanan yığma malzeme önlemleri.')}
+        </div>
+      </Section>
     </div>
   );
 
   const renderYearlyStep5 = () => (
     <div className="space-y-6 animate-fadeIn">
-      {renderSectionHeader('6.3 - ATIK YÖNETİMİ')}
-      {renderTextInput('6.3.1 GENEL ATIKLAR', 'Y631_genel_atiklar', '', true, 'Evsel, ambalaj vb. Atık kodları, miktarları ve bertarafçı bilgileri.')}
-      {renderTextInput('6.3.2 PROSES ATIKLARI', 'Y632_proses_atiklari', '', true, 'Tehlikeli/tehlikesiz, atık yağ vb. Kodlar ve bertaraf yöntemleri.')}
-      {renderTextInput('6.3.3 ATIK ANALİZLERİ', 'Y633_atik_analizleri', '', true)}
-      {renderTextInput('6.3.4 ATIK YÖNETİM PLANI', 'Y634_atik_plani', '', true, 'Onay tarihi ve karşılaştırmalı değerlendirme.')}
-      {renderTextInput('6.3.5 ATIK BEYANLARI', 'Y635_atik_beyanlari', '', true, 'MOTAT, Ambalaj vb. beyan bilgileri.')}
-      {renderTextInput('6.3.6 MALİ SORUMLULUK SİGORTASI', 'Y636_sigorta', 'Başlangıç ve bitiş tarihleri.')}
-      {renderTextInput('6.3.7 ATIK SÖZLEŞMELERİ', 'Y637_sozlesmeler', 'Bertaraf sözleşmeleri tarih ve tarafları.')}
+      <Section>
+        {renderSectionHeader('6.3 - ATIK YÖNETİMİ')}
+        <div className="space-y-4">
+          {renderTextInput('6.3.1 GENEL ATIKLAR', 'Y631_genel_atiklar', '', true, 'Evsel, ambalaj vb. Atık kodları, miktarları ve bertarafçı bilgileri.')}
+          {renderTextInput('6.3.2 PROSES ATIKLARI', 'Y632_proses_atiklari', '', true, 'Tehlikeli/tehlikesiz, atık yağ vb. Kodlar ve bertaraf yöntemleri.')}
+          {renderTextInput('6.3.3 ATIK ANALİZLERİ', 'Y633_atik_analizleri', '', true)}
+          {renderTextInput('6.3.4 ATIK YÖNETİM PLANI', 'Y634_atik_plani', '', true, 'Onay tarihi ve karşılaştırmalı değerlendirme.')}
+          {renderTextInput('6.3.5 ATIK BEYANLARI', 'Y635_atik_beyanlari', '', true, 'MOTAT, Ambalaj vb. beyan bilgileri.')}
+          {renderTextInput('6.3.6 MALİ SORUMLULUK SİGORTASI', 'Y636_sigorta', 'Başlangıç ve bitiş tarihleri.')}
+          {renderTextInput('6.3.7 ATIK SÖZLEŞMELERİ', 'Y637_sozlesmeler', 'Bertaraf sözleşmeleri tarih ve tarafları.')}
+        </div>
+      </Section>
 
-      {renderSectionHeader('6.4 - 6.12 DİĞER YÖNETİMLER')}
-      {renderTextInput('6.4 GÜRÜLTÜ YÖNETİMİ', 'Y64_gurultu', '', true)}
-      {renderTextInput('6.5 TOPRAK KİRLİLİĞİ', 'Y65_toprak', '', true)}
-      {renderTextInput('6.6 KİMYASALLAR YÖNETİMİ', 'Y66_kimyasallar', '', true)}
-      {renderTextInput('6.7 BÜYÜK ENDÜSTRİYEL KAZALAR (BEKRA)', 'Y67_bekra', '', true)}
-      {renderTextInput('6.8 KIYI TESİSLERİ', 'Y68_kiyi', '', true)}
-      {renderTextInput('6.9 MADENLER', 'Y69_maden', '', true)}
-      {renderTextInput('6.10 ÇEVRE DENETİMİ', 'Y610_denetim', 'Bakanlık/İl müdürlüğü denetimleri...', true)}
-      {renderTextInput('6.11 YATIRIMLAR VE İYİLEŞTİRMELER', 'Y611_yatirimlar', '', true)}
-      {renderTextInput('6.12 DİĞER', 'Y612_diger', '', true)}
+      <Section>
+        {renderSectionHeader('6.4 - 6.12 DİĞER YÖNETİMLER')}
+        <div className="space-y-4">
+          {renderTextInput('6.4 GÜRÜLTÜ YÖNETİMİ', 'Y64_gurultu', '', true)}
+          {renderTextInput('6.5 TOPRAK KİRLİLİĞİ', 'Y65_toprak', '', true)}
+          {renderTextInput('6.6 KİMYASALLAR YÖNETİMİ', 'Y66_kimyasallar', '', true)}
+          {renderTextInput('6.7 BÜYÜK ENDÜSTRİYEL KAZALAR (BEKRA)', 'Y67_bekra', '', true)}
+          {renderTextInput('6.8 KIYI TESİSLERİ', 'Y68_kiyi', '', true)}
+          {renderTextInput('6.9 MADENLER', 'Y69_maden', '', true)}
+          {renderTextInput('6.10 ÇEVRE DENETİMİ', 'Y610_denetim', 'Bakanlık/İl müdürlüğü denetimleri...', true)}
+          {renderTextInput('6.11 YATIRIMLAR VE İYİLEŞTİRMELER', 'Y611_yatirimlar', '', true)}
+          {renderTextInput('6.12 DİĞER', 'Y612_diger', '', true)}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">7 - 8 - 9 BÖLÜMLER</h3>
-      {renderTextInput('7 - KAZA VE KAÇAKLAR / ARIZA BAKIM', 'Y7_kaza_ariza', '', true)}
-      {renderTextInput('8 - ŞİKAYETLER', 'Y8_sikayetler', '', true)}
-      {renderTextInput('9 - EĞİTİMLER VE BİLİNÇLENDİRME', 'Y9_egitimler', '', true)}
+      <Section>
+        <div className="space-y-4">
+          {renderTextInput('7 - KAZA VE KAÇAKLAR / ARIZA BAKIM', 'Y7_kaza_ariza', '', true)}
+          {renderTextInput('8 - ŞİKAYETLER', 'Y8_sikayetler', '', true)}
+          {renderTextInput('9 - EĞİTİMLER VE BİLİNÇLENDİRME', 'Y9_egitimler', '', true)}
+        </div>
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8 text-green-600">10 - SONUÇ VE ÖNERİLER</h3>
-      {renderTextInput('Sonuç ve Öneriler', 'Y10_sonuc_oneriler', 'Olumsuzluk, eksiklik ve giderilmesine yönelik öneriler.', true)}
+      <Section>
+        {renderTextInput('Sonuç ve Öneriler', 'Y10_sonuc_oneriler', 'Olumsuzluk, eksiklik ve giderilmesine yönelik öneriler.', true)}
+      </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">11 - EKLER (BELGE LİSTESİ)</h3>
-      <div className="space-y-4">
-        <div className="flex flex-wrap gap-4">
-          {attachmentUrls.map((url, idx) => (
-            <div key={idx} className="relative group w-24 h-24 border rounded-lg overflow-hidden bg-gray-50">
-              <img src={url} alt="Ek" className="w-full h-full object-cover" />
-              <button 
-                onClick={() => setAttachmentUrls(prev => prev.filter((_, i) => i !== idx))}
-                className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          <label className="w-24 h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:border-blue-500 hover:text-blue-500 cursor-pointer transition">
-            {uploading ? <RefreshCw size={20} className="animate-spin" /> : <Plus size={20} />}
-            <span className="text-[10px] font-bold mt-1">{uploading ? 'Yükleniyor' : 'Dosya Ekle'}</span>
-            <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, true)} disabled={uploading} />
-          </label>
-        </div>
-      </div>
+      <Section>
+        {renderAttachments()}
+      </Section>
     </div>
   );
 
 
   const renderSteps = () => {
+    if (previewMode) return renderPreview();
+
     if (currentStep === 1) {
       return (
         <div className="space-y-6 animate-fadeIn">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-4">Temel Bilgiler</h2>
 
-          {userMode === 'personal' ? (
+          {userMode === 'personal' && (
             <div className="p-4 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl">
               <p className="text-sm font-bold text-purple-700 dark:text-purple-300 flex items-center gap-2">
                 <FileText size={16} /> Şahsi Rapor Modu
@@ -737,91 +1041,101 @@ export default function EnvReportForm() {
                 Bu rapor, kişisel evrak listenize şahsi olarak eklenecektir. İşletme seçimi gerekmemektedir.
               </p>
             </div>
-          ) : (
-            <div>
-              <label className="block text-sm font-semibold mb-2">Hizmet Verilen İşletme *</label>
-              <select
-                required
-                value={clientId}
-                onChange={(e) => setClientId(e.target.value)}
-                className="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700 bg-white"
-              >
-                <option value="">Seçiniz...</option>
-                {clients.map(c => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-semibold mb-2">Rapor Türü *</label>
-              <select
-                value={reportType}
-                onChange={(e) => setReportType(e.target.value as 'monthly'|'yearly')}
-                className="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700 bg-white"
-              >
-                <option value="monthly">Aylık Değerlendirme Raporu</option>
-                <option value="yearly">Yıllık İç Tetkik Raporu</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-semibold mb-2">Rapor (Ziyaret) Tarihi *</label>
-              <input
-                type="date"
-                required
-                value={reportDate}
-                onChange={(e) => setReportDate(e.target.value)}
-                className="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700 bg-white"
-              />
-            </div>
-          </div>
+          <Section>
+            {userMode === 'consultant' && (
+              <div>
+                <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+                  Hizmet Verilen İşletme *
+                </label>
+                <select
+                  required
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >
+                  <option value="">Seçiniz...</option>
+                  {clients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-          {reportType === 'monthly' && !isManualUpload && (
-            <div className="p-4 bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-gray-200 dark:border-slate-700">
-               <label className="block text-sm font-bold mb-3">Aylık Ziyaret Saati</label>
-               <div className="flex gap-8 mb-2">
-                 <label className="flex items-center gap-2 cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      checked={formData.visit_morning || false} 
-                      onChange={(e) => handleUpdateField('visit_morning', e.target.checked)} 
-                      className="w-5 h-5 text-blue-600 rounded" 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+                  Rapor Türü *
+                </label>
+                <select
+                  value={reportType}
+                  onChange={(e) => setReportType(e.target.value as 'monthly'|'yearly')}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >
+                  <option value="monthly">Aylık Değerlendirme Raporu</option>
+                  <option value="yearly">Yıllık İç Tetkik Raporu</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+                  Rapor (Ziyaret) Tarihi *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={reportDate}
+                  onChange={(e) => setReportDate(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                />
+              </div>
+            </div>
+
+            {reportType === 'monthly' && !isManualUpload && (
+              <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
+                <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-3 uppercase tracking-wide">Aylık Ziyaret Saati</label>
+                <div className="flex gap-8 mb-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.visit_morning || false}
+                      onChange={(e) => handleUpdateField('visit_morning', e.target.checked)}
+                      className="w-5 h-5 text-blue-600 rounded"
                     />
-                    <span className="text-sm font-medium">Öğleden Önce</span>
-                 </label>
-                 <label className="flex items-center gap-2 cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      checked={formData.visit_afternoon || false} 
-                      onChange={(e) => handleUpdateField('visit_afternoon', e.target.checked)} 
-                      className="w-5 h-5 text-blue-600 rounded" 
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Öğleden Önce</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.visit_afternoon || false}
+                      onChange={(e) => handleUpdateField('visit_afternoon', e.target.checked)}
+                      className="w-5 h-5 text-blue-600 rounded"
                     />
-                    <span className="text-sm font-medium">Öğleden Sonra</span>
-                 </label>
-               </div>
-               <p className="text-xs text-amber-600 font-medium italic mt-2">Not: Tüm gün tesiste bulunulacaksa her iki saat aralığı da işaretlenmelidir.</p>
-            </div>
-          )}
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Öğleden Sonra</span>
+                  </label>
+                </div>
+                <p className="text-[11px] text-amber-600 font-medium italic">Not: Tüm gün tesiste bulunulacaksa her iki saat aralığı da işaretlenmelidir.</p>
+              </div>
+            )}
 
-          {userMode === 'consultant' && !isManualUpload && (
-            <div className="flex items-center gap-2 mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg">
-               <RefreshCw size={20} />
-               <div className="flex-1">
-                 <p className="font-semibold text-sm">Zaman Kazanmak İster misiniz?</p>
-                 <p className="text-xs opacity-80">Bu işletme için oluşturulmuş en son rapor verilerini form üzerine otomatik çekebilirsiniz.</p>
-               </div>
-               <button
-                 type="button"
-                 onClick={handleLoadPrevious}
-                 disabled={!clientId}
-                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition disabled:opacity-50"
-               >
-                 Önceki Verileri Çek
-               </button>
-            </div>
-          )}
+            {userMode === 'consultant' && !isManualUpload && (
+              <div className="flex items-center gap-3 p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-xl">
+                <RefreshCw size={20} className="shrink-0" />
+                <div className="flex-1">
+                  <p className="font-semibold text-sm">Zaman Kazanmak İster misiniz?</p>
+                  <p className="text-xs opacity-80">Bu işletme için oluşturulmuş en son rapor verilerini form üzerine otomatik çekebilirsiniz.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLoadPrevious}
+                  disabled={!clientId}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition disabled:opacity-50 shrink-0"
+                >
+                  Önceki Verileri Çek
+                </button>
+              </div>
+            )}
+          </Section>
 
           <div className="mt-8 pt-6 border-t border-gray-200 dark:border-slate-700">
              <label className="flex items-center gap-3 cursor-pointer">
@@ -859,18 +1173,18 @@ export default function EnvReportForm() {
                      <label className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-bold cursor-pointer transition shadow-lg inline-flex items-center gap-2">
                        {uploading ? <RefreshCw size={18} className="animate-spin" /> : <UploadCloud size={18} />}
                        {uploading ? 'Yükleniyor...' : 'Bilgisayardan Dosya Seç'}
-                       <input 
-                         type="file" 
-                         className="hidden" 
-                         accept=".pdf,.doc,.docx,image/*" 
-                         onChange={(e) => handleFileUpload(e, false)}
+                       <input
+                         type="file"
+                         className="hidden"
+                         accept=".pdf,.doc,.docx,image/*"
+                         onChange={handleManualFileSelected}
                          disabled={uploading}
                        />
                      </label>
                    </div>
                  )}
                  
-                 <p className="text-[10px] mt-6 text-gray-400 italic">Not: Manuel dosya yükleme sistem form adımlarını atlar ve direkt bu dosyayı kaydeder.</p>
+                 <p className="text-[10px] mt-6 text-gray-400 italic">Not: Manuel dosya yükleme sistem form adımlarını atlar. Dosyayı seçtikten sonra açılan önizleme ekranında sayfaları kontrol edip kaşe/imza/logo görseli ekleyebilir, ardından onaylayabilirsiniz.</p>
                </div>
              )}
           </div>
@@ -890,6 +1204,35 @@ export default function EnvReportForm() {
     }
   };
 
+  // Kaydetmeden önceki son adım: tüm doldurulan alanları (ve eklenen görselleri)
+  // salt-okunur olarak tek ekranda gösterir. renderTextInput, previewMode true
+  // olduğunda otomatik olarak salt-okunur görünüme geçtiği için mevcut
+  // renderMonthlyStepX / renderYearlyStepX fonksiyonları aynen yeniden kullanılıyor.
+  const renderPreview = () => (
+    <div className="space-y-8 animate-fadeIn">
+      <div className="flex items-center gap-3 text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl p-4">
+        <Eye size={20} className="shrink-0" />
+        <p className="text-sm font-bold">
+          Rapor Önizlemesi — Kaydetmeden önce tüm bilgileri kontrol edin. Görsel eklemek/kaldırmak için aşağıdaki "Ekler" bölümünü kullanabilirsiniz.
+        </p>
+      </div>
+      {reportType === 'monthly' ? (
+        <>
+          {renderMonthlyStep2()}
+          {renderMonthlyStep3()}
+          {renderMonthlyStep4()}
+        </>
+      ) : (
+        <>
+          {renderYearlyStep2()}
+          {renderYearlyStep3()}
+          {renderYearlyStep4()}
+          {renderYearlyStep5()}
+        </>
+      )}
+    </div>
+  );
+
   const getMaxSteps = () => {
     if (isManualUpload) return 1;
     return reportType === 'monthly' ? 4 : 5;
@@ -903,10 +1246,19 @@ export default function EnvReportForm() {
     if (currentStep < getMaxSteps()) {
       setCurrentStep(prev => prev + 1);
       window.scrollTo(0, 0);
+    } else if (!isManualUpload) {
+      // Son içerik adımındayız: kaydetmeden önce önizleme ekranına geç.
+      setPreviewMode(true);
+      window.scrollTo(0, 0);
     }
   };
 
   const handlePrev = () => {
+    if (previewMode) {
+      setPreviewMode(false);
+      window.scrollTo(0, 0);
+      return;
+    }
     if (currentStep > 1) {
       setCurrentStep(prev => prev - 1);
       window.scrollTo(0, 0);
@@ -993,15 +1345,17 @@ export default function EnvReportForm() {
           <h1 className="text-xl font-bold">
             {userMode === 'personal' ? 'Şahsi Rapor Oluştur' : 'Yeni Rapor Oluştur'}
           </h1>
-          <p className="text-xs text-gray-500">Adım {currentStep} / {getMaxSteps()}</p>
+          <p className="text-xs text-gray-500">
+            {previewMode ? 'Önizleme' : `Adım ${currentStep} / ${getMaxSteps()}`}
+          </p>
         </div>
-        
+
         {/* Progress Bar */}
         <div className="flex-1 ml-8">
            <div className="h-2 w-full bg-gray-200 rounded-full overflow-hidden">
-             <div 
-               className="h-full bg-blue-600 transition-all duration-500" 
-               style={{ width: `${(currentStep / getMaxSteps()) * 100}%` }}
+             <div
+               className="h-full bg-blue-600 transition-all duration-500"
+               style={{ width: `${previewMode ? 100 : (currentStep / getMaxSteps()) * 100}%` }}
              ></div>
            </div>
         </div>
@@ -1016,19 +1370,26 @@ export default function EnvReportForm() {
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 sticky bottom-4 z-10">
         <button
           onClick={handlePrev}
-          disabled={currentStep === 1 || loading}
+          disabled={(currentStep === 1 && !previewMode) || loading}
           className="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50"
         >
-          <ChevronLeft size={18} /> Geri
+          <ChevronLeft size={18} /> {previewMode ? 'Düzenlemeye Dön' : 'Geri'}
         </button>
 
-        {currentStep === getMaxSteps() ? (
+        {previewMode || (currentStep === getMaxSteps() && isManualUpload) ? (
           <button
             onClick={handleSave}
             disabled={loading}
             className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-8 py-2 rounded-lg font-bold shadow-lg transition disabled:opacity-50"
           >
-            {loading ? 'Kaydediliyor...' : 'Raporu Kaydet ve Tamamla'} <Save size={18} />
+            {loading ? 'Kaydediliyor...' : 'Onayla ve Kaydet'} <Save size={18} />
+          </button>
+        ) : currentStep === getMaxSteps() ? (
+          <button
+            onClick={handleNext}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-8 py-2 rounded-lg font-bold shadow-lg transition"
+          >
+            <Eye size={18} /> Önizleme
           </button>
         ) : (
           <button
@@ -1040,6 +1401,17 @@ export default function EnvReportForm() {
         )}
       </div>
 
+      {pendingManualFile && (
+        <DocumentPreviewModal
+          file={pendingManualFile}
+          confirmLabel="Onayla ve Yükle"
+          onClose={() => setPendingManualFile(null)}
+          onConfirm={(finalFile) => {
+            setPendingManualFile(null);
+            uploadReportFile(finalFile);
+          }}
+        />
+      )}
     </div>
   );
 }

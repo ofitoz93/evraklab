@@ -254,12 +254,27 @@ export default function EnvReportView() {
   // --- RENDER HELPERS FOR PRINT VIEW ---
   const fd = report.form_data || {};
 
-  const renderSection = (title: string, value: string) => {
-    if (!value || value.trim() === '') return null;
+  // fieldKey verilen alanın metnini VE (EnvReportForm'da o alana sürükle-bırak
+  // ile eklenmiş olabilecek) görselini birlikte basar. Görsel verisi form_data
+  // içinde `${fieldKey}__img` anahtarıyla tutuluyor (bkz. EnvReportForm.tsx).
+  const renderSection = (title: string, fieldKey: string) => {
+    const value: string = fd[fieldKey];
+    const image: { url: string; width: number } | undefined = fd[`${fieldKey}__img`];
+    if ((!value || value.trim() === '') && !image) return null;
     return (
       <div className="mb-4 break-inside-avoid">
         <h4 className="font-bold text-xs text-blue-800 border-b border-blue-100 mb-1 uppercase tracking-tight">{title}</h4>
-        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{value}</p>
+        {value && value.trim() !== '' && (
+          <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{value}</p>
+        )}
+        {image && (
+          <img
+            src={image.url}
+            style={{ width: image.width, maxWidth: '100%' }}
+            className="mt-2 rounded border border-gray-200"
+            alt={title}
+          />
+        )}
       </div>
     );
   };
@@ -389,68 +404,68 @@ export default function EnvReportView() {
               </div>
 
               {renderSubHeader('A - İŞLETME BİLGİLERİ')}
-              {renderSection('Faaliyet Konusu', fd.A_faaliyet_konusu)}
-              {renderSection('Çevre İzin ve Lisans Kapsamı', fd.A_cevre_izin_yeri)}
-              {renderSection('ÇED Yönetmeliği Kapsamı', fd.A_ced_durumu)}
-              {renderSection('Çalışan Sayısı', fd.A_personel_sayisi)}
-              {renderSection('İşletme Yetkilisi', fd.A_yetkili_ad_soyad)}
+              {renderSection('Faaliyet Konusu', 'A_faaliyet_konusu')}
+              {renderSection('Çevre İzin ve Lisans Kapsamı', 'A_cevre_izin_yeri')}
+              {renderSection('ÇED Yönetmeliği Kapsamı', 'A_ced_durumu')}
+              {renderSection('Çalışan Sayısı', 'A_personel_sayisi')}
+              {renderSection('İşletme Yetkilisi', 'A_yetkili_ad_soyad')}
 
               {renderSubHeader('B - FAALİYETİN ÇEVRESEL ETKİLERİ')}
               <div className="pl-2 border-l-2 border-blue-50">
-                {renderSection('B.1.1 Su Tüketimi', fd.B11_su_tuketimi)}
-                {renderSection('B.1.2 Evsel Atıksu', fd.B12_evsel_atiksu)}
-                {renderSection('B.1.3 Endüstriyel Atıksu', fd.B13_end_atiksu)}
-                {renderSection('B.1.4 Diğer Atıksular', fd.B14_diger_atiksu)}
-                {renderSection('B.1.5 Atıksu Arıtma Tesisi', fd.B15_aritma_tesisi)}
-                {renderSection('B.1.6 İç İzleme', fd.B16_ic_izleme)}
-                {renderSection('B.1.7 Yeraltı Suyu İzleme', fd.B17_yeralti_suyu)}
-                {renderSection('B.1.8 Deniz Suyu Kalitesi', fd.B18_deniz_suyu)}
+                {renderSection('B.1.1 Su Tüketimi', 'B11_su_tuketimi')}
+                {renderSection('B.1.2 Evsel Atıksu', 'B12_evsel_atiksu')}
+                {renderSection('B.1.3 Endüstriyel Atıksu', 'B13_end_atiksu')}
+                {renderSection('B.1.4 Diğer Atıksular', 'B14_diger_atiksu')}
+                {renderSection('B.1.5 Atıksu Arıtma Tesisi', 'B15_aritma_tesisi')}
+                {renderSection('B.1.6 İç İzleme', 'B16_ic_izleme')}
+                {renderSection('B.1.7 Yeraltı Suyu İzleme', 'B17_yeralti_suyu')}
+                {renderSection('B.1.8 Deniz Suyu Kalitesi', 'B18_deniz_suyu')}
               </div>
 
               {renderSubHeader('B.2 - HAVA YÖNETİMİ')}
-              {renderSection('B.2.1 Teyit Ölçümü', fd.B21_teyit_olcumu)}
-              {renderSection('B.2.2 Sürekli Emisyon Ölçümü', fd.B22_surekli_emisyon)}
-              {renderSection('B.2.3.1 Hava Kalitesi Ölçümleri', fd.B231_hava_kalitesi)}
-              {renderSection('B.2.3.2 Baca Gazı Ölçümleri', fd.B232_baca_gazi)}
-              {renderSection('B.2.4 Kontrolsüz Emisyon Kaynakları', fd.B24_kontrolsuz_emisyon)}
+              {renderSection('B.2.1 Teyit Ölçümü', 'B21_teyit_olcumu')}
+              {renderSection('B.2.2 Sürekli Emisyon Ölçümü', 'B22_surekli_emisyon')}
+              {renderSection('B.2.3.1 Hava Kalitesi Ölçümleri', 'B231_hava_kalitesi')}
+              {renderSection('B.2.3.2 Baca Gazı Ölçümleri', 'B232_baca_gazi')}
+              {renderSection('B.2.4 Kontrolsüz Emisyon Kaynakları', 'B24_kontrolsuz_emisyon')}
 
               {renderSubHeader('B.3 - ATIK YÖNETİMİ')}
-              {renderSection('B.3.1 Genel Atıklar', fd.B31_genel_atiklar)}
-              {renderSection('B.3.2 Proses Atıkları', fd.B32_proses_atiklari)}
-              {renderSection('B.3.3 Atık Analizleri', fd.B33_atik_analizleri)}
+              {renderSection('B.3.1 Genel Atıklar', 'B31_genel_atiklar')}
+              {renderSection('B.3.2 Proses Atıkları', 'B32_proses_atiklari')}
+              {renderSection('B.3.3 Atık Analizleri', 'B33_atik_analizleri')}
 
               {renderSubHeader('B.4 - B.7 DİĞER YÖNETİMLER')}
-              {renderSection('B.4 Gürültü Yönetimi', fd.B4_gurultu)}
-              {renderSection('B.5 Toprak Kirliliği', fd.B5_toprak)}
-              {renderSection('B.6 Kimyasallar Yönetimi', fd.B6_kimyasallar)}
-              {renderSection('B.7 BEKRA / Endüstriyel Kazalar', fd.B7_bekra)}
+              {renderSection('B.4 Gürültü Yönetimi', 'B4_gurultu')}
+              {renderSection('B.5 Toprak Kirliliği', 'B5_toprak')}
+              {renderSection('B.6 Kimyasallar Yönetimi', 'B6_kimyasallar')}
+              {renderSection('B.7 BEKRA / Endüstriyel Kazalar', 'B7_bekra')}
 
               {renderSubHeader('B.8 - KIYI TESİSLERİ')}
-              {renderSection('B.8.1 Deniz Kirliliği ile Mücadele', fd.B81_deniz_kirliligi)}
-              {renderSection('B.8.2 Atık Kabul Tesisi', fd.B82_atik_kabul)}
+              {renderSection('B.8.1 Deniz Kirliliği ile Mücadele', 'B81_deniz_kirliligi')}
+              {renderSection('B.8.2 Atık Kabul Tesisi', 'B82_atik_kabul')}
 
               {renderSubHeader('B.9 - MADEN İŞLETMELERİ')}
-              {renderSection('B.9.1 Koordinatlar', fd.B91_koordinatlar)}
-              {renderSection('B.9.2 Patlatma Bilgileri', fd.B92_patlatma)}
+              {renderSection('B.9.1 Koordinatlar', 'B91_koordinatlar')}
+              {renderSection('B.9.2 Patlatma Bilgileri', 'B92_patlatma')}
 
               {renderSubHeader('C - İZİN VE LİSANS İŞLEMLERİ')}
-              {renderSection('C.1 GFB İşlemleri', fd.C1_gfb_islemleri)}
-              {renderSection('C.2 Çevre İzni / Lisansı İşlemleri', fd.C2_izin_islemleri)}
+              {renderSection('C.1 GFB İşlemleri', 'C1_gfb_islemleri')}
+              {renderSection('C.2 Çevre İzni / Lisansı İşlemleri', 'C2_izin_islemleri')}
 
               {renderSubHeader('Ç - KAZA, ARIZA, BAKIM')}
-              {renderSection('Ç.1 Kaza ve Kaçaklar', fd.C1_kaza_kacaklar)}
-              {renderSection('Ç.2 Arıza, Bakım ve Onarım', fd.C2_ariza_bakim)}
+              {renderSection('Ç.1 Kaza ve Kaçaklar', 'C1_kaza_kacaklar')}
+              {renderSection('Ç.2 Arıza, Bakım ve Onarım', 'C2_ariza_bakim')}
 
               {renderSubHeader('D - ŞİKAYETLER')}
-              {renderSection('D.1 İşletmeye Gelen Şikayetler', fd.D1_isletme_sikayet)}
-              {renderSection('D.2 Bakanlığa İletilen Şikayetler', fd.D2_bakanlik_sikayet)}
+              {renderSection('D.1 İşletmeye Gelen Şikayetler', 'D1_isletme_sikayet')}
+              {renderSection('D.2 Bakanlığa İletilen Şikayetler', 'D2_bakanlik_sikayet')}
 
               {renderSubHeader('E - EĞİTİMLER')}
-              {renderSection('E.1 Eğitimler', fd.E1_egitimler)}
-              {renderSection('E.2 Bilinçlendirme Çalışmaları', fd.E2_bilinclendirme)}
+              {renderSection('E.1 Eğitimler', 'E1_egitimler')}
+              {renderSection('E.2 Bilinçlendirme Çalışmaları', 'E2_bilinclendirme')}
 
               {renderSubHeader('F - SONUÇ VE ÖNERİLER')}
-              {renderSection('Sonuç ve Değerlendirme', fd.F_sonuc_oneriler)}
+              {renderSection('Sonuç ve Değerlendirme', 'F_sonuc_oneriler')}
 
               {fd.attachment_urls && fd.attachment_urls.length > 0 && (
                 <>
@@ -520,11 +535,11 @@ export default function EnvReportView() {
               </div>
 
               {renderSubHeader('2 - İŞLETME HAKKINDA GENEL BİLGİLER')}
-              {renderSection('İşletme Özeti', fd.Y2_genel_bilgiler)}
-              {renderSection('Faaliyet Sahibi Değişikliği', fd.Y2_faaliyet_sahibi)}
+              {renderSection('İşletme Özeti', 'Y2_genel_bilgiler')}
+              {renderSection('Faaliyet Sahibi Değişikliği', 'Y2_faaliyet_sahibi')}
 
               {renderSubHeader('3 - ÇED YÖNETMELİĞİNE GÖRE DURUMU')}
-              {renderSection('Değerlendirme', fd.Y3_ced_durumu)}
+              {renderSection('Değerlendirme', 'Y3_ced_durumu')}
 
               {renderSubHeader('4 - ÇEVRE İZİN VE LİSANS YÖNETMELİĞİ (ÇİLY)')}
               <div className="grid grid-cols-3 gap-4 mb-4 text-xs font-bold bg-gray-50 p-3 border">
@@ -532,47 +547,46 @@ export default function EnvReportView() {
                 <div>Bölüm No: {fd.Y4_bolum_no}</div>
                 <div>Faaliyet Adı: {fd.Y4_faaliyet_adi}</div>
               </div>
-              {renderSection('İzin Konusu', fd.Y4_izin_konulari)}
-              {renderSection('GFB İşlemleri', fd.Y4_gfb_islemleri)}
-              {renderSection('İzin/Lisans İşlemleri', fd.Y4_izin_lisans_islemleri)}
+              {renderSection('İzin Konusu', 'Y4_izin_konulari')}
+              {renderSection('GFB İşlemleri', 'Y4_gfb_islemleri')}
+              {renderSection('İzin/Lisans İşlemleri', 'Y4_izin_lisans_islemleri')}
 
               {renderSubHeader('5 - İŞ AKIM ŞEMASI VE PROSES ÖZETİ')}
-              {renderSection('Proses Özeti', fd.Y5_proses_ozeti)}
+              {renderSection('Proses Özeti', 'Y5_proses_ozeti')}
 
               {renderSubHeader('6 - ÇEVRESEL ETKİLER VE ÖNLEMLER')}
               <div className="space-y-4 pl-4 border-l-2 border-gray-200">
-                {renderSection('6.1 Su ve Atıksu Yönetimi', fd.Y611_su_tuketimi || fd.Y612_evsel_atiksu || fd.Y613_end_atiksu ? 'Detaylı analiz yapıldı.' : '')}
-                {renderSection('6.1.1 Su Tüketimi', fd.Y611_su_tuketimi)}
-                {renderSection('6.1.2 Evsel Atıksu', fd.Y612_evsel_atiksu)}
-                {renderSection('6.1.3 Endüstriyel Atıksu', fd.Y613_end_atiksu)}
-                {renderSection('6.1.6 Arıtma Tesisleri', fd.Y616_aritma_bilgi)}
-                {renderSection('6.1.7 İç İzleme', fd.Y617_ic_izleme)}
+                {renderSection('6.1.1 Su Tüketimi', 'Y611_su_tuketimi')}
+                {renderSection('6.1.2 Evsel Atıksu', 'Y612_evsel_atiksu')}
+                {renderSection('6.1.3 Endüstriyel Atıksu', 'Y613_end_atiksu')}
+                {renderSection('6.1.6 Arıtma Tesisleri', 'Y616_aritma_bilgi')}
+                {renderSection('6.1.7 İç İzleme', 'Y617_ic_izleme')}
                 
-                {renderSection('6.2 Hava Yönetimi', fd.Y621_emisyon_kaynaklari)}
-                {renderSection('6.2.3 Teyit Ölçümü', fd.Y623_teyit_olcumu)}
-                {renderSection('6.2.4 Sürekli Emisyon Ölçümü', fd.Y624_surekli_emisyon)}
+                {renderSection('6.2 Hava Yönetimi', 'Y621_emisyon_kaynaklari')}
+                {renderSection('6.2.3 Teyit Ölçümü', 'Y623_teyit_olcumu')}
+                {renderSection('6.2.4 Sürekli Emisyon Ölçümü', 'Y624_surekli_emisyon')}
 
-                {renderSection('6.3 Atık Yönetimi', fd.Y631_genel_atiklar)}
-                {renderSection('6.3.2 Proses Atıkları', fd.Y632_proses_atiklari)}
-                {renderSection('6.3.4 Atık Yönetim Planı', fd.Y634_atik_plani)}
-                {renderSection('6.3.5 Atık Beyanları', fd.Y635_atik_beyanlari)}
+                {renderSection('6.3 Atık Yönetimi', 'Y631_genel_atiklar')}
+                {renderSection('6.3.2 Proses Atıkları', 'Y632_proses_atiklari')}
+                {renderSection('6.3.4 Atık Yönetim Planı', 'Y634_atik_plani')}
+                {renderSection('6.3.5 Atık Beyanları', 'Y635_atik_beyanlari')}
 
-                {renderSection('6.4 Gürültü Yönetimi', fd.Y64_gurultu)}
-                {renderSection('6.5 Toprak Kirliliği', fd.Y65_toprak)}
-                {renderSection('6.6 Kimyasallar Yönetimi', fd.Y66_kimyasallar)}
-                {renderSection('6.7 BEKRA', fd.Y67_bekra)}
-                {renderSection('6.10 Çevre Denetimi', fd.Y610_denetim)}
-                {renderSection('6.11 Yatırımlar', fd.Y611_yatirimlar)}
+                {renderSection('6.4 Gürültü Yönetimi', 'Y64_gurultu')}
+                {renderSection('6.5 Toprak Kirliliği', 'Y65_toprak')}
+                {renderSection('6.6 Kimyasallar Yönetimi', 'Y66_kimyasallar')}
+                {renderSection('6.7 BEKRA', 'Y67_bekra')}
+                {renderSection('6.10 Çevre Denetimi', 'Y610_denetim')}
+                {renderSection('6.11 Yatırımlar', 'Y611_yatirimlar')}
               </div>
 
               {renderSubHeader('7 - 8 - 9 BÖLÜMLER')}
-              {renderSection('7. Kaza ve Kaçaklar', fd.Y7_kaza_ariza)}
-              {renderSection('8. Şikayetler', fd.Y8_sikayetler)}
-              {renderSection('9. Eğitimler', fd.Y9_egitimler)}
+              {renderSection('7. Kaza ve Kaçaklar', 'Y7_kaza_ariza')}
+              {renderSection('8. Şikayetler', 'Y8_sikayetler')}
+              {renderSection('9. Eğitimler', 'Y9_egitimler')}
 
               {renderSubHeader('10 - SONUÇ VE ÖNERİLER')}
               <div className="bg-green-50 p-4 border border-green-200 rounded-lg">
-                {renderSection('Sonuç', fd.Y10_sonuc_oneriler)}
+                {renderSection('Sonuç', 'Y10_sonuc_oneriler')}
               </div>
 
               {fd.attachment_urls && fd.attachment_urls.length > 0 && (

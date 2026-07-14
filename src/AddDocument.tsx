@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -19,8 +19,10 @@ import {
   Info,
   XCircle,
   AlertCircle,
+  Eye,
 } from 'lucide-react';
 import { analyzeDocumentLocally } from './aiService';
+import DocumentPreviewModal from './DocumentPreviewModal';
 
 export default function AddDocument() {
   const navigate = useNavigate();
@@ -48,6 +50,14 @@ export default function AddDocument() {
   // Form Verileri
   const [file, setFile] = useState<File | null>(null); // Tekli dosya (Manuel Mod)
   const [files, setFiles] = useState<File[]>([]); // Çoklu dosyalar (AI Modu)
+
+  // Kaydetmeden önce önizleme (Manuel Mod)
+  const [showPreview, setShowPreview] = useState(false);
+  // Önizleme ekranında görsel/kaşe eklenip "Onayla ve Kaydet" ile onaylanan dosya.
+  // null olduğu sürece önizlenebilir bir dosya seçiliyse kaydetme önizlemeyi açar.
+  const previewedFileRef = useRef<File | null>(null);
+  // Çoklu (AI) modda salt-okunur "Önizle" için açılan dosya.
+  const [readOnlyPreviewFile, setReadOnlyPreviewFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [acquisitionDate, setAcquisitionDate] = useState('');
@@ -679,8 +689,13 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
   };
 
   // --- YÜKLEME İŞLEMİ ---
-  const handleUpload = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const isPreviewableFile = (f: File) => {
+    const ext = f.name.split('.').pop()?.toLowerCase();
+    return f.type === 'application/pdf' || ext === 'pdf' || f.type.startsWith('image/') || ['jpg', 'jpeg', 'png'].includes(ext || '');
+  };
+
+  const handleUpload = async (e?: React.FormEvent) => {
+    e?.preventDefault();
 
     if (isCorporateExpired) {
       return alert('Şirketinizin premium süresi doldu. Yeni belge eklemek için lütfen paketinizi yenileyin.');
@@ -799,6 +814,15 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
       }
     }
 
+    // Manuel modda, önizlenebilir bir dosya (PDF/görsel) seçiliyse ve henüz
+    // önizleme/görsel ekleme adımından geçilmediyse, kaydetmeden önce önizleme
+    // ekranını aç. Modal onaylandığında previewedFileRef doldurulup handleUpload
+    // tekrar çağrılır; bu kez buradan geçip yüklemeye devam eder.
+    if (uploadMode === 'manual' && file && isPreviewableFile(file) && !previewedFileRef.current) {
+      setShowPreview(true);
+      return;
+    }
+
     setUploading(true);
     try {
 
@@ -809,7 +833,7 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
 
         const currentFile = uploadMode === 'ai'
           ? files.find(f => f.name === doc.fileName)
-          : file;
+          : (previewedFileRef.current || file);
 
         if (currentFile) {
           fileSize = currentFile.size;
@@ -992,6 +1016,7 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
       }
 
       alert('✅ Tüm belgeler başarıyla kaydedildi!');
+      previewedFileRef.current = null;
       navigate('/documents');
     } catch (error: any) {
       alert('Hata: ' + error.message);
@@ -1301,6 +1326,7 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
                 if (uploadMode === 'ai') {
                   setFiles(prev => [...prev, ...selected]);
                 } else {
+                  previewedFileRef.current = null;
                   setFile(selected[0] || null);
                 }
               }}
@@ -1364,15 +1390,25 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
                           {result ? (result.error ? <XCircle className="text-red-500 shrink-0" size={18} /> : <Sparkles className="text-green-500 shrink-0" size={18} />) : (isCurrentAnalyzing ? <Loader className="text-purple-500 animate-spin shrink-0" size={18} /> : <FileText className="text-gray-400 shrink-0" size={18} />)}
                           <span className="font-bold text-gray-800 text-sm truncate">{f.name}</span>
                         </div>
-                        <button
-                          onClick={() => {
-                            setFiles(files.filter((_, i) => i !== idx));
-                            setBulkAnalysisResults(bulkAnalysisResults.filter(r => r.fileName !== f.name));
-                          }}
-                          className="text-gray-400 hover:text-red-500"
-                        >
-                          <X size={16} />
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setReadOnlyPreviewFile(f)}
+                            title="Önizle"
+                            className="text-gray-400 hover:text-blue-500"
+                          >
+                            <Eye size={16} />
+                          </button>
+                          <button
+                            onClick={() => {
+                              setFiles(files.filter((_, i) => i !== idx));
+                              setBulkAnalysisResults(bulkAnalysisResults.filter(r => r.fileName !== f.name));
+                            }}
+                            className="text-gray-400 hover:text-red-500"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
                       </div>
 
                       {result ? (
@@ -1629,6 +1665,28 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
             </div>
           </div>
         </div>
+      )}
+
+      {showPreview && file && (
+        <DocumentPreviewModal
+          file={file}
+          confirmLabel="Onayla ve Kaydet"
+          onClose={() => setShowPreview(false)}
+          onConfirm={(finalFile) => {
+            previewedFileRef.current = finalFile;
+            setShowPreview(false);
+            handleUpload();
+          }}
+        />
+      )}
+
+      {readOnlyPreviewFile && (
+        <DocumentPreviewModal
+          file={readOnlyPreviewFile}
+          readOnly
+          onClose={() => setReadOnlyPreviewFile(null)}
+          onConfirm={() => setReadOnlyPreviewFile(null)}
+        />
       )}
     </div >
   );

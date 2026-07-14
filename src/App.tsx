@@ -41,6 +41,7 @@ import DocumentDetail from './DocumentDetail';
 import EditDocument from './EditDocument';
 
 import Pricing from './Pricing';
+import Storage from './Storage';
 import AdminPanel from './AdminPanel';
 import Settings from './Settings';
 import Notifications from './Notifications';
@@ -1005,12 +1006,13 @@ function AppContent() {
                   path="/pricing"
                   element={
                     (userRole === 'corporate_chief' || userRole === 'corporate_staff') ? (
-                      <Navigate to="/settings" />
+                      <Navigate to="/storage" />
                     ) : (
                       <Pricing />
                     )
                   }
                 />
+                <Route path="/storage" element={<Storage />} />
                 <Route path="/settings" element={<Settings session={session} />} />
                 <Route path="/notifications" element={<Notifications />} />
                 <Route path="/support" element={<Support />} />
