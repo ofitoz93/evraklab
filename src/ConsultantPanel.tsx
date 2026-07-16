@@ -1368,7 +1368,7 @@ export default function ConsultantPanel() {
   const fetchTeamMembers = async () => {
     const { data: members } = await supabase
       .from('profiles')
-      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active, manager_id')
+      .select('id, full_name, email, role, extra_permissions, experience_years, premium_seat_active, manager_id, avatar_url')
       .eq('organization_id', orgId);
 
     const sortedMembers = (members || []).sort((a, b) => {
@@ -1432,7 +1432,7 @@ export default function ConsultantPanel() {
   const fetchDepartedEmployees = async () => {
     const { data, error } = await supabase
       .from('employee_details')
-      .select('*, profile:profile_id(full_name, email, phone)')
+      .select('*, profile:profile_id(full_name, email, phone, avatar_url)')
       .eq('organization_id', orgId)
       .not('exit_date', 'is', null)
       .order('exit_date', { ascending: false });
@@ -7217,12 +7217,16 @@ export default function ConsultantPanel() {
                   >
                     <div className="flex justify-between items-start">
                       <div className="flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs uppercase ${
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs uppercase overflow-hidden shrink-0 ${
                           member.role === 'premium_corporate'
                             ? 'bg-rose-600 text-white'
                             : 'bg-blue-100 text-blue-600 dark:bg-blue-950/30'
                         }`}>
-                          {member.full_name?.charAt(0) || <User size={20} />}
+                          {member.avatar_url ? (
+                            <img src={member.avatar_url} alt={member.full_name} className="w-full h-full object-cover" />
+                          ) : (
+                            member.full_name?.charAt(0) || <User size={20} />
+                          )}
                         </div>
                         <div>
                           <div className="font-bold text-gray-800 dark:text-white flex flex-wrap items-center gap-2">
@@ -7451,8 +7455,12 @@ export default function ConsultantPanel() {
                   return (
                     <div key={d.id} className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl border border-gray-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-xs uppercase text-slate-500 shrink-0">
-                          {d.profile?.full_name?.charAt(0) || <User size={16} />}
+                        <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-xs uppercase text-slate-500 shrink-0 overflow-hidden">
+                          {d.profile?.avatar_url ? (
+                            <img src={d.profile.avatar_url} alt={d.profile?.full_name} className="w-full h-full object-cover" />
+                          ) : (
+                            d.profile?.full_name?.charAt(0) || <User size={16} />
+                          )}
                         </div>
                         <div className="min-w-0">
                           <div className="font-bold text-gray-700 dark:text-white text-sm truncate">{d.profile?.full_name}</div>
@@ -7537,8 +7545,12 @@ export default function ConsultantPanel() {
                       className="border-2 border-purple-200 dark:border-purple-900 rounded-xl p-4 bg-purple-50/40 dark:bg-purple-950/10"
                     >
                       <div className="flex items-center gap-2 mb-3 pb-3 border-b border-purple-200 dark:border-purple-900">
-                        <div className="w-9 h-9 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold text-xs uppercase shrink-0">
-                          {chief.full_name?.charAt(0) || <User size={16} />}
+                        <div className="w-9 h-9 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold text-xs uppercase shrink-0 overflow-hidden">
+                          {chief.avatar_url ? (
+                            <img src={chief.avatar_url} alt={chief.full_name} className="w-full h-full object-cover" />
+                          ) : (
+                            chief.full_name?.charAt(0) || <User size={16} />
+                          )}
                         </div>
                         <div>
                           <div className="font-bold text-sm text-gray-800 dark:text-gray-200">{chief.full_name}</div>
@@ -7555,8 +7567,12 @@ export default function ConsultantPanel() {
                             className="flex items-center justify-between gap-2 bg-white dark:bg-slate-800 rounded-lg p-2 border border-gray-100 dark:border-slate-700"
                           >
                             <div className="flex items-center gap-2 min-w-0">
-                              <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/30 flex items-center justify-center font-bold text-[10px] uppercase shrink-0">
-                                {s.full_name?.charAt(0) || <User size={12} />}
+                              <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/30 flex items-center justify-center font-bold text-[10px] uppercase shrink-0 overflow-hidden">
+                                {s.avatar_url ? (
+                                  <img src={s.avatar_url} alt={s.full_name} className="w-full h-full object-cover" />
+                                ) : (
+                                  s.full_name?.charAt(0) || <User size={12} />
+                                )}
                               </div>
                               <span className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{s.full_name}</span>
                             </div>

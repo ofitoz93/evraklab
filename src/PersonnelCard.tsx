@@ -93,6 +93,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const [saving, setSaving] = useState(false);
 
   const [assignedClientIds, setAssignedClientIds] = useState<string[]>([]);
+  const [editingAssignments, setEditingAssignments] = useState(false);
   const [reportCount, setReportCount] = useState(0);
   const [recentReports, setRecentReports] = useState<any[]>([]);
   const [documentCount, setDocumentCount] = useState(0);
@@ -148,6 +149,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   useEffect(() => {
     fetchAll();
     setActiveCardTab('genel');
+    setEditingAssignments(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personnelId]);
 
@@ -168,7 +170,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
       ] = await Promise.all([
         supabase
           .from('profiles')
-          .select('id, full_name, email, phone, role, experience_years, extra_permissions, premium_seat_active')
+          .select('id, full_name, email, phone, role, experience_years, extra_permissions, premium_seat_active, avatar_url')
           .eq('id', personnelId)
           .single(),
         supabase.from('employee_details').select('*').eq('profile_id', personnelId).maybeSingle(),
@@ -640,8 +642,12 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
             {/* Kimlik */}
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-4 min-w-0">
-                <div className="w-14 h-14 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/30 flex items-center justify-center font-bold text-lg uppercase shrink-0">
-                  {profile?.full_name?.charAt(0) || <User size={24} />}
+                <div className="w-14 h-14 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-950/30 flex items-center justify-center font-bold text-lg uppercase shrink-0 overflow-hidden">
+                  {profile?.avatar_url ? (
+                    <img src={profile.avatar_url} alt={profile.full_name} className="w-full h-full object-cover" />
+                  ) : (
+                    profile?.full_name?.charAt(0) || <User size={24} />
+                  )}
                 </div>
                 <div className="min-w-0">
                   <div className="font-bold text-lg text-gray-800 dark:text-white">{profile?.full_name}</div>
@@ -959,10 +965,40 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
             {/* Görev & Atamalar: Atandığı işletmeler */}
             {activeCardTab === 'gorev' && (
             <div>
-              <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5 mb-2">
-                <Building size={13} /> Atandığı İşletmeler ({assignedClientIds.length})
-              </h4>
-              {clients.length === 0 ? (
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
+                  <Building size={13} /> Atandığı İşletmeler ({assignedClientIds.length})
+                </h4>
+                {clients.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingAssignments((v) => !v)}
+                    className="text-xs font-bold text-blue-600 hover:underline"
+                  >
+                    {editingAssignments ? 'Bitti' : 'İşletmeleri Düzenle'}
+                  </button>
+                )}
+              </div>
+
+              {!editingAssignments ? (
+                assignedClientIds.length === 0 ? (
+                  <p className="text-xs text-slate-400 italic">Henüz herhangi bir işletme atanmamış.</p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {clients
+                      .filter((c) => assignedClientIds.includes(c.id))
+                      .map((c) => (
+                        <div
+                          key={c.id}
+                          className="flex items-center gap-2 text-xs px-2.5 py-1.5 rounded-lg border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900 font-bold"
+                        >
+                          <Building size={12} className="shrink-0" />
+                          <span className="truncate">{c.name}</span>
+                        </div>
+                      ))}
+                  </div>
+                )
+              ) : clients.length === 0 ? (
                 <p className="text-xs text-slate-400 italic">Organizasyona ait işletme bulunamadı.</p>
               ) : (
                 <div className="max-h-48 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5 pr-1">
