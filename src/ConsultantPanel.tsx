@@ -607,6 +607,9 @@ export default function ConsultantPanel() {
   const [togglingPaymentKey, setTogglingPaymentKey] = useState<string | null>(null);
   const [collapsedPaymentYears, setCollapsedPaymentYears] = useState<Record<string, boolean>>({});
   const [expandedPaymentClients, setExpandedPaymentClients] = useState<Record<string, boolean>>({});
+  // Finansal Özet tablosu — tıklanan ay/kategori satırlarının detayını açık tutar
+  const [expandedSummaryMonth, setExpandedSummaryMonth] = useState<string | null>(null);
+  const [expandedSummaryCategory, setExpandedSummaryCategory] = useState<string | null>(null);
 
   // --- ZİYARET PLANLAMA / ÇALIŞMA TAKVİMİ STATE'LERİ ---
   const [visitSchedules, setVisitSchedules] = useState<VisitSchedule[]>([]);
@@ -774,8 +777,16 @@ export default function ConsultantPanel() {
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState('');
   const [userId, setUserId] = useState('');
+  const [userEmail, setUserEmail] = useState('');
   const [orgId, setOrgId] = useState('');
   const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
+
+  // Finans & İK modülleri — firma sahibi her girişte parolasını doğrulamalı
+  // (ekranı açık bırakıp başkasının maaş/finans verisini görmesini engellemek için).
+  const [financeHrUnlocked, setFinanceHrUnlocked] = useState(false);
+  const [reAuthPassword, setReAuthPassword] = useState('');
+  const [reAuthError, setReAuthError] = useState('');
+  const [reAuthLoading, setReAuthLoading] = useState(false);
 
   // Görüşler Tab State'leri
   const [opinionLetters, setOpinionLetters] = useState<any[]>([]);
@@ -2636,6 +2647,7 @@ export default function ConsultantPanel() {
       } = await supabase.auth.getSession();
       if (!session) return;
       setUserId(session.user.id);
+      setUserEmail(session.user.email || '');
 
       const { data: profile } = await supabase
         .from('profiles')
@@ -5503,12 +5515,29 @@ export default function ConsultantPanel() {
     if (!orgId) return;
     setLoadingFinance(true);
     try {
-      const { data: payData, error: payErr } = await supabase
-        .from('client_payments')
-        .select('*')
-        .eq('consultant_company_id', orgId);
-      if (payErr) console.error('Error fetching payments:', payErr);
-      setFinancePayments(payData || []);
+      // client_payments bir müşteri-ay başına tek satır: uzun süredir hizmet
+      // verilen çok sayıda müşteride kolayca Supabase/PostgREST'in varsayılan
+      // 1000 satır yanıt sınırını aşabiliyor (aşarsa bazı müşterilerin ödeme
+      // geçmişi sessizce eksik gelip "hiç ödenmemiş" gibi görünüyordu) —
+      // bu yüzden tüm satırları sayfalayarak çekiyoruz.
+      const allPayments: any[] = [];
+      const PAGE_SIZE = 1000;
+      let from = 0;
+      while (true) {
+        const { data: page, error: payErr } = await supabase
+          .from('client_payments')
+          .select('*')
+          .eq('consultant_company_id', orgId)
+          .range(from, from + PAGE_SIZE - 1);
+        if (payErr) {
+          console.error('Error fetching payments:', payErr);
+          break;
+        }
+        allPayments.push(...(page || []));
+        if (!page || page.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+      setFinancePayments(allPayments);
 
       const { data: expData, error: expErr } = await supabase
         .from('company_expenses')
@@ -5643,6 +5672,28 @@ export default function ConsultantPanel() {
     }
   }, [orgId, activeTab]);
 
+  const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings' => {
+    if (['clients', 'inspections', 'waste'].includes(tab)) return 'operations';
+    if (['legislations', 'requests'].includes(tab)) return 'compliance';
+    if (tab === 'actions') return 'actions';
+    if (['reports', 'document_matrix', 'opinions', 'definitions'].includes(tab)) return 'documents';
+    if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
+    if (['team', 'org_chart', 'evaluations', 'departed'].includes(tab)) return 'hr';
+    return 'settings';
+  };
+  const activeModule = getModuleForTab(activeTab);
+
+  // Finans & İK modüllerine her girişte firma sahibinin hesap parolasını
+  // tekrar sorar (ekran açık kalıp başkasının maaş/finans verisini görmesini
+  // engellemek için). Sadece firma sahibi (premium_corporate) için geçerli.
+  useEffect(() => {
+    if (activeModule !== 'finance' && activeModule !== 'hr') {
+      setFinanceHrUnlocked(false);
+      setReAuthPassword('');
+      setReAuthError('');
+    }
+  }, [activeModule]);
+
   if (loading) return <div className="p-8 text-center">Yükleniyor...</div>;
 
   const panelTitle =
@@ -5681,16 +5732,27 @@ export default function ConsultantPanel() {
     return false;
   };
 
-  const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings' => {
-    if (['clients', 'inspections', 'waste'].includes(tab)) return 'operations';
-    if (['legislations', 'requests'].includes(tab)) return 'compliance';
-    if (tab === 'actions') return 'actions';
-    if (['reports', 'document_matrix', 'opinions', 'definitions'].includes(tab)) return 'documents';
-    if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
-    if (['team', 'org_chart', 'evaluations', 'departed'].includes(tab)) return 'hr';
-    return 'settings';
+  // Finans & İK modüllerine her girişte firma sahibinin hesap parolasını
+  // tekrar sorar (ekran açık kalıp başkasının maaş/finans verisini görmesini
+  // engellemek için). Sadece firma sahibi (premium_corporate) için geçerli.
+  const requiresFinanceHrReAuth = userRole === 'premium_corporate' && (activeModule === 'finance' || activeModule === 'hr') && !financeHrUnlocked;
+
+  const handleFinanceHrReAuth = async () => {
+    if (!reAuthPassword) return;
+    setReAuthLoading(true);
+    setReAuthError('');
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: userEmail, password: reAuthPassword });
+      if (error) {
+        setReAuthError('Parola hatalı. Lütfen tekrar deneyin.');
+        return;
+      }
+      setFinanceHrUnlocked(true);
+      setReAuthPassword('');
+    } finally {
+      setReAuthLoading(false);
+    }
   };
-  const activeModule = getModuleForTab(activeTab);
 
   const selectModule = (moduleName: 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings') => {
     if (moduleName === 'operations') {
@@ -6099,6 +6161,41 @@ export default function ConsultantPanel() {
         );
       })()}
 
+      {requiresFinanceHrReAuth && (
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm p-10 flex flex-col items-center text-center animate-fadeIn max-w-md mx-auto">
+          <div className="bg-blue-50 dark:bg-blue-950/20 text-blue-600 p-4 rounded-2xl mb-4">
+            <Lock size={28} />
+          </div>
+          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Bu alan parola ile korunuyor</h3>
+          <p className="text-xs text-slate-500 mt-1.5 mb-5">
+            {activeModule === 'finance' ? 'Finans & Maliyet' : 'İnsan Kaynakları'} bölümüne her girişte hesap parolanızı
+            tekrar girmeniz isteniyor — böylece ekranınız açık kalsa bile bu hassas verileri sadece siz görebilirsiniz.
+          </p>
+          <form
+            onSubmit={(e) => { e.preventDefault(); handleFinanceHrReAuth(); }}
+            className="w-full space-y-3"
+          >
+            <input
+              type="password"
+              autoFocus
+              required
+              placeholder="Hesap parolanız"
+              value={reAuthPassword}
+              onChange={(e) => { setReAuthPassword(e.target.value); setReAuthError(''); }}
+              className="w-full p-3 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200 text-center"
+            />
+            {reAuthError && <p className="text-xs font-bold text-rose-600">{reAuthError}</p>}
+            <button
+              type="submit"
+              disabled={reAuthLoading || !reAuthPassword}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-sm"
+            >
+              {reAuthLoading ? <Loader className="animate-spin" size={14} /> : <Lock size={14} />}
+              Doğrula ve Devam Et
+            </button>
+          </form>
+        </div>
+      )}
 
 
       {activeTab === 'clients' && (
@@ -7002,7 +7099,7 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'team' && (
+      {activeTab === 'team' && !requiresFinanceHrReAuth && (
         <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Ekip Listesi */}
@@ -7334,7 +7431,7 @@ export default function ConsultantPanel() {
 
 
 
-      {activeTab === 'departed' && (
+      {activeTab === 'departed' && !requiresFinanceHrReAuth && (
         <div className="max-w-4xl mx-auto space-y-4 animate-fadeIn">
           <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
             <h3 className="font-bold text-gray-700 dark:text-white mb-1 flex items-center gap-2 text-lg">
@@ -7381,7 +7478,7 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'org_chart' && (() => {
+      {activeTab === 'org_chart' && !requiresFinanceHrReAuth && (() => {
         const owner = teamMembers.find((m) => m.role === 'premium_corporate');
         const chiefs = teamMembers.filter((m) => m.role === 'corporate_chief');
         const staff = teamMembers.filter((m) => m.role === 'corporate_staff');
@@ -9893,14 +9990,14 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'evaluations' && ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && (
+      {activeTab === 'evaluations' && !requiresFinanceHrReAuth && ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && (
         <EvaluationPanel />
       )}
 
       {/* ==========================================
          FINANCE & COSTS TABS RENDER
          ========================================== */}
-      {activeTab === 'finance_summary' && canViewFinance && (
+      {activeTab === 'finance_summary' && canViewFinance && !requiresFinanceHrReAuth && (
         <div className="space-y-6">
           {/* Top-level Finance Dashboard Cards */}
           {(() => {
@@ -10051,19 +10148,123 @@ export default function ConsultantPanel() {
 
                               if (expectedInMonth === 0 && expensesInMonth === 0) return null;
 
+                              const monthKey = `${item.year}-${item.month}`;
+                              const isMonthExpanded = expandedSummaryMonth === monthKey;
+
+                              const monthExpenses = financeExpenses.filter((e) => {
+                                const d = new Date(e.expense_date);
+                                return d.getFullYear() === item.year && (d.getMonth() + 1) === item.month;
+                              });
+                              const categoryBreakdown: { category: string; total: number; count: number }[] = [];
+                              monthExpenses.forEach((e) => {
+                                const cat = e.category || 'Diğer';
+                                const row = categoryBreakdown.find((r) => r.category === cat);
+                                if (row) {
+                                  row.total += Number(e.amount);
+                                  row.count += 1;
+                                } else {
+                                  categoryBreakdown.push({ category: cat, total: Number(e.amount), count: 1 });
+                                }
+                              });
+                              categoryBreakdown.sort((a, b) => b.total - a.total);
+
                               return (
-                                <tr key={`${item.year}-${item.month}`} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
-                                  <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">{item.label}</td>
-                                  <td className="py-3.5 text-slate-600">{expectedInMonth.toLocaleString('tr-TR')} TL</td>
-                                  <td className="py-3.5 text-emerald-600 dark:text-emerald-450 font-bold">{collectedInMonth.toLocaleString('tr-TR')} TL</td>
-                                  <td className="py-3.5 text-amber-600 font-bold">{unpaidInMonth.toLocaleString('tr-TR')} TL</td>
-                                  <td className="py-3.5 text-rose-600 font-bold">{expensesInMonth.toLocaleString('tr-TR')} TL</td>
-                                  <td className="py-3.5 font-black">
-                                    <span className={netInMonth >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
-                                      {netInMonth >= 0 ? '+' : ''}{netInMonth.toLocaleString('tr-TR')} TL
-                                    </span>
-                                  </td>
-                                </tr>
+                                <React.Fragment key={monthKey}>
+                                  <tr
+                                    onClick={() => {
+                                      setExpandedSummaryMonth(isMonthExpanded ? null : monthKey);
+                                      setExpandedSummaryCategory(null);
+                                    }}
+                                    className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10 cursor-pointer"
+                                  >
+                                    <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">
+                                      <div className="flex items-center gap-1.5">
+                                        {isMonthExpanded ? <ChevronDown size={13} className="text-slate-400 shrink-0" /> : <ChevronRight size={13} className="text-slate-400 shrink-0" />}
+                                        {item.label}
+                                      </div>
+                                    </td>
+                                    <td className="py-3.5 text-slate-600">{expectedInMonth.toLocaleString('tr-TR')} TL</td>
+                                    <td className="py-3.5 text-emerald-600 dark:text-emerald-450 font-bold">{collectedInMonth.toLocaleString('tr-TR')} TL</td>
+                                    <td className="py-3.5 text-amber-600 font-bold">{unpaidInMonth.toLocaleString('tr-TR')} TL</td>
+                                    <td className="py-3.5 text-rose-600 font-bold">{expensesInMonth.toLocaleString('tr-TR')} TL</td>
+                                    <td className="py-3.5 font-black">
+                                      <span className={netInMonth >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                                        {netInMonth >= 0 ? '+' : ''}{netInMonth.toLocaleString('tr-TR')} TL
+                                      </span>
+                                    </td>
+                                  </tr>
+                                  {isMonthExpanded && (
+                                    <tr className="bg-slate-50/70 dark:bg-slate-900/30">
+                                      <td colSpan={6} className="py-3 px-4">
+                                        {categoryBreakdown.length === 0 ? (
+                                          <p className="text-[11px] text-slate-400 italic">Bu ay için gider kaydı yok.</p>
+                                        ) : (
+                                          <div className="space-y-1.5">
+                                            {categoryBreakdown.map((cat) => {
+                                              const isSalary = cat.category === 'Maaş/Personel';
+                                              const isCatExpanded = isSalary && expandedSummaryCategory === cat.category;
+                                              const employeeBreakdown = isSalary
+                                                ? (() => {
+                                                    const byEmployee: { employeeId: string; name: string; total: number }[] = [];
+                                                    monthExpenses
+                                                      .filter((e) => (e.category || 'Diğer') === cat.category)
+                                                      .forEach((e) => {
+                                                        const empId = e.employee_id || 'unassigned';
+                                                        const name = e.employee_id
+                                                          ? (teamMembers.find((m) => m.id === e.employee_id)?.full_name || 'Bilinmeyen Personel')
+                                                          : 'Genel / Kişiye Özel Olmayan';
+                                                        const row = byEmployee.find((r) => r.employeeId === empId);
+                                                        if (row) row.total += Number(e.amount);
+                                                        else byEmployee.push({ employeeId: empId, name, total: Number(e.amount) });
+                                                      });
+                                                    return byEmployee.sort((a, b) => b.total - a.total);
+                                                  })()
+                                                : [];
+
+                                              return (
+                                                <div key={cat.category}>
+                                                  <button
+                                                    type="button"
+                                                    onClick={(ev) => {
+                                                      ev.stopPropagation();
+                                                      if (!isSalary) return;
+                                                      setExpandedSummaryCategory(isCatExpanded ? null : cat.category);
+                                                    }}
+                                                    className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-left ${
+                                                      isSalary ? 'cursor-pointer hover:border-blue-300 dark:hover:border-blue-800' : 'cursor-default'
+                                                    }`}
+                                                  >
+                                                    <span className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">
+                                                      {isSalary && (isCatExpanded ? <ChevronDown size={12} className="text-slate-400" /> : <ChevronRight size={12} className="text-slate-400" />)}
+                                                      {cat.category}
+                                                      {cat.count > 1 && (
+                                                        <span className="text-[9px] font-black text-slate-400">({cat.count} kayıt)</span>
+                                                      )}
+                                                    </span>
+                                                    <span className="text-xs font-bold text-rose-600">{cat.total.toLocaleString('tr-TR')} TL</span>
+                                                  </button>
+                                                  {isCatExpanded && (
+                                                    <div className="mt-1.5 ml-4 space-y-1">
+                                                      {employeeBreakdown.map((row) => (
+                                                        <div
+                                                          key={row.employeeId}
+                                                          className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-blue-50/50 dark:bg-blue-950/10 text-[11px]"
+                                                        >
+                                                          <span className="font-bold text-slate-600 dark:text-slate-400">{row.name}</span>
+                                                          <span className="font-bold text-slate-700 dark:text-slate-300">{row.total.toLocaleString('tr-TR')} TL</span>
+                                                        </div>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
                               );
                             });
                           })()}
@@ -10078,7 +10279,7 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'finance_payments' && canViewFinance && (
+      {activeTab === 'finance_payments' && canViewFinance && !requiresFinanceHrReAuth && (
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6 animate-fadeIn">
           <div>
             <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 flex items-center gap-2">
@@ -10293,7 +10494,7 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'finance_expenses' && canViewFinance && (
+      {activeTab === 'finance_expenses' && canViewFinance && !requiresFinanceHrReAuth && (
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6 animate-fadeIn">
           <div className="flex justify-between items-center gap-4 flex-wrap">
             <div>
@@ -10311,37 +10512,6 @@ export default function ConsultantPanel() {
           </div>
 
           {renderFinancePeriodSelector()}
-
-          {/* Personel Giderleri — sadece firma sahibi (maaş bilgisi hassas) */}
-          {userRole === 'premium_corporate' && (() => {
-            const byEmployee: Record<string, number> = {};
-            financeExpenses
-              .filter((exp) => exp.category === 'Maaş/Personel' && exp.employee_id && matchesFinancePeriod(exp.expense_date))
-              .forEach((exp) => {
-                byEmployee[exp.employee_id] = (byEmployee[exp.employee_id] || 0) + Number(exp.amount);
-              });
-            const rows = Object.entries(byEmployee)
-              .map(([empId, total]) => ({ empId, total, name: teamMembers.find((m) => m.id === empId)?.full_name || 'Bilinmeyen Personel' }))
-              .sort((a, b) => b.total - a.total);
-            if (rows.length === 0) return null;
-            return (
-              <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4">
-                <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Personel Giderleri (Kişi Bazlı Toplam)</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                  {rows.map((r) => (
-                    <button
-                      key={r.empId}
-                      onClick={() => setSelectedPersonnelId(r.empId)}
-                      className="flex justify-between items-center text-xs p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-800 transition text-left"
-                    >
-                      <span className="font-bold text-gray-700 dark:text-gray-300 truncate">{r.name}</span>
-                      <span className="font-bold text-rose-600 shrink-0 ml-2">{r.total.toLocaleString('tr-TR')} TL</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
 
           {loadingFinance ? (
             <div className="flex justify-center py-12">

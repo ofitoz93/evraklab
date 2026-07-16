@@ -15,8 +15,6 @@ import {
   Plus,
   Trash2,
   Save,
-  Eye,
-  EyeOff,
   Crown,
   LogOut,
   AlertTriangle,
@@ -94,11 +92,6 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const [exitDate, setExitDate] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Hassas bilgiler (maaş/giderler) varsayılan olarak maskeli — kart her
-  // açılışta/kapanışta sıfırlanır, hesabı açık unutan biri panelde
-  // gezinirse rakamlar göz ikonuna tıklamadan görünmez.
-  const [amountsVisible, setAmountsVisible] = useState(false);
-
   const [assignedClientIds, setAssignedClientIds] = useState<string[]>([]);
   const [reportCount, setReportCount] = useState(0);
   const [recentReports, setRecentReports] = useState<any[]>([]);
@@ -143,10 +136,17 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const [newSalaryMonth, setNewSalaryMonth] = useState(new Date().toISOString().slice(0, 7));
   const [newSalaryAmount, setNewSalaryAmount] = useState('');
   const [savingSalary, setSavingSalary] = useState(false);
+  // Yıl bazlı toplu silme (yanlış girilen bir yılı tek tek satır satır silmek yerine)
+  const [salaryYearToDelete, setSalaryYearToDelete] = useState('');
+  const [deletingSalaryYear, setDeletingSalaryYear] = useState(false);
+  // Bir yılın 12 ayını tek seferde manuel girme modalı
+  const [showFillYearModal, setShowFillYearModal] = useState(false);
+  const [fillYear, setFillYear] = useState(String(new Date().getFullYear()));
+  const [fillYearAmounts, setFillYearAmounts] = useState<string[]>(Array(12).fill(''));
+  const [savingFillYear, setSavingFillYear] = useState(false);
 
   useEffect(() => {
     fetchAll();
-    setAmountsVisible(false);
     setActiveCardTab('genel');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personnelId]);
@@ -290,6 +290,85 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
       alert('Maaş kaydedilirken hata: ' + err.message);
     } finally {
       setSavingSalary(false);
+    }
+  };
+
+  // Yanlış girilen bir yılı tek tek satır silmek yerine toplu temizler;
+  // o yıla ait otomatik üretilmiş giderleri de silip, önceki yıldan geçerli
+  // tutara göre yeniden ürettirir (bkz. generate_missing_salary_expenses).
+  const handleDeleteSalaryYear = async () => {
+    if (!salaryYearToDelete) return;
+    if (!window.confirm(`${salaryYearToDelete} yılına ait tüm maaş geçmişi kayıtları silinecek. Emin misiniz?`)) return;
+    setDeletingSalaryYear(true);
+    try {
+      const { error: histErr } = await supabase
+        .from('employee_salary_history')
+        .delete()
+        .eq('profile_id', personnelId)
+        .gte('effective_date', `${salaryYearToDelete}-01-01`)
+        .lte('effective_date', `${salaryYearToDelete}-12-31`);
+      if (histErr) throw histErr;
+
+      const { error: expErr } = await supabase
+        .from('company_expenses')
+        .delete()
+        .eq('employee_id', personnelId)
+        .eq('is_auto_salary', true)
+        .gte('expense_date', `${salaryYearToDelete}-01-01`)
+        .lte('expense_date', `${salaryYearToDelete}-12-31`);
+      if (expErr) throw expErr;
+
+      await supabase.rpc('generate_missing_salary_expenses', { p_profile_id: personnelId });
+      setSalaryYearToDelete('');
+      await fetchAll();
+    } catch (err: any) {
+      alert('Yıl silinirken hata: ' + err.message);
+    } finally {
+      setDeletingSalaryYear(false);
+    }
+  };
+
+  // Seçilen yılın 12 ayını, o ana kadar geçerli olan (varsa) tutarla önceden
+  // doldurup açar — maaşlar normalde ocaktan ocağa aynı kaldığı için, kullanıcı
+  // sadece zam/değişiklik olan ayı değiştirip geri kalanını olduğu gibi bırakabilir.
+  const openFillYearModal = (year: string) => {
+    const amounts = Array.from({ length: 12 }, (_, i) => {
+      const monthStr = `${year}-${String(i + 1).padStart(2, '0')}-01`;
+      const applicable = [...salaryHistory]
+        .filter((s) => s.effective_date <= monthStr)
+        .sort((a, b) => (a.effective_date < b.effective_date ? 1 : -1))[0];
+      return applicable ? String(Number(applicable.monthly_salary)) : '';
+    });
+    setFillYear(year);
+    setFillYearAmounts(amounts);
+    setShowFillYearModal(true);
+  };
+
+  const handleSaveFillYear = async () => {
+    const rows = fillYearAmounts
+      .map((amt, i) => ({ amt, month: i + 1 }))
+      .filter((r) => r.amt !== '' && parseFloat(r.amt) > 0)
+      .map((r) => ({
+        profile_id: personnelId,
+        organization_id: orgId,
+        effective_date: `${fillYear}-${String(r.month).padStart(2, '0')}-01`,
+        monthly_salary: parseFloat(r.amt),
+        updated_at: new Date().toISOString(),
+      }));
+    if (rows.length === 0) {
+      alert('En az bir ay için tutar girin.');
+      return;
+    }
+    setSavingFillYear(true);
+    try {
+      const { error } = await supabase.from('employee_salary_history').upsert(rows, { onConflict: 'profile_id,effective_date' });
+      if (error) throw error;
+      setShowFillYearModal(false);
+      await fetchAll();
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingFillYear(false);
     }
   };
 
@@ -540,13 +619,6 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   const todayStr = new Date().toISOString().split('T')[0];
   const currentSalary = salaryHistory.find((s) => s.effective_date <= todayStr)?.monthly_salary ?? null;
 
-  const AmountMask = ({ value }: { value: string }) =>
-    amountsVisible ? (
-      <>{value}</>
-    ) : (
-      <span className="tracking-widest select-none">••••••</span>
-    );
-
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
       <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-slate-100 dark:border-slate-700 animate-scaleIn">
@@ -586,18 +658,6 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => setAmountsVisible((v) => !v)}
-                title={amountsVisible ? 'Hassas bilgileri gizle' : 'Maaş/gider bilgilerini göster'}
-                className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold border transition ${
-                  amountsVisible
-                    ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:border-amber-900'
-                    : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-900 dark:border-slate-700'
-                }`}
-              >
-                {amountsVisible ? <EyeOff size={14} /> : <Eye size={14} />}
-                {amountsVisible ? 'Gizle' : 'Maaşı Göster'}
-              </button>
             </div>
 
             {exitDate && (
@@ -665,14 +725,9 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Güncel Maaş (TL)</label>
-                  <button
-                    type="button"
-                    onClick={() => setAmountsVisible((v) => !v)}
-                    className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold text-slate-500 flex items-center justify-between"
-                  >
-                    <AmountMask value={currentSalary != null ? `${Number(currentSalary).toLocaleString('tr-TR')} TL` : 'Belirlenmedi'} />
-                    <Eye size={13} />
-                  </button>
+                  <div className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold text-blue-600">
+                    {currentSalary != null ? `${Number(currentSalary).toLocaleString('tr-TR')} TL` : 'Belirlenmedi'}
+                  </div>
                 </div>
               </div>
               <div>
@@ -737,6 +792,45 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                 </div>
               </div>
 
+              {/* Yıl bazlı toplu işlemler: yanlış girilmiş bir yılı tek tek satır silmek
+                  yerine tek seferde temizlemek, ya da bir yılın 12 ayını tek seferde
+                  manuel girmek için. */}
+              <div className="flex flex-col sm:flex-row gap-2 pt-1 border-t border-slate-200 dark:border-slate-700 mt-1">
+                <button
+                  type="button"
+                  onClick={() => openFillYearModal(String(new Date().getFullYear()))}
+                  className="flex-1 flex items-center justify-center gap-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 px-3 py-2 rounded-lg text-[11px] font-bold hover:border-blue-300 dark:hover:border-blue-800 transition"
+                >
+                  <Save size={12} /> Bir Yılın Tüm Aylarını Manuel Gir
+                </button>
+                {salaryHistory.length > 0 && (
+                  <div className="flex-1 flex items-center gap-1.5">
+                    <select
+                      value={salaryYearToDelete}
+                      onChange={(e) => setSalaryYearToDelete(e.target.value)}
+                      className="flex-1 p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-[11px] font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">Yıl seçin...</option>
+                      {Array.from(new Set(salaryHistory.map((s) => s.effective_date.slice(0, 4))))
+                        .sort((a, b) => Number(b) - Number(a))
+                        .map((year) => (
+                          <option key={year} value={year}>{year}</option>
+                        ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleDeleteSalaryYear}
+                      disabled={!salaryYearToDelete || deletingSalaryYear}
+                      title="Bu yıla ait tüm maaş kayıtlarını toplu sil"
+                      className="flex items-center justify-center gap-1.5 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900 text-rose-600 px-3 py-2 rounded-lg text-[11px] font-bold hover:bg-rose-100 dark:hover:bg-rose-950/40 transition disabled:opacity-50"
+                    >
+                      {deletingSalaryYear ? <Loader size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      Yılı Toplu Sil
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {salaryHistory.length === 0 ? (
                 <p className="text-xs text-slate-400 italic">Henüz maaş girilmemiş.</p>
               ) : (
@@ -747,7 +841,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                         {new Date(s.effective_date + 'T00:00:00').toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })}'dan itibaren
                       </span>
                       <span className="font-bold text-blue-600">
-                        <AmountMask value={`${Number(s.monthly_salary).toLocaleString('tr-TR')} TL`} />
+                        {Number(s.monthly_salary).toLocaleString('tr-TR')} TL
                       </span>
                     </div>
                   ))}
@@ -966,7 +1060,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                           <div className="flex justify-between items-center px-3 py-2 bg-slate-100 dark:bg-slate-800">
                             <span className="text-xs font-black text-slate-600 dark:text-slate-300">{year}</span>
                             <span className="text-xs font-bold text-blue-600">
-                              <AmountMask value={`${yearTotal.toLocaleString('tr-TR')} TL`} />
+                              {yearTotal.toLocaleString('tr-TR')} TL
                             </span>
                           </div>
                           <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -976,7 +1070,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                                   {new Date(r.expense_date).toLocaleDateString('tr-TR', { month: 'long' })}
                                 </span>
                                 <span className="font-bold text-gray-700 dark:text-gray-300">
-                                  <AmountMask value={`${Number(r.amount).toLocaleString('tr-TR')} TL`} />
+                                  {Number(r.amount).toLocaleString('tr-TR')} TL
                                 </span>
                               </div>
                             ))}
@@ -991,7 +1085,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
             <div>
               <div className="flex justify-between items-center mb-2">
                 <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
-                  <Wallet size={13} /> Personel Giderleri (<AmountMask value={`${Number(totalExpenses).toLocaleString('tr-TR')} TL`} />)
+                  <Wallet size={13} /> Personel Giderleri ({Number(totalExpenses).toLocaleString('tr-TR')} TL)
                 </h4>
                 <button
                   onClick={() => setShowAddExpense((v) => !v)}
@@ -1055,7 +1149,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="font-bold text-rose-600">
-                          <AmountMask value={`${Number(exp.amount).toLocaleString('tr-TR')} TL`} />
+                          {Number(exp.amount).toLocaleString('tr-TR')} TL
                         </span>
                         <button onClick={() => handleDeleteExpense(exp.id)} className="text-red-400 hover:text-red-600 transition">
                           <Trash2 size={13} />
@@ -1191,6 +1285,73 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
           onConfirm={handleKick}
           onCancel={() => setShowExitModal(false)}
         />
+      )}
+
+      {showFillYearModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[60] p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white sticky top-0 z-10">
+              <h3 className="font-bold text-base flex items-center gap-2">
+                <Wallet size={18} /> Yılın Tüm Aylarını Manuel Gir
+              </h3>
+              <button onClick={() => setShowFillYearModal(false)} className="p-1 hover:bg-white/10 rounded-full text-white transition">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Yıl</label>
+                <input
+                  type="number"
+                  value={fillYear}
+                  onChange={(e) => setFillYear(e.target.value)}
+                  onBlur={() => openFillYearModal(fillYear)}
+                  className="w-32 p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Maaşlar normalde bir sonraki zamma kadar (ocaktan ocağa) aynı kalır — bu yüzden her ay,
+                o ana kadar geçerli olan tutarla önceden dolduruldu. Sadece değişen ayları düzenlemeniz yeterli;
+                boş bıraktığınız aylar kaydedilmez.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {Array.from({ length: 12 }, (_, i) => (
+                  <div key={i}>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">
+                      {new Date(2000, i, 1).toLocaleDateString('tr-TR', { month: 'long' })}
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={fillYearAmounts[i]}
+                      onChange={(e) =>
+                        setFillYearAmounts((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))
+                      }
+                      placeholder="—"
+                      className="w-full p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setShowFillYearModal(false)}
+                  className="px-4 py-2 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                >
+                  Vazgeç
+                </button>
+                <button
+                  onClick={handleSaveFillYear}
+                  disabled={savingFillYear}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition disabled:opacity-50"
+                >
+                  {savingFillYear ? <Loader size={14} className="animate-spin" /> : <Save size={14} />}
+                  {savingFillYear ? 'Kaydediliyor...' : 'Yılı Kaydet'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
