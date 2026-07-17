@@ -49,6 +49,7 @@ import {
   HardDrive,
   Inbox,
   LogOut,
+  FlaskConical,
 } from 'lucide-react';
 
 import QRCode from 'qrcode';
@@ -59,12 +60,26 @@ import { Link } from 'react-router-dom';
 import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
+import {
+  computeMsdsStatus,
+  computeDaysRemaining,
+  type MsdsStatus,
+  MSDS_STATUS_LABELS_TR as STATUS_LABELS_TR,
+  MSDS_STATUS_BADGE_CLASSES as STATUS_BADGE_CLASSES_MSDS,
+} from './msdsParser';
 import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
 import PersonnelCard from './PersonnelCard';
 import ExitDateModal from './ExitDateModal';
+import TerminateServiceModal from './TerminateServiceModal';
 
 const TR_MONTH_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+
+const PAYMENT_TYPE_LABELS: Record<string, string> = {
+  sirket_karti: 'Şirket Kartı',
+  sirket_sahsi: 'Şirket Şahsi',
+  kisisel_odeme: 'Kişisel Ödeme (Cepten)',
+};
 
 // Boyut formatlama (Byte -> MB/GB)
 function formatBytes(bytes: number, decimals = 1) {
@@ -169,7 +184,7 @@ const getContractStatus = (startDateStr: string) => {
 };
 
 export default function ConsultantPanel() {
-  const [activeTab, setActiveTab] = useState<'clients' | 'reports' | 'settings' | 'storage_settings' | 'team' | 'org_chart' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'waste' | 'document_matrix' | 'opinions' | 'document_requests'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'terminated_clients' | 'reports' | 'settings' | 'storage_settings' | 'team' | 'org_chart' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'staff_expense_submission' | 'waste' | 'document_matrix' | 'opinions' | 'document_requests' | 'msds'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
@@ -592,6 +607,9 @@ export default function ConsultantPanel() {
   const [financePeriodType, setFinancePeriodType] = useState<'all' | 'monthly' | 'yearly'>('all');
   const [financeSelectedMonth, setFinanceSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
   const [financeSelectedYear, setFinanceSelectedYear] = useState(String(new Date().getFullYear()));
+  // Müşteri Ödemeleri: hizmeti sonlandırılan firmaların (varsa) ödenmemiş
+  // geçmiş alacakları gözden kaybolmasın diye bir kapsam filtresi.
+  const [financePaymentsScope, setFinancePaymentsScope] = useState<'active' | 'terminated' | 'all'>('active');
   const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
   const [newExpense, setNewExpense] = useState({
     title: '',
@@ -602,6 +620,20 @@ export default function ConsultantPanel() {
     employee_id: ''
   });
   const [savingExpense, setSavingExpense] = useState(false);
+
+  // Personel/Şef Gider Ekleme (dar kapsamlı, sadece kendi gönderdiklerini görür)
+  const [newStaffExpense, setNewStaffExpense] = useState({
+    title: '',
+    category: 'Diğer',
+    amount: '',
+    expense_date: new Date().toISOString().split('T')[0],
+    payment_type: 'sirket_karti' as 'sirket_karti' | 'sirket_sahsi' | 'kisisel_odeme',
+    notes: '',
+  });
+  const [staffExpenseReceiptFile, setStaffExpenseReceiptFile] = useState<File | null>(null);
+  const [savingStaffExpense, setSavingStaffExpense] = useState(false);
+  const [myStaffExpenses, setMyStaffExpenses] = useState<any[]>([]);
+  const [loadingMyStaffExpenses, setLoadingMyStaffExpenses] = useState(false);
   const [updatingClientFee, setUpdatingClientFee] = useState<string | null>(null);
   const [tempClientFeeVal, setTempClientFeeVal] = useState('');
   const [togglingPaymentKey, setTogglingPaymentKey] = useState<string | null>(null);
@@ -610,6 +642,7 @@ export default function ConsultantPanel() {
   // Finansal Özet tablosu — tıklanan ay/kategori satırlarının detayını açık tutar
   const [expandedSummaryMonth, setExpandedSummaryMonth] = useState<string | null>(null);
   const [expandedSummaryCategory, setExpandedSummaryCategory] = useState<string | null>(null);
+  const [showCollectedFirmsMonth, setShowCollectedFirmsMonth] = useState<string | null>(null);
 
   // --- ZİYARET PLANLAMA / ÇALIŞMA TAKVİMİ STATE'LERİ ---
   const [visitSchedules, setVisitSchedules] = useState<VisitSchedule[]>([]);
@@ -774,6 +807,19 @@ export default function ConsultantPanel() {
   const [docReqDesc, setDocReqDesc] = useState('');
   const [submittingDocReq, setSubmittingDocReq] = useState(false);
   const [docReqStatusFilter, setDocReqStatusFilter] = useState<'all' | 'pending' | 'fulfilled'>('all');
+
+  // MSDS/SDS Takibi
+  const [msdsDocuments, setMsdsDocuments] = useState<any[]>([]);
+  const [loadingMsds, setLoadingMsds] = useState(false);
+  const [msdsClientFilter, setMsdsClientFilter] = useState('');
+  const [msdsStatusFilter, setMsdsStatusFilter] = useState<'all' | MsdsStatus>('all');
+
+  // Sunucudan zaten expiry_date'e göre sıralı gelir (bkz. fetchMsdsDocuments);
+  // burada sadece firma/durum filtreleri uygulanır.
+  const msdsFilteredSorted = msdsDocuments
+    .filter((m: any) => !msdsClientFilter || m.client_id === msdsClientFilter)
+    .filter((m: any) => msdsStatusFilter === 'all' || computeMsdsStatus(m.expiry_date, m.warning_threshold_days || 30) === msdsStatusFilter);
+
   const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState('');
   const [userId, setUserId] = useState('');
@@ -1023,6 +1069,7 @@ export default function ConsultantPanel() {
   const [pendingKickMember, setPendingKickMember] = useState<any>(null);
   const [kickingQuick, setKickingQuick] = useState(false);
   const [departedEmployees, setDepartedEmployees] = useState<any[]>([]);
+  const [reactivatingEmployeeId, setReactivatingEmployeeId] = useState<string | null>(null);
   const [googleDriveQuota, setGoogleDriveQuota] = useState<{ usage: number; limit: number | null } | null>(null);
   const [loadingGoogleDriveQuota, setLoadingGoogleDriveQuota] = useState(false);
   const [savingStorageSettings, setSavingStorageSettings] = useState(false);
@@ -1031,6 +1078,22 @@ export default function ConsultantPanel() {
   const [currentAssignments, setCurrentAssignments] = useState<string[]>([]);
   const [allAssignments, setAllAssignments] = useState<any[]>([]);
   const [clientSubView, setClientSubView] = useState<'grid' | 'personnel' | 'requests'>('grid');
+
+  // Hizmet Dönemleri (sözleşme yenileme + yıl bazlı ücret geçmişi)
+  const [servicePeriods, setServicePeriods] = useState<any[]>([]);
+  const [renewingClientId, setRenewingClientId] = useState<string | null>(null);
+  const [renewMode, setRenewMode] = useState<'auto' | 'custom'>('auto');
+  const [renewCustomEndDate, setRenewCustomEndDate] = useState('');
+  const [renewFee, setRenewFee] = useState('');
+  const [savingRenewal, setSavingRenewal] = useState(false);
+  const [expandedPeriodHistory, setExpandedPeriodHistory] = useState<Record<string, boolean>>({});
+
+  // Hizmet Sonlandırma
+  const [terminatedClients, setTerminatedClients] = useState<Client[]>([]);
+  const [loadingTerminatedClients, setLoadingTerminatedClients] = useState(false);
+  const [terminatingClientId, setTerminatingClientId] = useState<string | null>(null);
+  const [savingTermination, setSavingTermination] = useState(false);
+  const [reactivatingClientId, setReactivatingClientId] = useState<string | null>(null);
 
   // Client Panel Provisioning States
   const [showClientLoginModal, setShowClientLoginModal] = useState(false);
@@ -1082,8 +1145,14 @@ export default function ConsultantPanel() {
     if (activeTab === 'team' && orgId) {
       fetchInvitations();
     }
-    if (activeTab === 'departed' && orgId) {
+    if ((activeTab === 'departed' || activeTab === 'finance_summary' || activeTab === 'finance_expenses') && orgId) {
+      // finance_summary/finance_expenses'te de fetchlenir - ayrılan
+      // personelin geçmiş gider kayıtlarında ismi "Bilinmeyen Personel"
+      // olarak görünmesin diye.
       fetchDepartedEmployees();
+    }
+    if (activeTab === 'staff_expense_submission' && orgId) {
+      fetchMyStaffExpenses();
     }
     if ((activeTab === 'definitions' || activeTab === 'document_matrix') && orgId) {
       fetchDefinitionsTab();
@@ -1095,6 +1164,14 @@ export default function ConsultantPanel() {
     }
     if (activeTab === 'document_requests' && orgId) {
       fetchDocumentRequests();
+    }
+    if (activeTab === 'msds' && orgId) {
+      fetchMsdsDocuments();
+    }
+    if ((activeTab === 'terminated_clients' || activeTab === 'finance_summary' || activeTab === 'finance_payments') && orgId) {
+      // Finans sekmelerinde de sonlandırılan firmaların (varsa) ödenmemiş
+      // geçmiş alacakları görünür kalsın diye bu liste de çekilir.
+      fetchTerminatedClients();
     }
     if ((activeTab === 'legislations' || activeTab === 'actions' || activeTab === 'requests') && orgId) {
       fetchConsultantLegislations();
@@ -1438,6 +1515,27 @@ export default function ConsultantPanel() {
       .order('exit_date', { ascending: false });
     if (error) return console.error('fetchDepartedEmployees error:', error.message);
     setDepartedEmployees(data || []);
+  };
+
+  // Yanlışlıkla çıkarılan bir personeli geri al - kick_employee_with_exit_date'in
+  // kaydettiği eski rolle (role_before_exit) org'a yeniden bağlar.
+  const handleReactivateEmployee = async (profileId: string) => {
+    if (!window.confirm('Bu personeli tekrar ekibe eklemek istediğinize emin misiniz?')) return;
+    setReactivatingEmployeeId(profileId);
+    try {
+      const { error } = await supabase.rpc('reactivate_departed_employee', {
+        p_profile_id: profileId,
+        p_org_id: orgId,
+      });
+      if (error) throw error;
+      alert('Personel yeniden aktif edildi.');
+      await fetchDepartedEmployees();
+      await fetchTeamMembers();
+    } catch (err: any) {
+      alert('Geri alınırken hata: ' + err.message);
+    } finally {
+      setReactivatingEmployeeId(null);
+    }
   };
 
   const fetchInvitations = async () => {
@@ -2617,6 +2715,41 @@ export default function ConsultantPanel() {
     };
   };
 
+  // Sözleşme durumu artık sabit "service_start_date + 1 yıl" yerine, o
+  // firmanın en güncel consultant_client_service_periods satırının
+  // end_date'ine göre hesaplanır (bkz. add_consultant_client_service_periods.sql
+  // - "Hizmet Yenile" her tıklamada ardışık yeni bir dönem ekler). Henüz hiç
+  // dönemi olmayan (ör. eski/taşınmamış veri) bir firma için eski hesaba
+  // (service_start_date + 1 yıl) geri düşülür.
+  const getClientServiceStatus = (clientId: string, fallbackStartDate?: string | null, terminatedAt?: string | null) => {
+    const isTerminated = !!terminatedAt;
+    const periods = servicePeriods
+      .filter((p) => p.client_id === clientId)
+      .sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
+    if (periods.length === 0) {
+      if (!fallbackStartDate) return null;
+      const fallback = getContractStatus(fallbackStartDate);
+      return fallback ? { ...fallback, startDate: new Date(fallbackStartDate), currentFee: 0, latestPeriod: null, isTerminated } : null;
+    }
+    const latest = periods[0];
+    const earliest = periods[periods.length - 1];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expiry = new Date(latest.end_date);
+    expiry.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    return {
+      startDate: new Date(earliest.start_date),
+      expiryDate: expiry,
+      daysLeft: diffDays,
+      isExpired: diffDays <= 0,
+      isWarning: diffDays > 0 && diffDays <= 10,
+      currentFee: Number(latest.monthly_fee) || 0,
+      latestPeriod: latest,
+      isTerminated,
+    };
+  };
+
   const fetchUserDocuments = async (uid: string) => {
     try {
       const { data, error } = await supabase
@@ -3747,6 +3880,97 @@ export default function ConsultantPanel() {
     }
   };
 
+  const fetchMsdsDocuments = async () => {
+    if (!orgId) return;
+    setLoadingMsds(true);
+    try {
+      let query = supabase
+        .from('msds_documents')
+        .select('*, client:client_id(name)')
+        .eq('consultant_company_id', orgId)
+        .eq('is_archived', false);
+
+      // `clients` state zaten atama-kapsamlı (bkz. fetchClients) - kısıtlı
+      // rollerde (Ahmet gibi) sadece atandığı firmaların MSDS'leri gelsin diye
+      // aynı listeye göre filtrelenir.
+      const isRestrictedRole = userRole === 'corporate_staff' || userRole === 'corporate_chief';
+      const canViewAll = userRole === 'premium_corporate' || userRole === 'admin' || userRole === 'system_admin' || !!currentUserPerms?.can_view_all_clients;
+      if (isRestrictedRole && !canViewAll) {
+        const cIds = clients.map((c) => c.id);
+        if (cIds.length === 0) {
+          setMsdsDocuments([]);
+          setLoadingMsds(false);
+          return;
+        }
+        query = query.in('client_id', cIds);
+      }
+
+      const { data, error } = await query.order('expiry_date', { ascending: true, nullsFirst: false });
+      if (error) throw error;
+      setMsdsDocuments(data || []);
+    } catch (err: any) {
+      console.error('MSDS belgeleri yüklenirken hata:', err.message);
+    } finally {
+      setLoadingMsds(false);
+    }
+  };
+
+  const handleExportMsdsToExcel = async () => {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'EvrakLab';
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet('MSDS-SDS Takibi', { views: [{ state: 'frozen', ySplit: 1 }] });
+
+    sheet.columns = [
+      { header: 'Firma', key: 'client', width: 28 },
+      { header: 'Ürün Adı', key: 'product', width: 32 },
+      { header: 'Ana Tarih', key: 'primary_date', width: 14 },
+      { header: 'Kaynak Etiket', key: 'source_label', width: 22 },
+      { header: 'Geçerlilik Bitiş', key: 'expiry', width: 16 },
+      { header: 'Durum', key: 'status', width: 14 },
+      { header: 'Kalan/Geçen Gün', key: 'days', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.height = 24;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    });
+
+    msdsFilteredSorted.forEach((m: any, idx: number) => {
+      const status = computeMsdsStatus(m.expiry_date, m.warning_threshold_days || 30);
+      const days = computeDaysRemaining(m.expiry_date);
+      const row = sheet.addRow({
+        client: m.client?.name || '—',
+        product: m.product_name || '—',
+        primary_date: m.primary_date || '—',
+        source_label: m.primary_date_source_label || (m.primary_date_manual_override ? 'Manuel' : '—'),
+        expiry: m.expiry_date || '—',
+        status: STATUS_LABELS_TR[status],
+        days: days === null ? '—' : days,
+      });
+      const zebraFill = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC';
+      row.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: zebraFill } };
+      });
+    });
+
+    sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 7 } };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `msds-sds-takibi-${new Date().toISOString().split('T')[0]}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const sendDocumentRequestCreatedEmail = async (email: string, clientName: string, title: string, description: string | null): Promise<boolean> => {
     if (!email) return false;
     try {
@@ -4308,8 +4532,12 @@ export default function ConsultantPanel() {
       setAllAssignments([]);
       return;
     }
-    let query = supabase.from('consultant_clients').select('*');
-    
+    // Hizmeti sonlandırılan firmalar bu listede görünmez (ayrı "Hizmeti
+    // Sonlandırılan Firmalar" tabında); clients state'i uygulama genelinde
+    // paylaşıldığından (belge matrisi, atık yönetimi, atamalar vb.) tek
+    // yerde filtrelemek her yerden otomatik olarak düşürür.
+    let query = supabase.from('consultant_clients').select('*').is('service_terminated_at', null);
+
     // Kurumsal şef ve personel sadece atandığı firmaları görür (perm yoksa).
     const isRestrictedRole = role === 'corporate_staff' || role === 'corporate_chief';
 
@@ -4340,9 +4568,94 @@ export default function ConsultantPanel() {
           .select('*')
           .in('client_id', clientIds);
         setAllAssignments(assigns || []);
+
+        const { data: periods } = await supabase
+          .from('consultant_client_service_periods')
+          .select('*')
+          .in('client_id', clientIds)
+          .order('start_date', { ascending: false });
+        setServicePeriods(periods || []);
       } else {
         setAllAssignments([]);
+        setServicePeriods([]);
       }
+    }
+  };
+
+  const fetchTerminatedClients = async () => {
+    if (!orgId) return;
+    setLoadingTerminatedClients(true);
+    try {
+      const { data, error } = await supabase
+        .from('consultant_clients')
+        .select('*')
+        .eq('consultant_company_id', orgId)
+        .not('service_terminated_at', 'is', null)
+        .order('service_terminated_at', { ascending: false });
+      if (error) throw error;
+      setTerminatedClients(data || []);
+
+      const clientIds = (data || []).map((c: any) => c.id);
+      if (clientIds.length > 0) {
+        const { data: periods } = await supabase
+          .from('consultant_client_service_periods')
+          .select('*')
+          .in('client_id', clientIds)
+          .order('start_date', { ascending: false });
+        // Aktif liste ile aynı servicePeriods state'ine birleştirilir (id'ye göre tekilleştirilir)
+        setServicePeriods((prev) => {
+          const merged = new Map(prev.map((p: any) => [p.id, p]));
+          (periods || []).forEach((p: any) => merged.set(p.id, p));
+          return Array.from(merged.values());
+        });
+      }
+    } catch (err: any) {
+      console.error('Hizmeti sonlandırılan firmalar yüklenirken hata:', err.message);
+    } finally {
+      setLoadingTerminatedClients(false);
+    }
+  };
+
+  const handleTerminateService = async (terminationDate: string) => {
+    if (!terminatingClientId) return;
+    setSavingTermination(true);
+    try {
+      const { error } = await supabase.rpc('terminate_client_service', {
+        p_client_id: terminatingClientId,
+        p_org_id: orgId,
+        p_termination_date: terminationDate,
+      });
+      if (error) throw error;
+
+      const terminatedId = terminatingClientId;
+      setTerminatingClientId(null);
+      setClients((prev) => prev.filter((c) => c.id !== terminatedId));
+      alert('Hizmet sonlandırıldı. Firma artık "Hizmeti Sonlandırılan Firmalar" sekmesinde görünüyor.');
+      await fetchClients(orgId, userRole, userId, currentUserPerms);
+    } catch (err: any) {
+      alert('Hizmet sonlandırılırken hata: ' + err.message);
+    } finally {
+      setSavingTermination(false);
+    }
+  };
+
+  const handleReactivateClient = async (clientId: string) => {
+    setReactivatingClientId(clientId);
+    try {
+      const { error } = await supabase
+        .from('consultant_clients')
+        .update({ service_terminated_at: null })
+        .eq('id', clientId)
+        .eq('consultant_company_id', orgId);
+      if (error) throw error;
+
+      setTerminatedClients((prev) => prev.filter((c) => c.id !== clientId));
+      alert('Firma yeniden aktif edildi.');
+      await fetchClients(orgId, userRole, userId, currentUserPerms);
+    } catch (err: any) {
+      alert('Yeniden aktif edilirken hata: ' + err.message);
+    } finally {
+      setReactivatingClientId(null);
     }
   };
 
@@ -5553,19 +5866,103 @@ export default function ConsultantPanel() {
     }
   };
 
+  // Artık consultant_clients.monthly_fee'yi doğrudan değiştirmez (o sütun
+  // trigger ile en güncel dönemden otomatik senkronlanıyor) - bu buton sadece
+  // AKTİF (süresi dolmamış) dönemin ücretini düzeltir ("bu yıl için
+  // değiştirilebilinsin"). Aktif dönem yoksa (hizmet hiç başlatılmamış ya da
+  // süresi dolmuş), yeni dönem açmak "Hizmet Verilen İşletmeler" sayfasındaki
+  // "Hizmet Başlat/Yenile" aksiyonuna aittir - burada karıştırılmaz.
   const handleUpdateClientFee = async (clientId: string, fee: number) => {
+    const status = getClientServiceStatus(clientId, clients.find((c) => c.id === clientId)?.service_start_date);
+    if (!status?.latestPeriod || status.isExpired) {
+      alert('Bu firma için aktif bir hizmet dönemi yok. Önce "Hizmet Verilen İşletmeler" sayfasından "Hizmet Başlat/Yenile" ile bir dönem açın.');
+      return;
+    }
     try {
       const { error } = await supabase
-        .from('consultant_clients')
+        .from('consultant_client_service_periods')
         .update({ monthly_fee: fee })
-        .eq('id', clientId);
+        .eq('id', status.latestPeriod.id);
       if (error) throw error;
-      
-      setClients(prev => prev.map(c => c.id === clientId ? { ...c, monthly_fee: fee } : c));
+
+      setServicePeriods((prev) => prev.map((p) => (p.id === status.latestPeriod.id ? { ...p, monthly_fee: fee } : p)));
+      setClients((prev) => prev.map((c) => (c.id === clientId ? { ...c, monthly_fee: fee } : c)));
       setUpdatingClientFee(null);
-      alert('Müşteri aylık ücreti başarıyla güncellendi!');
+      alert('Müşteri aylık ücreti başarıyla güncellendi! Alacaklar (Finans) otomatik güncellendi.');
     } catch (err: any) {
-      alert('Üret güncellenirken hata: ' + err.message);
+      alert('Ücret güncellenirken hata: ' + err.message);
+    }
+  };
+
+  const handleRenewClientService = async (clientId: string) => {
+    const client = clients.find((c) => c.id === clientId);
+    if (!client) return;
+    const feeValue = parseFloat(renewFee);
+    if (isNaN(feeValue) || feeValue <= 0) {
+      alert('Lütfen bu dönem için geçerli bir aylık ücret girin.');
+      return;
+    }
+
+    const status = getClientServiceStatus(clientId, client.service_start_date);
+    const latest = status?.latestPeriod;
+
+    let newStart: Date;
+    if (latest) {
+      newStart = new Date(latest.end_date);
+      newStart.setDate(newStart.getDate() + 1);
+    } else if (client.service_start_date) {
+      newStart = new Date(client.service_start_date);
+    } else {
+      newStart = new Date();
+      newStart.setHours(0, 0, 0, 0);
+    }
+
+    let newEnd: Date;
+    if (renewMode === 'auto') {
+      newEnd = new Date(newStart);
+      newEnd.setFullYear(newEnd.getFullYear() + 1);
+    } else {
+      if (!renewCustomEndDate) {
+        alert('Lütfen bir bitiş tarihi seçin.');
+        return;
+      }
+      newEnd = new Date(renewCustomEndDate);
+      if (newEnd <= newStart) {
+        alert('Bitiş tarihi, dönem başlangıcından (' + newStart.toLocaleDateString('tr-TR') + ') sonra olmalıdır.');
+        return;
+      }
+    }
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const toIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    setSavingRenewal(true);
+    try {
+      const { data: newPeriod, error } = await supabase
+        .from('consultant_client_service_periods')
+        .insert({
+          client_id: clientId,
+          consultant_company_id: orgId,
+          start_date: toIso(newStart),
+          end_date: toIso(newEnd),
+          monthly_fee: feeValue,
+          created_by: userId,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      setServicePeriods((prev) => [newPeriod, ...prev]);
+      setClients((prev) => prev.map((c) => (c.id === clientId ? { ...c, monthly_fee: feeValue, service_start_date: c.service_start_date || toIso(newStart) } : c)));
+      setRenewingClientId(null);
+      setRenewFee('');
+      setRenewCustomEndDate('');
+      setRenewMode('auto');
+      alert(`Hizmet ${toIso(newEnd)} tarihine kadar uzatıldı. Alacaklar (Finans) otomatik güncellendi.`);
+    } catch (err: any) {
+      alert('Hizmet yenilenirken hata: ' + err.message);
+    } finally {
+      setSavingRenewal(false);
     }
   };
 
@@ -5666,6 +6063,106 @@ export default function ConsultantPanel() {
     }
   };
 
+  // Yönetici, personel/şefin gönderdiği bir gideri onaylar - onaylanan gider
+  // artık gönderen kişi tarafından silinemez (bkz. RLS: "Staff delete own
+  // unapproved expenses" sadece approved_at IS NULL iken izin veriyor).
+  const handleApproveExpense = async (expenseId: string) => {
+    try {
+      const { error } = await supabase
+        .from('company_expenses')
+        .update({ approved_at: new Date().toISOString(), approved_by: userId })
+        .eq('id', expenseId);
+      if (error) throw error;
+      await fetchFinanceData();
+    } catch (err: any) {
+      alert('Onaylanırken hata: ' + err.message);
+    }
+  };
+
+  // Personel/şef, kendi gönderdiği ama henüz onaylanmamış bir gideri (ör.
+  // yanlışlıkla eklediyse) silebilir - RLS bu işlemi zaten submitted_by=kendisi
+  // VE approved_at IS NULL ile sınırlıyor, burada sadece UI onayı alınır.
+  const handleDeleteMyStaffExpense = async (expenseId: string) => {
+    if (!window.confirm('Bu gideri silmek istediğinizden emin misiniz?')) return;
+    try {
+      const { error } = await supabase.from('company_expenses').delete().eq('id', expenseId);
+      if (error) throw error;
+      await fetchMyStaffExpenses();
+    } catch (err: any) {
+      alert('Silinirken hata: ' + err.message);
+    }
+  };
+
+  // Personel/Şef Gider Ekleme - sadece kendi gönderdiği kayıtları çeker
+  // (RLS zaten corporate_staff için submitted_by=auth.uid() ile sınırlıyor;
+  // corporate_chief'in tam erişimi var ama burada da kendi listesini görür).
+  const fetchMyStaffExpenses = async () => {
+    if (!userId) return;
+    setLoadingMyStaffExpenses(true);
+    try {
+      const { data, error } = await supabase
+        .from('company_expenses')
+        .select('*')
+        .eq('submitted_by', userId)
+        .order('expense_date', { ascending: false });
+      if (error) throw error;
+      setMyStaffExpenses(data || []);
+    } catch (err: any) {
+      console.error('Giderlerim yüklenirken hata:', err.message);
+    } finally {
+      setLoadingMyStaffExpenses(false);
+    }
+  };
+
+  const handleSaveStaffExpense = async () => {
+    if (!newStaffExpense.title.trim() || !newStaffExpense.amount) {
+      alert('Lütfen açıklama ve tutar giriniz.');
+      return;
+    }
+    setSavingStaffExpense(true);
+    try {
+      let receiptUrl: string | null = null;
+      if (staffExpenseReceiptFile) {
+        const fileExt = staffExpenseReceiptFile.name.split('.').pop() || 'pdf';
+        const filePath = `expense-receipts/${orgId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+        const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, staffExpenseReceiptFile);
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(filePath);
+        receiptUrl = urlData.publicUrl;
+      }
+
+      const { error } = await supabase.from('company_expenses').insert({
+        consultant_company_id: orgId,
+        title: newStaffExpense.title.trim(),
+        category: newStaffExpense.category,
+        amount: parseFloat(newStaffExpense.amount),
+        expense_date: newStaffExpense.expense_date,
+        notes: newStaffExpense.notes.trim() || null,
+        payment_type: newStaffExpense.payment_type,
+        receipt_url: receiptUrl,
+        submitted_by: userId,
+        is_auto_salary: false,
+      });
+      if (error) throw error;
+
+      setNewStaffExpense({
+        title: '',
+        category: 'Diğer',
+        amount: '',
+        expense_date: new Date().toISOString().split('T')[0],
+        payment_type: 'sirket_karti',
+        notes: '',
+      });
+      setStaffExpenseReceiptFile(null);
+      await fetchMyStaffExpenses();
+      alert('Gider kaydınız başarıyla eklendi.');
+    } catch (err: any) {
+      alert('Gider kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingStaffExpense(false);
+    }
+  };
+
   useEffect(() => {
     if (orgId && ['finance_summary', 'finance_payments', 'finance_expenses'].includes(activeTab)) {
       fetchFinanceData();
@@ -5673,11 +6170,11 @@ export default function ConsultantPanel() {
   }, [orgId, activeTab]);
 
   const getModuleForTab = (tab: string): 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings' => {
-    if (['clients', 'inspections', 'waste'].includes(tab)) return 'operations';
+    if (['clients', 'terminated_clients', 'inspections', 'waste'].includes(tab)) return 'operations';
     if (['legislations', 'requests'].includes(tab)) return 'compliance';
     if (tab === 'actions') return 'actions';
-    if (['reports', 'document_matrix', 'opinions', 'definitions'].includes(tab)) return 'documents';
-    if (['finance_summary', 'finance_payments', 'finance_expenses'].includes(tab)) return 'finance';
+    if (['reports', 'document_matrix', 'document_requests', 'msds', 'opinions', 'definitions'].includes(tab)) return 'documents';
+    if (['finance_summary', 'finance_payments', 'finance_expenses', 'staff_expense_submission'].includes(tab)) return 'finance';
     if (['team', 'org_chart', 'evaluations', 'departed'].includes(tab)) return 'hr';
     return 'settings';
   };
@@ -5768,7 +6265,14 @@ export default function ConsultantPanel() {
     } else if (moduleName === 'documents') {
       setActiveTab('reports');
     } else if (moduleName === 'finance') {
-      setActiveTab('finance_summary');
+      // Personel/şef finance_summary'yi göremez (canViewFinance=false) - o
+      // sekmeye zorlarsak içerik alanı boş kalır ("sayfa açılmıyor" hatası).
+      // Onlar için tek görebildikleri "Gider Ekle" sekmesine gidilir.
+      if (canViewFinance) {
+        setActiveTab('finance_summary');
+      } else {
+        setActiveTab('staff_expense_submission');
+      }
     } else if (moduleName === 'hr') {
       if (canViewTeam) {
         setActiveTab('team');
@@ -5789,6 +6293,7 @@ export default function ConsultantPanel() {
       icon: <Building size={18} />,
       tabs: [
         { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients },
+        { id: 'terminated_clients', label: 'Hizmeti Sonlandırılan Firmalar', icon: <XCircle size={14} />, show: canViewFinance },
         { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: true },
         { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: true },
       ]
@@ -5818,6 +6323,7 @@ export default function ConsultantPanel() {
         { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports },
         { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: true },
         { id: 'document_requests', label: 'Evrak Talepleri', icon: <Inbox size={14} />, show: true },
+        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: true },
         { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: true },
         {
           id: 'definitions',
@@ -5835,6 +6341,7 @@ export default function ConsultantPanel() {
         { id: 'finance_summary', label: 'Finansal Özet', icon: <PieChart size={14} />, show: canViewFinance },
         { id: 'finance_payments', label: 'Müşteri Ödemeleri', icon: <CheckCircle size={14} />, show: canViewFinance },
         { id: 'finance_expenses', label: 'Gider Yönetimi', icon: <Trash2 size={14} />, show: canViewFinance },
+        { id: 'staff_expense_submission', label: 'Gider Ekle', icon: <PlusCircle size={14} />, show: userRole === 'corporate_staff' || userRole === 'corporate_chief' },
       ]
     },
     {
@@ -6288,15 +6795,15 @@ export default function ConsultantPanel() {
                           )}
                           {client.permit_stage === 'ek1' ? (
                             <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-450 dark:border-rose-900/50 uppercase">
-                              EK-1
+                              Çevre İzin EK-1
                             </span>
                           ) : client.permit_stage === 'ek2' ? (
                             <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-450 dark:border-amber-900/50 uppercase">
-                              EK-2
+                              Çevre İzin EK-2
                             </span>
                           ) : (
                             <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-gray-50 text-gray-655 border-gray-200 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-800 uppercase">
-                              Kapsam Dışı
+                              Çevre İzin Kapsam Dışı
                             </span>
                           )}
                           {client.ced_status === 'ek1' ? (
@@ -6307,7 +6814,11 @@ export default function ConsultantPanel() {
                             <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/20 dark:text-indigo-400 dark:border-indigo-900/50 uppercase">
                               ÇED EK-2
                             </span>
-                          ) : null}
+                          ) : (
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-gray-50 text-gray-655 border-gray-200 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-800 uppercase">
+                              ÇED Kapsam Dışı
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -6337,13 +6848,27 @@ export default function ConsultantPanel() {
                         </div>
                       );
                     })()}
-                    {client.service_start_date && (() => {
-                      const status = getContractStatus(client.service_start_date);
+                    {(() => {
+                      const status = getClientServiceStatus(client.id, client.service_start_date, client.service_terminated_at);
+                      const periods = servicePeriods
+                        .filter((p) => p.client_id === client.id)
+                        .sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
+                      const isHistoryOpen = !!expandedPeriodHistory[client.id];
+                      const isRenewing = renewingClientId === client.id;
+
                       return (
                         <div className="mt-3 p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800 space-y-2">
                           <div className="flex justify-between items-center">
                             <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Sözleşme Durumu</span>
-                            {status.isExpired ? (
+                            {!status ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">
+                                Hizmet Başlatılmadı
+                              </span>
+                            ) : status.isTerminated ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">
+                                Hizmet Sonlandırıldı
+                              </span>
+                            ) : status.isExpired ? (
                               <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/50 uppercase">
                                 Süresi Geçti
                               </span>
@@ -6357,20 +6882,128 @@ export default function ConsultantPanel() {
                               </span>
                             )}
                           </div>
-                          <div className="flex justify-between text-[11px] text-gray-500">
-                            <span>Başlangıç: <b>{new Date(client.service_start_date).toLocaleDateString('tr-TR')}</b></span>
-                            <span>Bitiş: <b>{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
-                          </div>
+
+                          {status && (
+                            <div className="flex justify-between text-[11px] text-gray-500">
+                              <span>Başlangıç: <b>{status.startDate.toLocaleDateString('tr-TR')}</b></span>
+                              <span>Bitiş: <b>{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
+                            </div>
+                          )}
+                          {status && (
+                            <div className="flex justify-between text-[11px] text-gray-500">
+                              <span>Bu Dönem Ücreti:</span>
+                              <b className="text-gray-800 dark:text-slate-200">{status.currentFee.toLocaleString('tr-TR')} TL/ay</b>
+                            </div>
+                          )}
+
                           {client.contract_file_url && (
                             <div className="pt-1.5 border-t border-dashed border-gray-200 dark:border-slate-700 flex justify-end">
-                              <a 
-                                href={client.contract_file_url} 
-                                target="_blank" 
+                              <a
+                                href={client.contract_file_url}
+                                target="_blank"
                                 rel="noreferrer"
                                 className="text-[11px] text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 font-bold flex items-center gap-1 transition"
                               >
                                 Sözleşme Nüshası ↗
                               </a>
+                            </div>
+                          )}
+
+                          {canViewFinance && (
+                            <div className="pt-1.5 border-t border-dashed border-gray-200 dark:border-slate-700 flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (periods.length === 0) return;
+                                  setExpandedPeriodHistory((prev) => ({ ...prev, [client.id]: !isHistoryOpen }));
+                                }}
+                                className="text-[10px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                                disabled={periods.length === 0}
+                              >
+                                {periods.length > 0 ? `Dönem Geçmişi (${periods.length}) ${isHistoryOpen ? '▲' : '▼'}` : ''}
+                              </button>
+                              <div className="flex items-center gap-3">
+                                {status && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setTerminatingClientId(client.id)}
+                                    className="text-[11px] font-bold text-rose-600 hover:text-rose-800 dark:text-rose-400 dark:hover:text-rose-300"
+                                  >
+                                    Hizmet Sonlandır
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRenewingClientId(isRenewing ? null : client.id);
+                                    setRenewMode('auto');
+                                    setRenewCustomEndDate('');
+                                    setRenewFee(status ? String(status.currentFee) : '');
+                                  }}
+                                  className="text-[11px] font-bold text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                                >
+                                  {isRenewing ? 'Vazgeç' : status ? 'Hizmet Yenile' : 'Hizmet Başlat'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {isHistoryOpen && periods.length > 0 && (
+                            <div className="space-y-1 pt-1">
+                              {periods.map((p) => (
+                                <div key={p.id} className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400 bg-white dark:bg-slate-950/30 rounded-lg px-2 py-1 border border-slate-100 dark:border-slate-800">
+                                  <span>{new Date(p.start_date).toLocaleDateString('tr-TR')} – {new Date(p.end_date).toLocaleDateString('tr-TR')}</span>
+                                  <b className="text-slate-700 dark:text-slate-300">{Number(p.monthly_fee).toLocaleString('tr-TR')} TL/ay</b>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {isRenewing && (
+                            <div className="mt-2 pt-2 border-t border-dashed border-gray-200 dark:border-slate-700 space-y-2">
+                              <div className="flex gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setRenewMode('auto')}
+                                  className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-bold border ${renewMode === 'auto' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700'}`}
+                                >
+                                  1 Yıl Uzat (Otomatik)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRenewMode('custom')}
+                                  className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-bold border ${renewMode === 'custom' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700'}`}
+                                >
+                                  Özel Bitiş Tarihi
+                                </button>
+                              </div>
+                              {renewMode === 'custom' && (
+                                <input
+                                  type="date"
+                                  value={renewCustomEndDate}
+                                  onChange={(e) => setRenewCustomEndDate(e.target.value)}
+                                  className="w-full border rounded-lg px-2 py-1.5 text-[11px] bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                              )}
+                              <div>
+                                <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Bu Dönem İçin Aylık Ücret (TL) *</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={renewFee}
+                                  onChange={(e) => setRenewFee(e.target.value)}
+                                  placeholder="ör. 6500"
+                                  className="w-full border rounded-lg px-2 py-1.5 text-[11px] bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRenewClientService(client.id)}
+                                disabled={savingRenewal}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-[11px] font-bold disabled:opacity-50"
+                              >
+                                {savingRenewal ? 'Kaydediliyor...' : 'Kaydet ve Uzat'}
+                              </button>
                             </div>
                           )}
                         </div>
@@ -7470,12 +8103,22 @@ export default function ConsultantPanel() {
                           </div>
                         </div>
                       </div>
-                      <div className="text-right text-xs shrink-0">
+                      <div className="text-right text-xs shrink-0 space-y-1.5">
                         <div className="text-gray-500 dark:text-gray-400">
                           {d.hire_date ? new Date(d.hire_date).toLocaleDateString('tr-TR') : '?'} →{' '}
                           <span className="font-bold text-rose-600">{new Date(d.exit_date).toLocaleDateString('tr-TR')}</span>
                         </div>
                         {months != null && <div className="text-slate-400">{months} ay çalıştı</div>}
+                        {userRole === 'premium_corporate' && (
+                          <button
+                            type="button"
+                            onClick={() => handleReactivateEmployee(d.profile_id)}
+                            disabled={reactivatingEmployeeId === d.profile_id}
+                            className="text-[11px] font-bold text-emerald-600 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 disabled:opacity-50"
+                          >
+                            {reactivatingEmployeeId === d.profile_id ? 'İşleniyor...' : 'Geri Al'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -8119,6 +8762,132 @@ export default function ConsultantPanel() {
                   </div>
                 );
               })()
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MSDS/SDS TAKİBİ TAB */}
+      {activeTab === 'msds' && (
+        <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <div>
+              <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                <FlaskConical className="text-teal-600" size={22} /> MSDS/SDS Takibi
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">
+                Atandığınız işletmeler için toplu yüklenen Malzeme Güvenlik Bilgi Formlarının (MSDS/SDS) geçerlilik durumunu takip edin.
+              </p>
+            </div>
+            <Link
+              to="/consultant/msds/add"
+              className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-md transition flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Plus size={16} /> Yeni Toplu MSDS Yükle
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {(['expired', 'approaching', 'valid', 'unknown'] as MsdsStatus[]).map((s) => {
+              const count = msdsDocuments.filter(
+                (m: any) => computeMsdsStatus(m.expiry_date, m.warning_threshold_days || 30) === s
+              ).length;
+              return (
+                <div
+                  key={s}
+                  className={`rounded-xl border p-4 ${STATUS_BADGE_CLASSES_MSDS[s]}`}
+                >
+                  <div className="text-2xl font-black">{count}</div>
+                  <div className="text-[11px] font-bold uppercase">{STATUS_LABELS_TR[s]}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-gray-100 dark:border-slate-700">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={msdsClientFilter}
+                  onChange={(e) => setMsdsClientFilter(e.target.value)}
+                  className="p-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none text-[11px] font-bold text-slate-700 dark:text-slate-300"
+                >
+                  <option value="">Tüm İşletmeler</option>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <div className="flex gap-1.5">
+                  {(['all', 'expired', 'approaching', 'valid'] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setMsdsStatusFilter(s)}
+                      className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition ${
+                        msdsStatusFilter === s
+                          ? 'bg-teal-600 text-white border-teal-600'
+                          : 'bg-white dark:bg-slate-900 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {s === 'all' ? 'Tümü' : STATUS_LABELS_TR[s]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                onClick={handleExportMsdsToExcel}
+                disabled={msdsFilteredSorted.length === 0}
+                className="flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-400 px-3 py-1.5 rounded-lg text-xs font-bold transition disabled:opacity-50"
+              >
+                <Download size={13} /> Excel'e Aktar
+              </button>
+            </div>
+
+            {loadingMsds ? (
+              <div className="py-10 text-center text-xs text-gray-400">Yükleniyor...</div>
+            ) : msdsFilteredSorted.length === 0 ? (
+              <div className="py-10 text-center text-xs text-gray-400 italic">Bu filtreye uyan MSDS/SDS kaydı yok.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-900/50 text-[10px] uppercase text-slate-500 dark:text-slate-400">
+                      <th className="text-left px-4 py-2.5 font-bold">Firma</th>
+                      <th className="text-left px-4 py-2.5 font-bold">Ürün Adı</th>
+                      <th className="text-left px-4 py-2.5 font-bold">Ana Tarih</th>
+                      <th className="text-left px-4 py-2.5 font-bold">Geçerlilik Bitiş</th>
+                      <th className="text-left px-4 py-2.5 font-bold">Durum</th>
+                      <th className="text-left px-4 py-2.5 font-bold">Kalan/Geçen Gün</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                    {msdsFilteredSorted.map((m: any) => {
+                      const status = computeMsdsStatus(m.expiry_date, m.warning_threshold_days || 30);
+                      const days = computeDaysRemaining(m.expiry_date);
+                      return (
+                        <tr key={m.id}>
+                          <td className="px-4 py-2.5 font-bold text-gray-700 dark:text-gray-200">{m.client?.name || '—'}</td>
+                          <td className="px-4 py-2.5 text-gray-600 dark:text-gray-300">{m.product_name || '—'}</td>
+                          <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">
+                            {m.primary_date || '—'}
+                            {m.primary_date_source_label && (
+                              <span className="text-[10px] text-gray-400 block">{m.primary_date_source_label}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">{m.expiry_date || '—'}</td>
+                          <td className="px-4 py-2.5">
+                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase border ${STATUS_BADGE_CLASSES_MSDS[status]}`}>
+                              {STATUS_LABELS_TR[status]}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">
+                            {days === null ? '—' : days >= 0 ? `${days} gün kaldı` : `${Math.abs(days)} gün geçti`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
@@ -9774,6 +10543,63 @@ export default function ConsultantPanel() {
         </div>
       )}
 
+      {/* --- HİZMETİ SONLANDIRILAN FİRMALAR TAB PANELİ --- */}
+      {activeTab === 'terminated_clients' && (
+        <div className="max-w-5xl mx-auto space-y-6 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2 mb-1">
+              <XCircle className="text-rose-600" size={22} /> Hizmeti Sonlandırılan Firmalar
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+              Bu firmalarla hizmet ilişkisi sonlandırılmıştır (salt görüntüleme). Sonlandırma tarihinden sonrası için ödeme/alacak kaydı oluşturulmaz. Yeniden hizmet vermeye başlamak için "Yeniden Aktif Et"i kullanın.
+            </p>
+          </div>
+
+          {loadingTerminatedClients ? (
+            <div className="py-10 text-center text-xs text-gray-400">Yükleniyor...</div>
+          ) : terminatedClients.length === 0 ? (
+            <div className="py-14 text-center text-xs text-gray-400 italic bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl">
+              Hizmeti sonlandırılan bir firma yok.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {terminatedClients.map((client) => {
+                const lastPeriod = servicePeriods
+                  .filter((p) => p.client_id === client.id)
+                  .sort((a, b) => (a.start_date < b.start_date ? 1 : -1))[0];
+                return (
+                  <div key={client.id} className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm p-5 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-sm text-gray-800 dark:text-slate-200">{client.name}</span>
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">
+                        Sonlandırıldı
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 dark:text-slate-400 space-y-0.5">
+                      <div>Hizmet Başlangıcı: <b className="text-gray-700 dark:text-slate-300">{client.service_start_date ? new Date(client.service_start_date).toLocaleDateString('tr-TR') : '-'}</b></div>
+                      <div>Sonlandırma Tarihi: <b className="text-rose-600 dark:text-rose-400">{client.service_terminated_at ? new Date(client.service_terminated_at).toLocaleDateString('tr-TR') : '-'}</b></div>
+                      {lastPeriod && (
+                        <div>Son Dönem Ücreti: <b className="text-gray-700 dark:text-slate-300">{Number(lastPeriod.monthly_fee).toLocaleString('tr-TR')} TL/ay</b></div>
+                      )}
+                    </div>
+                    {canViewFinance && (
+                      <button
+                        type="button"
+                        onClick={() => handleReactivateClient(client.id)}
+                        disabled={reactivatingClientId === client.id}
+                        className="mt-2 text-[11px] font-bold text-emerald-600 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 disabled:opacity-50"
+                      >
+                        {reactivatingClientId === client.id ? 'İşleniyor...' : 'Yeniden Aktif Et'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* --- ATIK YÖNETİMİ TAB PANELİ --- */}
       {activeTab === 'waste' && (
         <div className="animate-fadeIn">
@@ -10020,13 +10846,18 @@ export default function ConsultantPanel() {
             const totalCollected = financePayments
               .filter(p => p.is_paid)
               .reduce((sum, p) => sum + Number(p.amount), 0);
-              
-            let totalExpected = 0;
-            clients.forEach(client => {
-              const months = getMonthsSinceServiceStart(client.service_start_date);
-              totalExpected += months.length * Number(client.monthly_fee || 0);
-            });
-            
+
+            // Hak edilen gelir artık her ay için var olan client_payments
+            // satırlarının (dönem ücretine göre otomatik üretilmiş, bkz.
+            // generate_missing_client_payments) toplamıdır - canlı monthly_fee
+            // ile geçmişe dönük yeniden hesaplanmaz. Hizmeti sonlandırılan
+            // firmalar da dahildir - sonlandırma tarihine kadarki ödenmemiş
+            // alacakları hâlâ gerçek bir borç, gözden kaybolmamalı.
+            const visibleClientIds = new Set([...clients, ...terminatedClients].map((c) => c.id));
+            const totalExpected = financePayments
+              .filter((p) => visibleClientIds.has(p.client_id))
+              .reduce((sum, p) => sum + Number(p.amount), 0);
+
             const totalUnpaid = Math.max(0, totalExpected - totalCollected);
             const totalExpenses = financeExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
             const netProfit = totalCollected - totalExpenses;
@@ -10141,17 +10972,49 @@ export default function ConsultantPanel() {
                               }
                             }
 
-                            return monthsList.map(item => {
-                              const itemMonthEnd = new Date(item.year, item.month, 0);
-                              const expectedInMonth = clients
-                                .filter(c => c.service_start_date && new Date(c.service_start_date) <= itemMonthEnd)
-                                .reduce((sum, c) => sum + Number(c.monthly_fee || 0), 0);
+                            // Hizmeti sonlandırılan firmalar da dahil - sonlandırma
+                            // tarihine kadarki ödenmemiş alacakları gerçek bir borç.
+                            const allClientsForMonths = [...clients, ...terminatedClients];
+                            const visibleClientIdsForMonths = new Set(allClientsForMonths.map((c) => c.id));
+                            const clientNameById = new Map(allClientsForMonths.map((c) => [c.id, c.name]));
 
-                              const collectedInMonth = financePayments
-                                .filter(p => p.year === item.year && p.month === item.month && p.is_paid)
+                            return monthsList.map(item => {
+                              // Hak edilen gelir artık o ay için var olan
+                              // client_payments satırlarının toplamı - dönem
+                              // ücretine göre otomatik üretildiği için canlı
+                              // monthly_fee'yi geçmişe dönük uygulamaz.
+                              const paymentsInMonth = financePayments.filter(
+                                p => visibleClientIdsForMonths.has(p.client_id) && p.year === item.year && p.month === item.month
+                              );
+                              const expectedInMonth = paymentsInMonth.reduce((sum, p) => sum + Number(p.amount), 0);
+
+                              const collectedInMonth = paymentsInMonth
+                                .filter(p => p.is_paid)
                                 .reduce((sum, p) => sum + Number(p.amount), 0);
 
                               const unpaidInMonth = Math.max(0, expectedInMonth - collectedInMonth);
+
+                              // Bu ay için hangi firmaların tahsilatı bekliyor -
+                              // ay detayı açılınca gösterilir.
+                              const pendingFirmsInMonth = paymentsInMonth
+                                .filter(p => !p.is_paid && Number(p.amount) > 0)
+                                .map(p => ({
+                                  clientId: p.client_id,
+                                  name: clientNameById.get(p.client_id) || 'Bilinmeyen Firma',
+                                  amount: Number(p.amount),
+                                  isTerminated: terminatedClients.some((c) => c.id === p.client_id),
+                                }))
+                                .sort((a, b) => b.amount - a.amount);
+
+                              const collectedFirmsInMonth = paymentsInMonth
+                                .filter(p => p.is_paid)
+                                .map(p => ({
+                                  clientId: p.client_id,
+                                  name: clientNameById.get(p.client_id) || 'Bilinmeyen Firma',
+                                  amount: Number(p.amount),
+                                  isTerminated: terminatedClients.some((c) => c.id === p.client_id),
+                                }))
+                                .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
 
                               const expensesInMonth = financeExpenses
                                 .filter(e => {
@@ -10211,7 +11074,64 @@ export default function ConsultantPanel() {
                                   </tr>
                                   {isMonthExpanded && (
                                     <tr className="bg-slate-50/70 dark:bg-slate-900/30">
-                                      <td colSpan={6} className="py-3 px-4">
+                                      <td colSpan={6} className="py-3 px-4 space-y-4">
+                                        <div>
+                                          <h4 className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                                            Gelir Detayı — {expectedInMonth.toLocaleString('tr-TR')} TL hak edilen, {collectedInMonth.toLocaleString('tr-TR')} TL tahsil edildi
+                                            {unpaidInMonth > 0 && `, ${unpaidInMonth.toLocaleString('tr-TR')} TL bekliyor`}
+                                          </h4>
+                                          {pendingFirmsInMonth.length === 0 ? (
+                                            <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">Bu ay için bekleyen tahsilat yok - tamamı tahsil edildi.</p>
+                                          ) : (
+                                            <div className="space-y-1.5">
+                                              {pendingFirmsInMonth.map((f) => (
+                                                <div key={f.clientId} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-amber-100 dark:border-amber-900/40">
+                                                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                                                    {f.name}
+                                                    {f.isTerminated && (
+                                                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">Sonlandırıldı</span>
+                                                    )}
+                                                  </span>
+                                                  <span className="text-xs font-bold text-amber-600">{f.amount.toLocaleString('tr-TR')} TL bekliyor</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+
+                                          {collectedFirmsInMonth.length > 0 && (
+                                            <div className="mt-2">
+                                              <button
+                                                type="button"
+                                                onClick={(ev) => {
+                                                  ev.stopPropagation();
+                                                  setShowCollectedFirmsMonth(showCollectedFirmsMonth === monthKey ? null : monthKey);
+                                                }}
+                                                className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300"
+                                              >
+                                                {showCollectedFirmsMonth === monthKey ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                                Tahsil Edilenleri Göster ({collectedFirmsInMonth.length})
+                                              </button>
+                                              {showCollectedFirmsMonth === monthKey && (
+                                                <div className="space-y-1.5 mt-2">
+                                                  {collectedFirmsInMonth.map((f) => (
+                                                    <div key={f.clientId} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-emerald-100 dark:border-emerald-900/40">
+                                                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                                                        {f.name}
+                                                        {f.isTerminated && (
+                                                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">Sonlandırıldı</span>
+                                                        )}
+                                                      </span>
+                                                      <span className="text-xs font-bold text-emerald-600">{f.amount.toLocaleString('tr-TR')} TL ödendi</span>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <div>
+                                          <h4 className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Gider Detayı</h4>
                                         {categoryBreakdown.length === 0 ? (
                                           <p className="text-[11px] text-slate-400 italic">Bu ay için gider kaydı yok.</p>
                                         ) : (
@@ -10226,8 +11146,15 @@ export default function ConsultantPanel() {
                                                       .filter((e) => (e.category || 'Diğer') === cat.category)
                                                       .forEach((e) => {
                                                         const empId = e.employee_id || 'unassigned';
+                                                        // Ayrılan personel artık teamMembers'ta (organization_id null
+                                                        // olduğu için) görünmez - geçmiş maaş gideri kaydı için ismi
+                                                        // departedEmployees'ten aranır, "Bilinmeyen Personel" yerine.
                                                         const name = e.employee_id
-                                                          ? (teamMembers.find((m) => m.id === e.employee_id)?.full_name || 'Bilinmeyen Personel')
+                                                          ? (
+                                                              teamMembers.find((m) => m.id === e.employee_id)?.full_name ||
+                                                              departedEmployees.find((d) => d.profile_id === e.employee_id)?.profile?.full_name ||
+                                                              'Bilinmeyen Personel'
+                                                            )
                                                           : 'Genel / Kişiye Özel Olmayan';
                                                         const row = byEmployee.find((r) => r.employeeId === empId);
                                                         if (row) row.total += Number(e.amount);
@@ -10277,6 +11204,7 @@ export default function ConsultantPanel() {
                                             })}
                                           </div>
                                         )}
+                                        </div>
                                       </td>
                                     </tr>
                                   )}
@@ -10306,6 +11234,25 @@ export default function ConsultantPanel() {
 
           {renderFinancePeriodSelector()}
 
+          <div className="flex gap-1.5 p-1 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 w-fit">
+            {([
+              { key: 'active', label: 'Aktif Firmalar' },
+              { key: 'terminated', label: 'Sonlandırılan Firmalar' },
+              { key: 'all', label: 'Tümü' },
+            ] as const).map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setFinancePaymentsScope(opt.key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  financePaymentsScope === opt.key ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -10313,15 +11260,46 @@ export default function ConsultantPanel() {
                   <th className="pb-3 font-bold">Müşteri / İşletme</th>
                   <th className="pb-3 font-bold">Hizmet Başlangıcı</th>
                   <th className="pb-3 font-bold w-48">Aylık Ücret (Matrah)</th>
+                  <th className="pb-3 font-bold">Güncel Hizmet Geçerlilik Tarihi</th>
                   <th className="pb-3 font-bold text-right">Ödeme Takvimi & Durumu</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
-                {clients.map((client) => {
+                {(financePaymentsScope === 'active' ? clients : financePaymentsScope === 'terminated' ? terminatedClients : [...clients, ...terminatedClients]).map((client) => {
+                  // Sonlandırılan bir firma için "vadesi gelen" ay listesi
+                  // sonlandırma tarihinde durur - sonrası için zaten hiç borç
+                  // üretilmiyor, "0 TL / ödenmedi" gibi anlamsız satırlar gösterilmesin.
+                  // Cari ay (henüz tamamlanmamış) da hariç tutulur - alacak
+                  // üretici fonksiyon (generate_missing_client_payments) da
+                  // aynı şekilde bu ayı henüz üretmiyor; dahil edilirse hiç
+                  // satırı olmadığı için her zaman "ödenmedi" gibi görünüp
+                  // N/M oranını gerçekte vadesi gelmemiş bir ayla şişiriyordu.
+                  const now = new Date();
                   const monthsList = getMonthsSinceServiceStart(client.service_start_date)
-                    .filter((item) => matchesFinancePeriod(`${item.year}-${String(item.month).padStart(2, '0')}`));
+                    .filter((item) => matchesFinancePeriod(`${item.year}-${String(item.month).padStart(2, '0')}`))
+                    .filter((item) => item.year < now.getFullYear() || (item.year === now.getFullYear() && item.month < now.getMonth() + 1))
+                    .filter((item) => {
+                      if (!client.service_terminated_at) return true;
+                      const term = new Date(client.service_terminated_at);
+                      return item.year < term.getFullYear() || (item.year === term.getFullYear() && item.month <= term.getMonth() + 1);
+                    });
                   const isEditing = updatingClientFee === client.id;
-                  const amount = Number(client.monthly_fee || 0);
+                  // Blanket cari monthly_fee yerine, o ayı kapsayan dönemin
+                  // ücretini (ya da zaten üretilmiş client_payments satırının
+                  // tutarını) kullan - geçmiş aylar kendi dönem ücretinde kalır.
+                  const getAmountForMonth = (year: number, month: number) => {
+                    const existing = financePayments.find(p => p.client_id === client.id && p.year === year && p.month === month);
+                    if (existing) return Number(existing.amount);
+                    const monthDate = new Date(year, month - 1, 1);
+                    const period = servicePeriods.find(
+                      (p) => p.client_id === client.id && new Date(p.start_date) <= monthDate && new Date(p.end_date) > monthDate
+                    );
+                    // O ayı kapsayan bir dönem yoksa (sözleşme o ay için hiç
+                    // yenilenmemiş/sonlandırılmış), bayat cari ücrete geri
+                    // düşmek yerine 0 gösterilir - aksi halde geçersiz bir
+                    // ay için yanlış bir tutar/borç ima edilmiş olurdu.
+                    return period ? Number(period.monthly_fee) : 0;
+                  };
 
                   const isMonthPaid = (year: number, month: number) =>
                     financePayments.find(p => p.client_id === client.id && p.year === year && p.month === month)?.is_paid || false;
@@ -10329,6 +11307,9 @@ export default function ConsultantPanel() {
                   const paidCount = monthsList.filter(item => isMonthPaid(item.year, item.month)).length;
                   const unpaidCount = monthsList.length - paidCount;
                   const paidPct = monthsList.length > 0 ? Math.round((paidCount / monthsList.length) * 100) : 0;
+                  const unpaidTotal = monthsList
+                    .filter((item) => !isMonthPaid(item.year, item.month))
+                    .reduce((sum, item) => sum + getAmountForMonth(item.year, item.month), 0);
 
                   const monthsByYear = new Map<number, typeof monthsList>();
                   monthsList.forEach(item => {
@@ -10339,6 +11320,7 @@ export default function ConsultantPanel() {
                   const currentYear = new Date().getFullYear();
 
                   const isExpanded = !!expandedPaymentClients[client.id];
+                  const serviceStatus = getClientServiceStatus(client.id, client.service_start_date, client.service_terminated_at);
 
                   return (
                     <tr key={client.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10 align-top">
@@ -10355,8 +11337,11 @@ export default function ConsultantPanel() {
                             <ChevronRight size={13} className="text-slate-400 shrink-0" />
                           )}
                           <div>
-                            <div className="font-bold text-slate-850 dark:text-slate-200 text-xs group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                            <div className="font-bold text-slate-850 dark:text-slate-200 text-xs group-hover:text-blue-600 dark:group-hover:text-blue-400 flex items-center gap-1.5">
                               {client.name}
+                              {client.service_terminated_at && (
+                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">Sonlandırıldı</span>
+                              )}
                             </div>
                             <div className="text-[10px] text-slate-400 mt-0.5">{client.email || 'Telefon/E-posta girilmemiş'}</div>
                           </div>
@@ -10406,6 +11391,24 @@ export default function ConsultantPanel() {
                           </div>
                         )}
                       </td>
+                      <td className="py-4">
+                        {!serviceStatus ? (
+                          <span className="text-slate-400 italic text-[11px]">Hizmet başlatılmadı</span>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-slate-700 dark:text-slate-300">{serviceStatus.expiryDate.toLocaleDateString('tr-TR')}</span>
+                            {serviceStatus.isTerminated ? (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">Sonlandırıldı</span>
+                            ) : serviceStatus.isExpired ? (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/50 uppercase">Süresi Geçti</span>
+                            ) : serviceStatus.isWarning ? (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase">Son {serviceStatus.daysLeft} Gün</span>
+                            ) : (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-green-50 text-green-700 border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-900/50 uppercase">Geçerli</span>
+                            )}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-4 text-right">
                         {monthsList.length === 0 ? (
                           <span className="text-slate-400 italic text-[11px]">Hizmet başlangıç tarihi belirtilmemiş.</span>
@@ -10430,7 +11433,7 @@ export default function ConsultantPanel() {
                               </div>
                               {unpaidCount > 0 && (
                                 <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">
-                                  {(unpaidCount * amount).toLocaleString('tr-TR')} TL bekliyor
+                                  {unpaidTotal.toLocaleString('tr-TR')} TL bekliyor
                                 </span>
                               )}
                             </button>
@@ -10472,7 +11475,7 @@ export default function ConsultantPanel() {
                                               key={toggleKey}
                                               type="button"
                                               disabled={isToggling}
-                                              onClick={() => handleTogglePaymentStatus(client.id, item.year, item.month, !isPaid, amount)}
+                                              onClick={() => handleTogglePaymentStatus(client.id, item.year, item.month, !isPaid, getAmountForMonth(item.year, item.month))}
                                               title={`${item.label} — ${isPaid ? 'Ödendi. Geri almak için tıklayın.' : 'Ödenmedi. Ödendi olarak işaretlemek için tıklayın.'}`}
                                               className={`flex items-center gap-1 pl-1.5 pr-2 py-1 rounded-lg border text-[10px] font-bold transition-colors ${
                                                 isPaid
@@ -10548,6 +11551,7 @@ export default function ConsultantPanel() {
                     <th className="pb-3 font-bold">Kategori</th>
                     <th className="pb-3 font-bold">Tutar</th>
                     <th className="pb-3 font-bold">Gider Tarihi</th>
+                    <th className="pb-3 font-bold">Gönderen / Ödeme Türü</th>
                     <th className="pb-3 font-bold">Notlar</th>
                     <th className="pb-3 font-bold text-right">İşlem</th>
                   </tr>
@@ -10579,6 +11583,41 @@ export default function ConsultantPanel() {
                       <td className="py-3.5 text-slate-500 font-bold">
                         {new Date(exp.expense_date).toLocaleDateString('tr-TR')}
                       </td>
+                      <td className="py-3.5">
+                        {exp.submitted_by ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-slate-600 dark:text-slate-300 font-bold">
+                              {teamMembers.find((m) => m.id === exp.submitted_by)?.full_name ||
+                                departedEmployees.find((d) => d.profile_id === exp.submitted_by)?.profile?.full_name ||
+                                'Bilinmeyen Personel'}
+                            </span>
+                            {exp.payment_type && (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase whitespace-nowrap">
+                                {PAYMENT_TYPE_LABELS[exp.payment_type] || exp.payment_type}
+                              </span>
+                            )}
+                            {exp.receipt_url && (
+                              <a href={exp.receipt_url} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title="Dekont/Fiş">
+                                <ExternalLink size={12} />
+                              </a>
+                            )}
+                            {exp.approved_at ? (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/50 uppercase whitespace-nowrap">Onaylandı</span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleApproveExpense(exp.id)}
+                                className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase whitespace-nowrap hover:bg-amber-100 dark:hover:bg-amber-950/40 transition"
+                                title="Onaylayınca personel bu gideri artık silemez"
+                              >
+                                Onayla
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-300 dark:text-slate-600">-</span>
+                        )}
+                      </td>
                       <td className="py-3.5 text-slate-400 max-w-xs truncate" title={exp.notes}>
                         {exp.notes || '-'}
                       </td>
@@ -10597,6 +11636,167 @@ export default function ConsultantPanel() {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* --- PERSONEL/ŞEF GİDER EKLEME (dar kapsamlı) --- */}
+      {activeTab === 'staff_expense_submission' && (
+        <div className="max-w-2xl mx-auto space-y-6 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+            <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2 mb-1">
+              <PlusCircle className="text-blue-600" size={22} /> Gider Ekle
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-5 font-medium">
+              Şirket adına ya da kendi cebinizden yaptığınız bir harcamayı buradan girin. Girdiğiniz gider, o ayın gider kaydına otomatik eklenir ve Finansal Özet'e yansır.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Açıklama *</label>
+                <input
+                  type="text"
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                  placeholder="Örn: Müşteri ziyareti yakıt gideri"
+                  value={newStaffExpense.title}
+                  onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, title: e.target.value }))}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Tarih *</label>
+                  <input
+                    type="date"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                    value={newStaffExpense.expense_date}
+                    onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, expense_date: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Tutar (TL) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                    placeholder="0.00"
+                    value={newStaffExpense.amount}
+                    onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, amount: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Kategori</label>
+                  <select
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                    value={newStaffExpense.category}
+                    onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, category: e.target.value }))}
+                  >
+                    <option value="Ofis/Kira">Ofis / Kira</option>
+                    <option value="Yol/Ulaşım">Yol / Ulaşım</option>
+                    <option value="Yazılım/Lisans">Yazılım / Lisans</option>
+                    <option value="Vergi/Harç">Vergi / Harç</option>
+                    <option value="Diğer">Diğer</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Ödeme Türü *</label>
+                  <select
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                    value={newStaffExpense.payment_type}
+                    onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, payment_type: e.target.value as typeof prev.payment_type }))}
+                  >
+                    <option value="sirket_karti">{PAYMENT_TYPE_LABELS.sirket_karti}</option>
+                    <option value="sirket_sahsi">{PAYMENT_TYPE_LABELS.sirket_sahsi}</option>
+                    <option value="kisisel_odeme">{PAYMENT_TYPE_LABELS.kisisel_odeme}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Dekont / Fiş (opsiyonel)</label>
+                <input
+                  type="file"
+                  accept="image/*,.pdf"
+                  onChange={(e) => setStaffExpenseReceiptFile(e.target.files?.[0] || null)}
+                  className="w-full text-xs text-slate-600 dark:text-slate-300"
+                />
+                {staffExpenseReceiptFile && (
+                  <span className="text-[11px] text-emerald-600 block mt-1">{staffExpenseReceiptFile.name} seçildi</span>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Not</label>
+                <textarea
+                  rows={2}
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                  value={newStaffExpense.notes}
+                  onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, notes: e.target.value }))}
+                />
+              </div>
+
+              <button
+                onClick={handleSaveStaffExpense}
+                disabled={savingStaffExpense}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-xl font-bold text-sm shadow-md transition disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {savingStaffExpense ? <Loader size={16} className="animate-spin" /> : <PlusCircle size={16} />}
+                {savingStaffExpense ? 'Kaydediliyor...' : 'Gideri Kaydet'}
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-gray-100 dark:border-slate-700">
+              <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200">Gönderdiğim Giderler</h3>
+            </div>
+            {loadingMyStaffExpenses ? (
+              <div className="py-8 text-center text-xs text-gray-400">Yükleniyor...</div>
+            ) : myStaffExpenses.length === 0 ? (
+              <div className="py-8 text-center text-xs text-gray-400 italic">Henüz gider göndermediniz.</div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-700">
+                {myStaffExpenses.map((exp) => (
+                  <div key={exp.id} className="p-3.5 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-bold text-xs text-gray-800 dark:text-slate-200 flex items-center gap-1.5">
+                        {exp.title}
+                        {exp.approved_at ? (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/50 uppercase">Onaylandı</span>
+                        ) : (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase">Onay Bekliyor</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-gray-500 dark:text-slate-400 mt-0.5">
+                        {new Date(exp.expense_date).toLocaleDateString('tr-TR')} · {exp.category} · {PAYMENT_TYPE_LABELS[exp.payment_type] || exp.payment_type}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs font-bold text-rose-600">{Number(exp.amount).toLocaleString('tr-TR')} TL</span>
+                      {exp.receipt_url && (
+                        <a href={exp.receipt_url} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title="Dekont/Fiş">
+                          <ExternalLink size={13} />
+                        </a>
+                      )}
+                      {!exp.approved_at && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMyStaffExpense(exp.id)}
+                          className="text-red-500 hover:text-red-700 cursor-pointer transition p-1"
+                          title="Sil (yanlışlıkla eklediysem)"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -15094,6 +16294,15 @@ export default function ConsultantPanel() {
           loading={kickingQuick}
           onConfirm={handleQuickKick}
           onCancel={() => setPendingKickMember(null)}
+        />
+      )}
+
+      {terminatingClientId && (
+        <TerminateServiceModal
+          clientName={clients.find((c) => c.id === terminatingClientId)?.name || ''}
+          loading={savingTermination}
+          onConfirm={handleTerminateService}
+          onCancel={() => setTerminatingClientId(null)}
         />
       )}
       </div>

@@ -34,11 +34,21 @@ import {
   Inbox,
   Upload,
   Plus,
+  FlaskConical,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
 import { CLIENT_QUESTIONS } from './ClientEvaluationPage';
 import InspectionAnalytics from './InspectionAnalytics';
+import { extractTextFromPdf } from './localScanner';
+import {
+  parseMsdsText,
+  computeExpiryDate,
+  computeMsdsStatus,
+  computeDaysRemaining,
+  MSDS_STATUS_LABELS_TR,
+  MSDS_STATUS_BADGE_CLASSES,
+} from './msdsParser';
 
 const getContractStatus = (startDateStr: string) => {
   const serviceStartDate = new Date(startDateStr);
@@ -61,6 +71,61 @@ const getContractStatus = (startDateStr: string) => {
   };
 };
 
+// Sözleşme (hizmet süresi) dolduktan sonra müşteri en fazla ACCESS_GRACE_DAYS
+// gün daha panele erişebilir; bu sürenin üzerinde panel tamamen kilitlenir
+// (bkz. isLockedOut / kilit ekranı render'ı aşağıda). service_start_date hiç
+// girilmemiş firmalar asla kilitlenmez (eksik veri yüzünden yanlışlıkla
+// müşteriyi dışarıda bırakmamak için).
+const ACCESS_GRACE_DAYS = 30;
+
+type ServiceStatus = { expiryDate: Date; daysLeft: number; isExpired: boolean; isWarning: boolean; startDate: Date; isTerminated: boolean };
+
+// Sözleşme durumu artık sabit "service_start_date + 1 yıl" yerine, en güncel
+// consultant_client_service_periods satırının end_date'ine göre hesaplanır
+// (bkz. add_consultant_client_service_periods.sql - danışman "Hizmet Yenile"
+// dedikçe ardışık yeni dönemler ekleniyor). Henüz hiç dönemi olmayan (eski/
+// taşınmamış veri) bir firma için eski hesaba (service_start_date + 1 yıl)
+// geri düşülür. terminatedAt doluysa (danışman "Hizmet Sonlandır" demişse,
+// bkz. add_client_service_termination.sql) isTerminated=true döner - bu,
+// "unutulmuş yenileme"den kasıtlı olarak ayrı ele alınır (bkz. lockout).
+function computeServiceStatus(
+  periods: Array<{ start_date: string; end_date: string }>,
+  fallbackServiceStartDate: string | null | undefined,
+  terminatedAt?: string | null
+): ServiceStatus | null {
+  const isTerminated = !!terminatedAt;
+  if (periods.length === 0) {
+    if (!fallbackServiceStartDate) return null;
+    const fallback = getContractStatus(fallbackServiceStartDate);
+    return { ...fallback, startDate: new Date(fallbackServiceStartDate), isTerminated };
+  }
+  const sorted = [...periods].sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
+  const latest = sorted[0];
+  const earliest = sorted[sorted.length - 1];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expiry = new Date(latest.end_date);
+  expiry.setHours(0, 0, 0, 0);
+  const diffDays = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  return {
+    startDate: new Date(earliest.start_date),
+    expiryDate: expiry,
+    daysLeft: diffDays,
+    isExpired: diffDays <= 0,
+    isWarning: diffDays > 0 && diffDays <= 30,
+    isTerminated,
+  };
+}
+
+// Kasıtlı sonlandırma, 30 günlük ek süreyi beklemeden hemen kilitler -
+// unutulmuş bir yenilemeden farklı olarak burada danışman zaten bilinçli
+// olarak ilişkiyi bitirdi.
+function computeAccessLockoutFromStatus(status: ServiceStatus | null): boolean {
+  if (!status) return false;
+  if (status.isTerminated) return true;
+  return status.isExpired && -status.daysLeft > ACCESS_GRACE_DAYS;
+}
+
 export default function ClientPanel() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
@@ -82,6 +147,20 @@ export default function ClientPanel() {
   const [documentRequests, setDocumentRequests] = useState<any[]>([]);
   const [docReqUploadFiles, setDocReqUploadFiles] = useState<Record<string, File | null>>({});
   const [fulfillingRequestId, setFulfillingRequestId] = useState<string | null>(null);
+
+  // Hizmet Dönemleri (sözleşme yenileme geçmişi - danışman panelindeki
+  // "Hizmet Başlat/Yenile" ile eklenir, burada salt okunur görüntülenir)
+  const [servicePeriods, setServicePeriods] = useState<any[]>([]);
+
+  // MSDS/SDS öz-servis ("Belgelerim" içinde ayrı alt-alan)
+  const [msdsDocuments, setMsdsDocuments] = useState<any[]>([]);
+  const [docsSubView, setDocsSubView] = useState<'all' | 'msds'>('all');
+  const [editingMsdsId, setEditingMsdsId] = useState<string | null>(null);
+  const [msdsEditProductName, setMsdsEditProductName] = useState('');
+  const [msdsEditPrimaryDate, setMsdsEditPrimaryDate] = useState('');
+  const [msdsEditFile, setMsdsEditFile] = useState<File | null>(null);
+  const [msdsParsing, setMsdsParsing] = useState(false);
+  const [msdsSaving, setMsdsSaving] = useState(false);
 
   // Navigation / Tabs
   const [activeTab, setActiveTab] = useState<'overview' | 'docs' | 'doc_requests' | 'actions' | 'waste' | 'reports' | 'matrix' | 'inspections' | 'legislations' | 'evaluation'>('overview');
@@ -166,7 +245,7 @@ export default function ClientPanel() {
 
   // Açık/Koyu tema tercihi (tarayıcıda hatırlanır)
   const [theme, setTheme] = useState<'light' | 'dark'>(
-    () => (localStorage.getItem('evraklab_client_theme') as 'light' | 'dark') || 'dark'
+    () => (localStorage.getItem('evraklab_client_theme') as 'light' | 'dark') || 'light'
   );
   const toggleTheme = () => {
     setTheme((prev) => {
@@ -249,7 +328,7 @@ export default function ClientPanel() {
       // 2. Get client info
       const { data: client, error: clientErr } = await supabase
         .from('consultant_clients')
-        .select('*, consultant_company:consultant_company_id(name)')
+        .select('*, consultant_company:consultant_company_id(name, email, phone)')
         .eq('id', prof.client_id)
         .single();
 
@@ -257,6 +336,13 @@ export default function ClientPanel() {
         throw new Error('Müşteri firma detayları bulunamadı.');
       }
       setClientDetails(client);
+
+      const { data: periods } = await supabase
+        .from('consultant_client_service_periods')
+        .select('*')
+        .eq('client_id', prof.client_id)
+        .order('start_date', { ascending: false });
+      setServicePeriods(periods || []);
 
       const { data: permitCats } = await supabase
         .from('environmental_permit_categories')
@@ -293,6 +379,14 @@ export default function ClientPanel() {
           return label && label.trim().toLowerCase() === cleanClientName;
         });
         setDocuments(matchedDocs);
+
+        // 3b. MSDS/SDS kayıtları (Belgelerim içinde ayrı alt-alan)
+        const msdsRows = await fetchMsdsDocuments(prof.client_id);
+        setMsdsDocuments(msdsRows);
+
+        // Süresi geçen MSDS-olmayan belgeler için otomatik Evrak Talebi aç
+        // (MSDS'ler bu akışa girmez, kendi alt-alanlarında düzeltilir).
+        await ensureAutoDocumentRequests(matchedDocs, msdsRows, client, prof);
       }
 
       // 4. Get actions (kendi mail adresine atanmış olanlar + firma geneli olanlar)
@@ -815,6 +909,65 @@ export default function ClientPanel() {
     }
   };
 
+  const fetchMsdsDocuments = async (clientId: string): Promise<any[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('msds_documents')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('is_archived', false)
+        .order('expiry_date', { ascending: true, nullsFirst: false });
+      if (error) throw error;
+      return data || [];
+    } catch (err: any) {
+      console.error('MSDS belgeleri fetch error:', err.message);
+      return [];
+    }
+  };
+
+  // Süresi geçmiş, MSDS OLMAYAN belgeler için (idempotent şekilde) otomatik bir
+  // Evrak Talebi açar — müşteri zaten bildiği "Evrak Talepleri" ekranından bu
+  // belgeyi güncelleyebilsin diye. MSDS'ler bu akışa hiç girmez; onlar ayrı
+  // "MSDS/SDS Formları" alt-alanında (Belgelerim) doğrudan düzeltilir.
+  const ensureAutoDocumentRequests = async (allDocs: any[], msdsRows: any[], client: any, prof: any) => {
+    try {
+      if (!client?.consultant_company_id) return;
+      const msdsDocIds = new Set(msdsRows.map((m) => m.document_id).filter(Boolean));
+      const today = new Date();
+      const expiredNonMsds = allDocs.filter(
+        (d) => d.expiry_date && new Date(d.expiry_date) < today && !msdsDocIds.has(d.id)
+      );
+      if (expiredNonMsds.length === 0) return;
+
+      const expiredIds = expiredNonMsds.map((d) => d.id);
+      const { data: existing, error: existingErr } = await supabase
+        .from('document_requests')
+        .select('source_document_id')
+        .eq('client_id', prof.client_id)
+        .eq('status', 'pending')
+        .in('source_document_id', expiredIds);
+      if (existingErr) throw existingErr;
+      const alreadyRequested = new Set((existing || []).map((r: any) => r.source_document_id));
+
+      const toCreate = expiredNonMsds.filter((d) => !alreadyRequested.has(d.id));
+      if (toCreate.length === 0) return;
+
+      const rows = toCreate.map((d) => ({
+        client_id: prof.client_id,
+        consultant_company_id: client.consultant_company_id,
+        requested_by: prof.id,
+        title: `Güncel ${d.title}`,
+        description: `Bu belgenin süresi ${new Date(d.expiry_date).toLocaleDateString('tr-TR')} tarihinde dolmuştur. Lütfen güncel belgeyi yükleyiniz.`,
+        source_document_id: d.id,
+      }));
+      const { error: insertErr } = await supabase.from('document_requests').insert(rows);
+      if (insertErr) throw insertErr;
+      await fetchDocumentRequests(prof.client_id);
+    } catch (err: any) {
+      console.error('Otomatik evrak talebi oluşturulurken hata:', err.message);
+    }
+  };
+
   const sendDocumentFulfilledEmail = async (email: string, clientName: string, title: string): Promise<boolean> => {
     if (!email) return false;
     try {
@@ -937,6 +1090,102 @@ export default function ClientPanel() {
       alert('Belge yüklenirken hata: ' + err.message);
     } finally {
       setFulfillingRequestId(null);
+    }
+  };
+
+  const handleStartEditMsds = (row: any) => {
+    setEditingMsdsId(row.id);
+    setMsdsEditProductName(row.product_name || '');
+    setMsdsEditPrimaryDate(row.primary_date || '');
+    setMsdsEditFile(null);
+  };
+
+  const handleMsdsFileSelect = async (file: File) => {
+    setMsdsEditFile(file);
+    setMsdsParsing(true);
+    try {
+      const text = await extractTextFromPdf(file);
+      const parsed = parseMsdsText(text);
+      if (parsed.productName.productName) setMsdsEditProductName(parsed.productName.productName);
+      if (parsed.dates.primaryDate) setMsdsEditPrimaryDate(parsed.dates.primaryDate.date);
+    } catch (err: any) {
+      console.error('MSDS ayrıştırma hatası:', err.message);
+    } finally {
+      setMsdsParsing(false);
+    }
+  };
+
+  const handleSaveMsdsEdit = async (row: any) => {
+    if (!msdsEditProductName.trim() || !msdsEditPrimaryDate) {
+      alert('Lütfen ürün adı ve ana tarihi girin.');
+      return;
+    }
+    setMsdsSaving(true);
+    try {
+      let fileUrl = row.file_url;
+      let fileType = row.file_type;
+      let fileSize = row.file_size;
+      let originalFileName = row.original_file_name;
+
+      if (msdsEditFile) {
+        const fileExt = msdsEditFile.name.split('.').pop() || 'pdf';
+        const filePath = `${clientDetails.consultant_company_id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+        const { error: uploadErr } = await supabase.storage.from('documents').upload(filePath, msdsEditFile);
+        if (uploadErr) throw uploadErr;
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(filePath);
+        fileUrl = urlData.publicUrl;
+        fileType = fileExt;
+        fileSize = msdsEditFile.size;
+        originalFileName = msdsEditFile.name;
+      }
+
+      const expiry = computeExpiryDate(msdsEditPrimaryDate, row.validity_years || 5);
+
+      if (row.document_id) {
+        const { error: docErr } = await supabase
+          .from('documents')
+          .update({
+            title: msdsEditProductName.trim(),
+            acquisition_date: msdsEditPrimaryDate,
+            expiry_date: expiry,
+            application_deadline: expiry,
+            file_url: fileUrl,
+            file_type: fileType,
+            file_size: fileSize,
+          })
+          .eq('id', row.document_id);
+        if (docErr) throw docErr;
+      }
+
+      const { error: msdsErr } = await supabase
+        .from('msds_documents')
+        .update({
+          product_name: msdsEditProductName.trim(),
+          product_name_manual_override: true,
+          primary_date: msdsEditPrimaryDate,
+          primary_date_manual_override: true,
+          primary_date_source_label: null,
+          primary_date_tier: null,
+          primary_date_day_defaulted: false,
+          expiry_date: expiry,
+          extraction_status: 'manual',
+          original_file_name: originalFileName,
+          file_url: fileUrl,
+          file_type: fileType,
+          file_size: fileSize,
+        })
+        .eq('id', row.id);
+      if (msdsErr) throw msdsErr;
+
+      alert('MSDS kaydı güncellendi.');
+      setEditingMsdsId(null);
+      setMsdsEditFile(null);
+      const refreshed = await fetchMsdsDocuments(profile.client_id);
+      setMsdsDocuments(refreshed);
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setMsdsSaving(false);
     }
   };
 
@@ -1727,9 +1976,64 @@ export default function ClientPanel() {
     );
   }
 
+  // Sözleşme süresi + 30 günlük ek süre de dolmuşsa panel tamamen kilitlenir;
+  // giriş çalışır ama hiçbir sekmeye erişilemez, sadece danışmanlık iletişim
+  // bilgisi gösterilir. En güncel hizmet dönemine göre hesaplanır (yenilenmiş
+  // bir müşteri artık yanlışlıkla kilitlenmez).
+  const serviceStatus = computeServiceStatus(servicePeriods, clientDetails?.service_start_date, clientDetails?.service_terminated_at);
+  const isLockedOut = computeAccessLockoutFromStatus(serviceStatus);
+  if (isLockedOut) {
+    const consultancy = clientDetails?.consultant_company;
+    return (
+      <div className={isDark ? 'dark' : ''}>
+        <div className="min-h-screen bg-gray-50 dark:bg-slate-900 flex items-center justify-center text-gray-900 dark:text-white p-6">
+          <div className="max-w-md w-full bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl shadow-lg p-8 text-center space-y-5">
+            <div className="w-14 h-14 rounded-2xl bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto">
+              <AlertTriangle size={26} />
+            </div>
+            <div>
+              <h2 className="text-base font-extrabold text-gray-900 dark:text-white">Hizmet Süreniz Sona Erdi</h2>
+              <p className="text-xs text-gray-500 dark:text-slate-400 mt-2 leading-relaxed">
+                <b>{clientDetails?.name}</b>, <b className="text-teal-600 dark:text-teal-400">{consultancy?.name || 'danışmanlık firmanız'}</b> firmasından danışmanlık hizmeti almaktadır.
+                Panelinize erişebilmek için lütfen danışmanınızla iletişime geçin.
+              </p>
+            </div>
+            <div className="bg-gray-50 dark:bg-slate-900/40 border border-gray-200 dark:border-slate-700 rounded-xl p-4 space-y-2 text-xs text-left">
+              {consultancy?.email && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-gray-400 dark:text-slate-500">E-posta</span>
+                  <a href={`mailto:${consultancy.email}`} className="font-bold text-teal-600 dark:text-teal-400 truncate">{consultancy.email}</a>
+                </div>
+              )}
+              {consultancy?.phone && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-gray-400 dark:text-slate-500">Telefon</span>
+                  <a href={`tel:${consultancy.phone}`} className="font-bold text-teal-600 dark:text-teal-400">{consultancy.phone}</a>
+                </div>
+              )}
+              {!consultancy?.email && !consultancy?.phone && (
+                <p className="text-gray-400 dark:text-slate-500 italic text-center">İletişim bilgisi bulunamadı, lütfen danışmanlık firmanızla doğrudan iletişime geçin.</p>
+              )}
+            </div>
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition border border-rose-200 dark:border-rose-900/30"
+            >
+              <LogOut size={14} /> Çıkış Yap
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Count helper definitions
   const pendingActions = actions.filter(a => a.status !== 'completed' && a.status !== 'done').length;
-  const expiredDocs = documents.filter(d => d.expiry_date && new Date(d.expiry_date) < new Date()).length;
+  // MSDS'e bağlı documents satırları bu sayaca dahil değil - onlar ayrı bir
+  // alt-alanda (expiredMsdsCount) takip edilir, otomatik Evrak Talebi'ne girmez.
+  const msdsDocIdSet = new Set(msdsDocuments.map((m) => m.document_id).filter(Boolean));
+  const expiredDocs = documents.filter(d => d.expiry_date && new Date(d.expiry_date) < new Date() && !msdsDocIdSet.has(d.id)).length;
+  const expiredMsdsCount = msdsDocuments.filter((m) => computeMsdsStatus(m.expiry_date, m.warning_threshold_days || 30) === 'expired').length;
 
   return (
     <div className={isDark ? 'dark' : ''}>
@@ -1806,12 +2110,27 @@ export default function ClientPanel() {
           <div className="space-y-6">
             
             {/* Warning if expired docs exist */}
-            {expiredDocs > 0 && (
+            {(expiredDocs > 0 || expiredMsdsCount > 0) && (
               <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 p-4 rounded-2xl flex items-start gap-3">
                 <AlertTriangle className="text-rose-500 shrink-0 mt-0.5" size={18} />
-                <div>
+                <div className="flex-1">
                   <h5 className="text-xs font-extrabold text-rose-700 dark:text-rose-400 uppercase tracking-wider">Dikkat Edilmesi Gereken Evraklar Mevcut</h5>
-                  <p className="text-xs text-rose-300 mt-1">Süresi geçmiş {expiredDocs} adet belgeniz bulunmaktadır. Lütfen güncel belgelerinizi hazırlayıp çevre şefinize iletin.</p>
+                  <p className="text-xs text-rose-300 mt-1">
+                    {expiredDocs > 0 && <>Süresi geçmiş {expiredDocs} adet belgeniz için otomatik evrak talebi oluşturuldu. </>}
+                    {expiredMsdsCount > 0 && <>Süresi geçmiş {expiredMsdsCount} adet MSDS/SDS kaydınız var.</>}
+                  </p>
+                  <div className="flex flex-wrap gap-3 mt-2">
+                    {expiredDocs > 0 && (
+                      <button onClick={() => setActiveTab('doc_requests')} className="text-[11px] font-bold text-rose-700 dark:text-rose-300 underline">
+                        Evrak Taleplerine Git
+                      </button>
+                    )}
+                    {expiredMsdsCount > 0 && (
+                      <button onClick={() => { setActiveTab('docs'); setDocsSubView('msds'); }} className="text-[11px] font-bold text-rose-700 dark:text-rose-300 underline">
+                        MSDS Formlarını Görüntüle
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -1869,12 +2188,12 @@ export default function ClientPanel() {
                   <Layers size={16} className="text-teal-600 dark:text-teal-500" /> Hizmet ve İzin Durumu
                 </h3>
 
-                {clientDetails?.service_start_date ? (() => {
-                  const status = getContractStatus(clientDetails.service_start_date);
+                {serviceStatus ? (() => {
+                  const status = serviceStatus;
                   return (
                     <div className="p-3 bg-gray-50 dark:bg-slate-950/40 rounded-xl border border-gray-200 dark:border-slate-800 space-y-2">
                       <div className="flex justify-between items-center">
-                        <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider">Hizmet Süresi (1 Yıl)</span>
+                        <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-wider">Hizmet Süresi</span>
                         {status.isExpired ? (
                           <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-900/40 uppercase">Süresi Doldu</span>
                         ) : status.isWarning ? (
@@ -1884,7 +2203,7 @@ export default function ClientPanel() {
                         )}
                       </div>
                       <div className="flex justify-between text-[11px] text-gray-500 dark:text-slate-400">
-                        <span>Başlangıç: <b className="text-gray-800 dark:text-slate-200">{new Date(clientDetails.service_start_date).toLocaleDateString('tr-TR')}</b></span>
+                        <span>Başlangıç: <b className="text-gray-800 dark:text-slate-200">{status.startDate.toLocaleDateString('tr-TR')}</b></span>
                         <span>Bitiş: <b className="text-gray-800 dark:text-slate-200">{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
                       </div>
                       {clientDetails?.contract_file_url && (
@@ -1999,67 +2318,194 @@ export default function ClientPanel() {
 
         {/* TAB 2: CLIENT DOCUMENTS */}
         {activeTab === 'docs' && (
-          <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
-            <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex justify-between items-center">
-              <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Sistemde Kayıtlı Belgeleriniz</h3>
-              <span className="text-xs font-medium px-2 py-0.5 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">{documents.length} Adet</span>
+          <div className="space-y-4">
+            {/* Belgelerim içinde "sayfa içinde sayfa": Tüm Belgeler / MSDS ayrımı */}
+            <div className="flex gap-1.5 bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl p-1.5">
+              <button
+                onClick={() => setDocsSubView('all')}
+                className={`flex-1 px-3.5 py-2 rounded-xl text-xs font-bold transition ${
+                  docsSubView === 'all'
+                    ? 'bg-teal-600 text-white shadow-md'
+                    : 'text-slate-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                Tüm Belgeler
+              </button>
+              <button
+                onClick={() => setDocsSubView('msds')}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition ${
+                  docsSubView === 'msds'
+                    ? 'bg-teal-600 text-white shadow-md'
+                    : 'text-slate-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <FlaskConical size={14} /> MSDS/SDS Formları
+                {expiredMsdsCount > 0 && docsSubView !== 'msds' && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                )}
+              </button>
             </div>
 
-            {documents.length === 0 ? (
-              <div className="py-20 text-center space-y-3">
-                <FileText size={40} className="text-gray-300 dark:text-slate-600 mx-auto" />
-                <p className="text-sm text-gray-400 dark:text-slate-500 font-medium">Bu firma için yüklenmiş aktif belge bulunmamaktadır.</p>
+            {docsSubView === 'all' ? (
+              <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+                <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20 flex justify-between items-center">
+                  <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider">Sistemde Kayıtlı Belgeleriniz</h3>
+                  <span className="text-xs font-medium px-2 py-0.5 bg-gray-100 dark:bg-slate-800 rounded text-gray-500 dark:text-slate-400">{documents.length} Adet</span>
+                </div>
+
+                {documents.length === 0 ? (
+                  <div className="py-20 text-center space-y-3">
+                    <FileText size={40} className="text-gray-300 dark:text-slate-600 mx-auto" />
+                    <p className="text-sm text-gray-400 dark:text-slate-500 font-medium">Bu firma için yüklenmiş aktif belge bulunmamaktadır.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
+                          <th className="p-4">Belge Adı</th>
+                          <th className="p-4">Belge Türü</th>
+                          <th className="p-4">Yayın Tarihi</th>
+                          <th className="p-4">Geçerlilik Tarihi</th>
+                          <th className="p-4">Boyut</th>
+                          <th className="p-4 text-right">İşlem</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {documents.map((doc) => {
+                          const isExpired = doc.expiry_date && new Date(doc.expiry_date) < new Date();
+                          return (
+                            <tr key={doc.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition">
+                              <td className="p-4 font-bold text-gray-800 dark:text-slate-200">{doc.title}</td>
+                              <td className="p-4 text-gray-500 dark:text-slate-400">{doc.type_def?.label || 'Belirtilmedi'}</td>
+                              <td className="p-4 text-gray-500 dark:text-slate-400">{new Date(doc.acquisition_date).toLocaleDateString('tr-TR')}</td>
+                              <td className="p-4">
+                                {doc.is_indefinite ? (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400">Süresiz</span>
+                                ) : (
+                                  <span className={`font-bold ${isExpired ? 'text-rose-500' : 'text-slate-300'}`}>
+                                    {new Date(doc.expiry_date).toLocaleDateString('tr-TR')}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-4 text-gray-400 dark:text-slate-500">{formatFileSize(doc.file_size)}</td>
+                              <td className="p-4 text-right">
+                                {doc.file_url ? (
+                                  <a
+                                    href={doc.file_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold"
+                                  >
+                                    Görüntüle <ExternalLink size={12} />
+                                  </a>
+                                ) : (
+                                  <span className="text-gray-400 dark:text-slate-600">Dosya Yok</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/40 text-gray-500 dark:text-slate-400 font-bold">
-                      <th className="p-4">Belge Adı</th>
-                      <th className="p-4">Belge Türü</th>
-                      <th className="p-4">Yayın Tarihi</th>
-                      <th className="p-4">Geçerlilik Tarihi</th>
-                      <th className="p-4">Boyut</th>
-                      <th className="p-4 text-right">İşlem</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {documents.map((doc) => {
-                      const isExpired = doc.expiry_date && new Date(doc.expiry_date) < new Date();
+              <div className="bg-white dark:bg-slate-900/20 border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+                <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/20">
+                  <h3 className="text-xs font-bold text-gray-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                    <FlaskConical size={14} className="text-teal-500" /> MSDS/SDS Formlarınız
+                  </h3>
+                  <p className="text-[11px] text-gray-500 dark:text-slate-400 mt-1">
+                    Süresi dolan veya bilgileri hatalı tespit edilmiş MSDS/SDS kayıtlarını buradan düzeltip güncel belgeyi yükleyebilirsiniz.
+                  </p>
+                </div>
+
+                {msdsDocuments.length === 0 ? (
+                  <div className="py-16 text-center text-xs text-gray-400 dark:text-slate-500 italic">Kayıtlı MSDS/SDS belgeniz bulunmuyor.</div>
+                ) : (
+                  <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                    {msdsDocuments.map((m) => {
+                      const status = computeMsdsStatus(m.expiry_date, m.warning_threshold_days || 30);
+                      const days = computeDaysRemaining(m.expiry_date);
+                      const isEditing = editingMsdsId === m.id;
                       return (
-                        <tr key={doc.id} className="border-b border-gray-200 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30 transition">
-                          <td className="p-4 font-bold text-gray-800 dark:text-slate-200">{doc.title}</td>
-                          <td className="p-4 text-gray-500 dark:text-slate-400">{doc.type_def?.label || 'Belirtilmedi'}</td>
-                          <td className="p-4 text-gray-500 dark:text-slate-400">{new Date(doc.acquisition_date).toLocaleDateString('tr-TR')}</td>
-                          <td className="p-4">
-                            {doc.is_indefinite ? (
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400">Süresiz</span>
-                            ) : (
-                              <span className={`font-bold ${isExpired ? 'text-rose-500' : 'text-slate-300'}`}>
-                                {new Date(doc.expiry_date).toLocaleDateString('tr-TR')}
+                        <div key={m.id} className="p-4">
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <div>
+                              <div className="font-bold text-sm text-gray-800 dark:text-slate-200">{m.product_name || 'İsimsiz Ürün'}</div>
+                              <div className="text-[11px] text-gray-500 dark:text-slate-400 mt-0.5">
+                                Ana Tarih: {m.primary_date || '—'} · Geçerlilik: {m.expiry_date || '—'}
+                                {days !== null && (days >= 0 ? ` · ${days} gün kaldı` : ` · ${Math.abs(days)} gün geçti`)}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase border ${MSDS_STATUS_BADGE_CLASSES[status]}`}>
+                                {MSDS_STATUS_LABELS_TR[status]}
                               </span>
-                            )}
-                          </td>
-                          <td className="p-4 text-gray-400 dark:text-slate-500">{formatFileSize(doc.file_size)}</td>
-                          <td className="p-4 text-right">
-                            {doc.file_url ? (
-                              <a 
-                                href={doc.file_url} 
-                                target="_blank" 
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 font-bold"
+                              <button
+                                onClick={() => (isEditing ? setEditingMsdsId(null) : handleStartEditMsds(m))}
+                                className="text-[11px] font-bold text-teal-600 dark:text-teal-400 hover:underline whitespace-nowrap"
                               >
-                                Görüntüle <ExternalLink size={12} />
-                              </a>
-                            ) : (
-                              <span className="text-gray-400 dark:text-slate-600">Dosya Yok</span>
-                            )}
-                          </td>
-                        </tr>
+                                {isEditing ? 'Vazgeç' : 'Düzenle / Güncel Belge Yükle'}
+                              </button>
+                            </div>
+                          </div>
+
+                          {isEditing && (
+                            <div className="mt-4 bg-gray-50 dark:bg-slate-950/30 border border-gray-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Ürün Adı</label>
+                                  <input
+                                    type="text"
+                                    value={msdsEditProductName}
+                                    onChange={(e) => setMsdsEditProductName(e.target.value)}
+                                    className="w-full border rounded-lg px-2.5 py-1.5 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Ana Tarih</label>
+                                  <input
+                                    type="date"
+                                    value={msdsEditPrimaryDate}
+                                    onChange={(e) => setMsdsEditPrimaryDate(e.target.value)}
+                                    className="w-full border rounded-lg px-2.5 py-1.5 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-teal-500"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Güncel PDF Yükle (opsiyonel)</label>
+                                <input
+                                  type="file"
+                                  accept=".pdf"
+                                  onChange={(e) => e.target.files?.[0] && handleMsdsFileSelect(e.target.files[0])}
+                                  className="text-xs text-gray-600 dark:text-slate-300"
+                                />
+                                {msdsParsing && (
+                                  <span className="text-[11px] text-gray-400 flex items-center gap-1 mt-1">
+                                    <Loader size={11} className="animate-spin" /> PDF okunuyor...
+                                  </span>
+                                )}
+                                {msdsEditFile && !msdsParsing && (
+                                  <span className="text-[11px] text-emerald-600 block mt-1">{msdsEditFile.name} seçildi</span>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => handleSaveMsdsEdit(m)}
+                                disabled={msdsSaving}
+                                className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-xs disabled:opacity-50"
+                              >
+                                {msdsSaving ? 'Kaydediliyor...' : 'Kaydet'}
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
             )}
           </div>

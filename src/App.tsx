@@ -61,6 +61,7 @@ import ClientLogin from './ClientLogin';
 import CompanyPanel from './CompanyPanel';
 import OpinionLetterForm from './OpinionLetterForm';
 import OpinionLetterView from './OpinionLetterView';
+import AddMsdsDocuments from './AddMsdsDocuments';
 
 
 // --- GOOGLE OAUTH POPUP CALLBACK HANDLING ---
@@ -1071,6 +1072,16 @@ function AppContent() {
                 <Route
                   path="/consultant/opinions/:id"
                   element={<OpinionLetterView />}
+                />
+                <Route
+                  path="/consultant/msds/add"
+                  element={
+                    (userRole === 'admin' || isEnvConsultant || userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'corporate_staff' || userRole === 'premium_individual') ? (
+                      <AddMsdsDocuments />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
                 />
 
                 <Route
