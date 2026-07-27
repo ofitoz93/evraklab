@@ -114,6 +114,7 @@ interface Client {
   longitude?: number | null;
   area_points?: AreaPoint[] | null;
   area_m2?: number | null;
+  service_terminated_at?: string | null;
 }
 
 interface CedCategory {
@@ -1087,6 +1088,10 @@ export default function ConsultantPanel() {
   const [renewFee, setRenewFee] = useState('');
   const [savingRenewal, setSavingRenewal] = useState(false);
   const [expandedPeriodHistory, setExpandedPeriodHistory] = useState<Record<string, boolean>>({});
+  const [editingPeriodDatesClientId, setEditingPeriodDatesClientId] = useState<string | null>(null);
+  const [editPeriodStartDate, setEditPeriodStartDate] = useState('');
+  const [editPeriodEndDate, setEditPeriodEndDate] = useState('');
+  const [savingPeriodDates, setSavingPeriodDates] = useState(false);
 
   // Hizmet Sonlandırma
   const [terminatedClients, setTerminatedClients] = useState<Client[]>([]);
@@ -4981,7 +4986,7 @@ export default function ConsultantPanel() {
     stage === 'ek1' ? 'EK-1' : stage === 'ek2' ? 'EK-2' : 'Kapsam Dışı';
 
   const handleExportClientsToExcel = async () => {
-    const headers = ['Firma Adı', 'Adres', 'Vergi No', 'Telefon', 'E-posta', 'ÇED Durumu', 'Çevre İzin Durumu', 'Aylık Ücret (TL)', 'Hizmet Başlangıç'];
+    const showFee = canViewFinance;
     const rows = clients.filter((c) => !c.parent_client_id);
 
     const workbook = new ExcelJS.Workbook();
@@ -4993,16 +4998,18 @@ export default function ConsultantPanel() {
     });
 
     sheet.columns = [
-      { header: headers[0], key: 'name', width: 30 },
-      { header: headers[1], key: 'address', width: 34 },
-      { header: headers[2], key: 'tax_no', width: 16 },
-      { header: headers[3], key: 'phone', width: 16 },
-      { header: headers[4], key: 'email', width: 26 },
-      { header: headers[5], key: 'ced_status', width: 16 },
-      { header: headers[6], key: 'permit_stage', width: 18 },
-      { header: headers[7], key: 'monthly_fee', width: 16 },
-      { header: headers[8], key: 'service_start_date', width: 16 },
+      { header: 'Firma Adı', key: 'name', width: 30 },
+      { header: 'Adres', key: 'address', width: 34 },
+      { header: 'Vergi No', key: 'tax_no', width: 16 },
+      { header: 'Telefon', key: 'phone', width: 16 },
+      { header: 'E-posta', key: 'email', width: 26 },
+      { header: 'ÇED Durumu', key: 'ced_status', width: 16 },
+      { header: 'Çevre İzin Durumu', key: 'permit_stage', width: 18 },
+      ...(showFee ? [{ header: 'Aylık Ücret (TL)', key: 'monthly_fee', width: 16 }] : []),
+      { header: 'Hizmet Başlangıç', key: 'service_start_date', width: 16 },
+      { header: 'Hizmet Bitiş', key: 'service_end_date', width: 16 },
     ];
+    const headers = sheet.columns.map((c) => String(c.header));
 
     // Başlık satırı stili
     const headerRow = sheet.getRow(1);
@@ -5033,7 +5040,8 @@ export default function ConsultantPanel() {
     rows.forEach((c, idx) => {
       const cedLabel = permitStageLabel(c.ced_status);
       const permitLabel = permitStageLabel(c.permit_stage);
-      const row = sheet.addRow({
+      const status = getClientServiceStatus(c.id, c.service_start_date, c.service_terminated_at);
+      const rowData: Record<string, string | number> = {
         name: c.name,
         address: c.address || '',
         tax_no: c.tax_no || '',
@@ -5041,21 +5049,26 @@ export default function ConsultantPanel() {
         email: c.email || '',
         ced_status: cedLabel,
         permit_stage: permitLabel,
-        monthly_fee: c.monthly_fee != null ? Number(c.monthly_fee) : 0,
         service_start_date: c.service_start_date || '',
-      });
+        service_end_date: status?.expiryDate ? status.expiryDate.toLocaleDateString('tr-TR') : '',
+      };
+      if (showFee) {
+        rowData.monthly_fee = c.monthly_fee != null ? Number(c.monthly_fee) : 0;
+      }
+      const row = sheet.addRow(rowData);
 
       const zebraFill = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC'; // white / slate-50
       row.eachCell((cell, colNumber) => {
+        const key = sheet.getColumn(colNumber).key;
         cell.border = {
           top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
           left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
           bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
           right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
         };
-        cell.alignment = { vertical: 'middle', horizontal: colNumber === 8 ? 'right' : 'left' };
-        if (colNumber === 6 || colNumber === 7) {
-          const label = colNumber === 6 ? cedLabel : permitLabel;
+        cell.alignment = { vertical: 'middle', horizontal: key === 'monthly_fee' ? 'right' : 'left' };
+        if (key === 'ced_status' || key === 'permit_stage') {
+          const label = key === 'ced_status' ? cedLabel : permitLabel;
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: stageFill(label)! } };
           cell.font = { bold: true, color: { argb: stageFont(label) } };
           cell.alignment = { vertical: 'middle', horizontal: 'center' };
@@ -5064,7 +5077,9 @@ export default function ConsultantPanel() {
         }
       });
 
-      row.getCell('monthly_fee').numFmt = '#,##0.00 "₺"';
+      if (showFee) {
+        row.getCell('monthly_fee').numFmt = '#,##0.00 "₺"';
+      }
     });
 
     sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } };
@@ -5891,6 +5906,55 @@ export default function ConsultantPanel() {
       alert('Müşteri aylık ücreti başarıyla güncellendi! Alacaklar (Finans) otomatik güncellendi.');
     } catch (err: any) {
       alert('Ücret güncellenirken hata: ' + err.message);
+    }
+  };
+
+  // Firma sahibinin (ve admin/system_admin) mevcut (en güncel) hizmet
+  // dönemini serbestçe düzenlemesi için: "Hizmet Yenile" her zaman yeni bir
+  // dönem EKLER, bu ise var olan son dönemin başlangıç/bitiş tarihini
+  // manuel olarak düzeltir - örn. gerçekte 1 yıl uzatılmış ama sisteme geç
+  // işlenmiş bir sözleşmeyi doğru tarihe çekmek, ya da yanlış girilen bir
+  // bitiş tarihini erkene almak için.
+  const handleUpdateClientPeriodDates = async (clientId: string, newStart: string, newEnd: string) => {
+    const periods = servicePeriods
+      .filter((p) => p.client_id === clientId)
+      .sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
+    const latest = periods[0];
+    const previous = periods[1];
+    if (!latest) {
+      alert('Bu firma için düzenlenecek bir hizmet dönemi yok.');
+      return;
+    }
+    if (!newStart || !newEnd) {
+      alert('Lütfen başlangıç ve bitiş tarihlerini girin.');
+      return;
+    }
+    if (newEnd <= newStart) {
+      alert('Bitiş tarihi, başlangıç tarihinden sonra olmalıdır.');
+      return;
+    }
+    if (previous && newStart < previous.end_date) {
+      alert(`Başlangıç tarihi, önceki dönemin bitişinden (${new Date(previous.end_date).toLocaleDateString('tr-TR')}) sonra olmalıdır.`);
+      return;
+    }
+    setSavingPeriodDates(true);
+    try {
+      const { error } = await supabase
+        .from('consultant_client_service_periods')
+        .update({ start_date: newStart, end_date: newEnd })
+        .eq('id', latest.id);
+      if (error) throw error;
+
+      setServicePeriods((prev) => prev.map((p) => (p.id === latest.id ? { ...p, start_date: newStart, end_date: newEnd } : p)));
+      if (periods.length === 1) {
+        setClients((prev) => prev.map((c) => (c.id === clientId ? { ...c, service_start_date: newStart } : c)));
+      }
+      setEditingPeriodDatesClientId(null);
+      alert('Sözleşme başlangıç/bitiş tarihi güncellendi! Alacaklar (Finans) otomatik güncellendi.');
+    } catch (err: any) {
+      alert('Tarih güncellenirken hata: ' + err.message);
+    } finally {
+      setSavingPeriodDates(false);
     }
   };
 
@@ -6767,10 +6831,18 @@ export default function ConsultantPanel() {
               {clients.map((client) => {
                 const branches = clients.filter((c) => c.parent_client_id === client.id);
                 const parentOfBranch = client.parent_client_id ? clients.find((c) => c.id === client.parent_client_id) : null;
+                const cardStatus = getClientServiceStatus(client.id, client.service_start_date, client.service_terminated_at);
+                const isContractExpired = !!cardStatus && !cardStatus.isTerminated && cardStatus.isExpired;
+                const isContractWarning = !!cardStatus && !cardStatus.isTerminated && !cardStatus.isExpired && cardStatus.daysLeft <= 30;
+                const cardBorderClass = isContractExpired
+                  ? 'border-2 border-rose-400 dark:border-rose-600'
+                  : isContractWarning
+                  ? 'border-2 border-amber-400 dark:border-amber-600'
+                  : 'border border-gray-200 dark:border-slate-700';
                 return (
                 <div
                   key={client.id}
-                  className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 hover:shadow-md transition"
+                  className={`bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm hover:shadow-md transition ${cardBorderClass}`}
                 >
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
@@ -6849,7 +6921,7 @@ export default function ConsultantPanel() {
                       );
                     })()}
                     {(() => {
-                      const status = getClientServiceStatus(client.id, client.service_start_date, client.service_terminated_at);
+                      const status = cardStatus;
                       const periods = servicePeriods
                         .filter((p) => p.client_id === client.id)
                         .sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
@@ -6868,11 +6940,11 @@ export default function ConsultantPanel() {
                               <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase">
                                 Hizmet Sonlandırıldı
                               </span>
-                            ) : status.isExpired ? (
+                            ) : isContractExpired ? (
                               <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/50 uppercase">
                                 Süresi Geçti
                               </span>
-                            ) : status.isWarning ? (
+                            ) : isContractWarning ? (
                               <span className="text-[10px] font-black px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase animate-pulse">
                                 Son {status.daysLeft} Gün
                               </span>
@@ -6884,12 +6956,69 @@ export default function ConsultantPanel() {
                           </div>
 
                           {status && (
-                            <div className="flex justify-between text-[11px] text-gray-500">
+                            <div className="flex justify-between items-center text-[11px] text-gray-500">
                               <span>Başlangıç: <b>{status.startDate.toLocaleDateString('tr-TR')}</b></span>
-                              <span>Bitiş: <b>{status.expiryDate.toLocaleDateString('tr-TR')}</b></span>
+                              <span className="flex items-center gap-1.5">
+                                Bitiş: <b>{status.expiryDate.toLocaleDateString('tr-TR')}</b>
+                                {canViewFinance && status.latestPeriod && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingPeriodDatesClientId(client.id);
+                                      setEditPeriodStartDate(status.latestPeriod.start_date);
+                                      setEditPeriodEndDate(status.latestPeriod.end_date);
+                                    }}
+                                    className="text-blue-500 hover:text-blue-700"
+                                    title="Sözleşme başlangıç/bitiş tarihini düzenle"
+                                  >
+                                    <Edit2 size={11} />
+                                  </button>
+                                )}
+                              </span>
                             </div>
                           )}
-                          {status && (
+                          {editingPeriodDatesClientId === client.id && (
+                            <div className="p-2 rounded-lg bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/40 space-y-2">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className="block text-[9px] font-bold text-slate-400 uppercase mb-0.5">Başlangıç</label>
+                                  <input
+                                    type="date"
+                                    value={editPeriodStartDate}
+                                    onChange={(e) => setEditPeriodStartDate(e.target.value)}
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 text-[11px]"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[9px] font-bold text-slate-400 uppercase mb-0.5">Bitiş</label>
+                                  <input
+                                    type="date"
+                                    value={editPeriodEndDate}
+                                    onChange={(e) => setEditPeriodEndDate(e.target.value)}
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 text-[11px]"
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex justify-end gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingPeriodDatesClientId(null)}
+                                  className="text-[10px] font-bold text-slate-400 hover:text-slate-600"
+                                >
+                                  İptal
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={savingPeriodDates}
+                                  onClick={() => handleUpdateClientPeriodDates(client.id, editPeriodStartDate, editPeriodEndDate)}
+                                  className="text-[10px] font-bold text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                                >
+                                  {savingPeriodDates ? 'Kaydediliyor...' : 'Kaydet'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {status && canViewFinance && (
                             <div className="flex justify-between text-[11px] text-gray-500">
                               <span>Bu Dönem Ücreti:</span>
                               <b className="text-gray-800 dark:text-slate-200">{status.currentFee.toLocaleString('tr-TR')} TL/ay</b>
@@ -11138,13 +11267,12 @@ export default function ConsultantPanel() {
                                           <div className="space-y-1.5">
                                             {categoryBreakdown.map((cat) => {
                                               const isSalary = cat.category === 'Maaş/Personel';
-                                              const isCatExpanded = isSalary && expandedSummaryCategory === cat.category;
+                                              const isCatExpanded = expandedSummaryCategory === cat.category;
+                                              const catExpenses = monthExpenses.filter((e) => (e.category || 'Diğer') === cat.category);
                                               const employeeBreakdown = isSalary
                                                 ? (() => {
                                                     const byEmployee: { employeeId: string; name: string; total: number }[] = [];
-                                                    monthExpenses
-                                                      .filter((e) => (e.category || 'Diğer') === cat.category)
-                                                      .forEach((e) => {
+                                                    catExpenses.forEach((e) => {
                                                         const empId = e.employee_id || 'unassigned';
                                                         // Ayrılan personel artık teamMembers'ta (organization_id null
                                                         // olduğu için) görünmez - geçmiş maaş gideri kaydı için ismi
@@ -11170,15 +11298,12 @@ export default function ConsultantPanel() {
                                                     type="button"
                                                     onClick={(ev) => {
                                                       ev.stopPropagation();
-                                                      if (!isSalary) return;
                                                       setExpandedSummaryCategory(isCatExpanded ? null : cat.category);
                                                     }}
-                                                    className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-left ${
-                                                      isSalary ? 'cursor-pointer hover:border-blue-300 dark:hover:border-blue-800' : 'cursor-default'
-                                                    }`}
+                                                    className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-left cursor-pointer hover:border-blue-300 dark:hover:border-blue-800"
                                                   >
                                                     <span className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">
-                                                      {isSalary && (isCatExpanded ? <ChevronDown size={12} className="text-slate-400" /> : <ChevronRight size={12} className="text-slate-400" />)}
+                                                      {isCatExpanded ? <ChevronDown size={12} className="text-slate-400" /> : <ChevronRight size={12} className="text-slate-400" />}
                                                       {cat.category}
                                                       {cat.count > 1 && (
                                                         <span className="text-[9px] font-black text-slate-400">({cat.count} kayıt)</span>
@@ -11188,15 +11313,37 @@ export default function ConsultantPanel() {
                                                   </button>
                                                   {isCatExpanded && (
                                                     <div className="mt-1.5 ml-4 space-y-1">
-                                                      {employeeBreakdown.map((row) => (
-                                                        <div
-                                                          key={row.employeeId}
-                                                          className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-blue-50/50 dark:bg-blue-950/10 text-[11px]"
-                                                        >
-                                                          <span className="font-bold text-slate-600 dark:text-slate-400">{row.name}</span>
-                                                          <span className="font-bold text-slate-700 dark:text-slate-300">{row.total.toLocaleString('tr-TR')} TL</span>
-                                                        </div>
-                                                      ))}
+                                                      {isSalary ? (
+                                                        employeeBreakdown.map((row) => (
+                                                          <div
+                                                            key={row.employeeId}
+                                                            className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-blue-50/50 dark:bg-blue-950/10 text-[11px]"
+                                                          >
+                                                            <span className="font-bold text-slate-600 dark:text-slate-400">{row.name}</span>
+                                                            <span className="font-bold text-slate-700 dark:text-slate-300">{row.total.toLocaleString('tr-TR')} TL</span>
+                                                          </div>
+                                                        ))
+                                                      ) : (
+                                                        catExpenses.map((e) => (
+                                                          <div
+                                                            key={e.id}
+                                                            className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-blue-50/50 dark:bg-blue-950/10 text-[11px]"
+                                                          >
+                                                            <span className="flex flex-col">
+                                                              <span className="font-bold text-slate-600 dark:text-slate-400">{e.title}</span>
+                                                              <span className="text-[9px] font-bold text-slate-400">
+                                                                {new Date(e.expense_date).toLocaleDateString('tr-TR')}
+                                                                {e.submitted_by && (
+                                                                  ` · ${teamMembers.find((m) => m.id === e.submitted_by)?.full_name ||
+                                                                    departedEmployees.find((d) => d.profile_id === e.submitted_by)?.profile?.full_name ||
+                                                                    'Bilinmeyen Personel'}`
+                                                                )}
+                                                              </span>
+                                                            </span>
+                                                            <span className="font-bold text-slate-700 dark:text-slate-300 whitespace-nowrap">{Number(e.amount).toLocaleString('tr-TR')} TL</span>
+                                                          </div>
+                                                        ))
+                                                      )}
                                                     </div>
                                                   )}
                                                 </div>
