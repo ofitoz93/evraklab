@@ -823,6 +823,49 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
       return;
     }
 
+    // Yükleme başlamadan önce ilgili kota havuzunun (şirket / kişiye özel
+    // tahsisat / kendi şahsi kota) yeterli olup olmadığını kontrol et. Asıl
+    // engelleme documents INSERT trigger'ında (bkz.
+    // add_personal_storage_quota.sql) — ama önceden kontrol etmezsek dosya
+    // Storage bucket'ına yüklenip sonra DB reddiyle öksüz kalabilir.
+    const totalBytesToUpload = docsToUpload.reduce((sum: number, d: any) => {
+      const matchedFile = uploadMode === 'ai' ? files.find((candidate) => candidate.name === d.fileName) : (previewedFileRef.current || file);
+      return sum + (matchedFile ? matchedFile.size : 0);
+    }, 0);
+
+    if (totalBytesToUpload > 0) {
+      const quotaOrgId = finalOrgId || billingOrgId;
+      if (quotaOrgId) {
+        const [{ data: orgRow }, { data: orgUsedBytes }] = await Promise.all([
+          supabase.from('organizations').select('storage_limit').eq('id', quotaOrgId).single(),
+          supabase.rpc('get_org_storage_usage', { org_id: quotaOrgId }),
+        ]);
+        if (orgRow?.storage_limit != null && (orgUsedBytes || 0) + totalBytesToUpload > orgRow.storage_limit) {
+          return alert('⛔ Şirket depolama kotası dolu. Bu belge(ler) için yeterli alan yok.');
+        }
+        if (billingOrgId) {
+          const { data: empDetail } = await supabase
+            .from('employee_details')
+            .select('personal_storage_quota')
+            .eq('profile_id', session.user.id)
+            .eq('organization_id', quotaOrgId)
+            .maybeSingle();
+          if (empDetail?.personal_storage_quota != null) {
+            const { data: memberUsage } = await supabase.rpc('get_org_storage_usage_by_member', { org_id: quotaOrgId });
+            const mine = (memberUsage || []).find((m: any) => m.uploader_id === session.user.id);
+            if ((mine?.total_bytes || 0) + totalBytesToUpload > empDetail.personal_storage_quota) {
+              return alert('⛔ Şahsi depolama kotanız dolu. Yöneticinizden size ayrılan alanı artırmasını isteyin.');
+            }
+          }
+        }
+      } else {
+        const { data: userUsedBytes } = await supabase.rpc('get_user_storage_usage', { target_user_id: session.user.id });
+        if ((userUsedBytes || 0) + totalBytesToUpload > myStorageLimit) {
+          return alert('⛔ Şahsi depolama kotanız dolu. Depolama alanı satın alarak kotanızı artırabilirsiniz.');
+        }
+      }
+    }
+
     setUploading(true);
     try {
 

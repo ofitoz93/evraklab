@@ -71,6 +71,7 @@ import EvaluationPanel from './EvaluationPanel';
 import WasteManagement from './WasteManagement';
 import PersonnelCard from './PersonnelCard';
 import ExitDateModal from './ExitDateModal';
+import RehireDateModal from './RehireDateModal';
 import TerminateServiceModal from './TerminateServiceModal';
 
 const TR_MONTH_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
@@ -1071,6 +1072,7 @@ export default function ConsultantPanel() {
   const [kickingQuick, setKickingQuick] = useState(false);
   const [departedEmployees, setDepartedEmployees] = useState<any[]>([]);
   const [reactivatingEmployeeId, setReactivatingEmployeeId] = useState<string | null>(null);
+  const [pendingReactivateMember, setPendingReactivateMember] = useState<any>(null);
   const [googleDriveQuota, setGoogleDriveQuota] = useState<{ usage: number; limit: number | null } | null>(null);
   const [loadingGoogleDriveQuota, setLoadingGoogleDriveQuota] = useState(false);
   const [savingStorageSettings, setSavingStorageSettings] = useState(false);
@@ -1522,17 +1524,22 @@ export default function ConsultantPanel() {
     setDepartedEmployees(data || []);
   };
 
-  // Yanlışlıkla çıkarılan bir personeli geri al - kick_employee_with_exit_date'in
-  // kaydettiği eski rolle (role_before_exit) org'a yeniden bağlar.
-  const handleReactivateEmployee = async (profileId: string) => {
-    if (!window.confirm('Bu personeli tekrar ekibe eklemek istediğinize emin misiniz?')) return;
+  // Ayrılmış bir personeli geri al. Girilen tarih eski çıkış tarihinden
+  // sonraysa gerçek (boşluklu) tekrar işe alım olarak yeni bir çalışma
+  // dönemi açılır (bkz. reactivate_departed_employee, add_employee_
+  // employment_periods.sql); değilse (veya tarih girilmezse) eski
+  // kick_employee_with_exit_date'in kaydettiği role (role_before_exit)
+  // ile "yanlışlıkla çıkarma" düzeltmesi olarak aynı dönem devam eder.
+  const handleReactivateEmployee = async (profileId: string, rehireDate: string) => {
     setReactivatingEmployeeId(profileId);
     try {
       const { error } = await supabase.rpc('reactivate_departed_employee', {
         p_profile_id: profileId,
         p_org_id: orgId,
+        p_rehire_date: rehireDate,
       });
       if (error) throw error;
+      setPendingReactivateMember(null);
       alert('Personel yeniden aktif edildi.');
       await fetchDepartedEmployees();
       await fetchTeamMembers();
@@ -8204,7 +8211,7 @@ export default function ConsultantPanel() {
               <LogOut className="text-rose-600" /> Ayrılan Personeller
             </h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-              Bu kişiler artık ekibinizin bir parçası değil (salt görüntüleme). Yeniden işe almak için normal davet akışıyla (e-posta veya manuel kod) tekrar organizasyona ekleyebilirsiniz.
+              Bu kişiler artık ekibinizin bir parçası değil. "Geri Al" ile, gerçek işe başlangıç tarihini girerek tekrar ekibe ekleyebilirsiniz — ayrılış ile yeni başlangıç arasındaki aylara maaş gideri üretilmez.
             </p>
             {departedEmployees.length === 0 ? (
               <p className="text-sm text-slate-400 italic">Ayrılan personel bulunmuyor.</p>
@@ -8241,7 +8248,7 @@ export default function ConsultantPanel() {
                         {userRole === 'premium_corporate' && (
                           <button
                             type="button"
-                            onClick={() => handleReactivateEmployee(d.profile_id)}
+                            onClick={() => setPendingReactivateMember(d)}
                             disabled={reactivatingEmployeeId === d.profile_id}
                             className="text-[11px] font-bold text-emerald-600 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 disabled:opacity-50"
                           >
@@ -11706,7 +11713,16 @@ export default function ConsultantPanel() {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
                   {financeExpenses.filter((exp) => matchesFinancePeriod(exp.expense_date)).map((exp) => (
                     <tr key={exp.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
-                      <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">{exp.title}</td>
+                      <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">
+                        {exp.title}
+                        {exp.employee_id && (
+                          <div className="text-[10px] font-bold text-blue-500 dark:text-blue-400 mt-0.5 normal-case">
+                            {teamMembers.find((m) => m.id === exp.employee_id)?.full_name ||
+                              departedEmployees.find((d) => d.profile_id === exp.employee_id)?.profile?.full_name ||
+                              'Bilinmeyen Personel'}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-3.5">
                         <span className={`px-2 py-0.5 rounded-full text-[9px] font-black border uppercase ${
                           exp.category === 'Maaş/Personel'
@@ -16441,6 +16457,15 @@ export default function ConsultantPanel() {
           loading={kickingQuick}
           onConfirm={handleQuickKick}
           onCancel={() => setPendingKickMember(null)}
+        />
+      )}
+
+      {pendingReactivateMember && (
+        <RehireDateModal
+          memberName={pendingReactivateMember.profile?.full_name || ''}
+          loading={reactivatingEmployeeId === pendingReactivateMember.profile_id}
+          onConfirm={(rehireDate) => handleReactivateEmployee(pendingReactivateMember.profile_id, rehireDate)}
+          onCancel={() => setPendingReactivateMember(null)}
         />
       )}
 

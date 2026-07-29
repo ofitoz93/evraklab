@@ -22,6 +22,7 @@ import {
   Paperclip,
   Upload,
   ExternalLink,
+  HardDrive,
 } from 'lucide-react';
 import ExitDateModal from './ExitDateModal';
 
@@ -134,6 +135,20 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
   // eklemek (örn. yıl ortasında zam) daha önce otomatik üretilmiş giderleri
   // de geriye dönük düzeltir (bkz. generate_missing_salary_expenses).
   const [salaryHistory, setSalaryHistory] = useState<{ id: string; effective_date: string; monthly_salary: number }[]>([]);
+  // Çalışma Dönemleri — personel çıkarılıp tekrar işe alındığında her
+  // dönem employee_employment_periods'ta ayrı bir satır olarak birikir
+  // (bkz. add_employee_employment_periods.sql). employee_details sadece
+  // "şu anki dönem"i tutar; geçmiş dönemleri görmek için bu liste gerekir.
+  const [employmentPeriods, setEmploymentPeriods] = useState<{ id: string; hire_date: string; exit_date: string | null }[]>([]);
+
+  // Şahsi depolama kotası tahsisi — firma sahibi, şirket kotasından bu
+  // personele kesin bir pay ayırabilir (bkz. add_personal_storage_quota.sql).
+  // NULL/boş = kişiye özel üst sınır yok, sadece genel şirket kotasıyla sınırlı.
+  const [orgStorageLimit, setOrgStorageLimit] = useState<number>(0);
+  const [otherAllocatedTotal, setOtherAllocatedTotal] = useState(0);
+  const [myStorageUsed, setMyStorageUsed] = useState(0);
+  const [personalStorageQuotaMb, setPersonalStorageQuotaMb] = useState('');
+  const [savingStorageQuota, setSavingStorageQuota] = useState(false);
   const [newSalaryMonth, setNewSalaryMonth] = useState(new Date().toISOString().slice(0, 7));
   const [newSalaryAmount, setNewSalaryAmount] = useState('');
   const [savingSalary, setSavingSalary] = useState(false);
@@ -167,6 +182,10 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
         { data: docTypesData },
         { data: employeeDocsData },
         { data: salaryHistoryData },
+        { data: employmentPeriodsData },
+        { data: orgData },
+        { data: allAllocations },
+        { data: memberUsage },
       ] = await Promise.all([
         supabase
           .from('profiles')
@@ -187,6 +206,10 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
         supabase.from('user_definitions').select('id, label').eq('category', 'personnel_doc_type').eq('organization_id', orgId).order('label', { ascending: true }),
         supabase.from('employee_documents').select('*, doc_type:doc_type_id(label)').eq('employee_id', personnelId).order('created_at', { ascending: false }),
         supabase.from('employee_salary_history').select('id, effective_date, monthly_salary').eq('profile_id', personnelId).order('effective_date', { ascending: false }),
+        supabase.from('employee_employment_periods').select('id, hire_date, exit_date').eq('profile_id', personnelId).order('hire_date', { ascending: false }),
+        supabase.from('organizations').select('storage_limit').eq('id', orgId).single(),
+        supabase.from('employee_details').select('profile_id, personal_storage_quota').eq('organization_id', orgId).not('personal_storage_quota', 'is', null),
+        supabase.rpc('get_org_storage_usage_by_member', { org_id: orgId }),
       ]);
 
       setProfile(profileData);
@@ -196,13 +219,25 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
         setDepartment(detailData.department || '');
         setNotes(detailData.notes || '');
         setExitDate(detailData.exit_date || null);
+        setPersonalStorageQuotaMb(
+          detailData.personal_storage_quota ? String(Math.round(detailData.personal_storage_quota / (1024 * 1024))) : ''
+        );
       } else {
         setHireDate('');
         setPosition('');
         setDepartment('');
         setNotes('');
         setExitDate(null);
+        setPersonalStorageQuotaMb('');
       }
+
+      setOrgStorageLimit(orgData?.storage_limit || 0);
+      setOtherAllocatedTotal(
+        (allAllocations || [])
+          .filter((a: any) => a.profile_id !== personnelId)
+          .reduce((sum: number, a: any) => sum + (a.personal_storage_quota || 0), 0)
+      );
+      setMyStorageUsed((memberUsage || []).find((m: any) => m.uploader_id === personnelId)?.total_bytes || 0);
 
       setAssignedClientIds((assignments || []).map((a: any) => a.client_id));
 
@@ -227,6 +262,7 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
       setDocTypes(docTypesData || []);
       setEmployeeDocs(employeeDocsData || []);
       setSalaryHistory(salaryHistoryData || []);
+      setEmploymentPeriods(employmentPeriodsData || []);
       setNewSalaryMonth(new Date().toISOString().slice(0, 7));
       setNewSalaryAmount('');
     } catch (err: any) {
@@ -262,6 +298,41 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
       alert('Kaydedilirken hata: ' + err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Şirket kotasından bu personele kesin bir pay ayırır (bkz.
+  // add_personal_storage_quota.sql). Sunucu tarafındaki trigger asıl güvenlik
+  // ağı — buradaki kontrol sadece erken/anlaşılır bir uyarı vermek için.
+  const handleSaveStorageQuota = async () => {
+    const trimmed = personalStorageQuotaMb.trim();
+    const bytes = trimmed === '' ? null : Math.round(parseFloat(trimmed) * 1024 * 1024);
+    if (trimmed !== '' && (isNaN(bytes as number) || (bytes as number) <= 0)) {
+      alert('Lütfen geçerli bir MB değeri girin.');
+      return;
+    }
+    const remaining = orgStorageLimit - otherAllocatedTotal;
+    if (bytes != null && bytes > remaining) {
+      alert(`Bu tahsisat şirket kotasını aşıyor. Kalan tahsis edilebilir alan: ${(remaining / (1024 * 1024)).toLocaleString('tr-TR', { maximumFractionDigits: 1 })} MB.`);
+      return;
+    }
+    setSavingStorageQuota(true);
+    try {
+      const { error } = await supabase.from('employee_details').upsert(
+        {
+          profile_id: personnelId,
+          organization_id: orgId,
+          personal_storage_quota: bytes,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'profile_id' }
+      );
+      if (error) throw error;
+      alert('Depolama kotası kaydedildi!');
+    } catch (err: any) {
+      alert('Kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingStorageQuota(false);
     }
   };
 
@@ -757,6 +828,38 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
               </div>
             </div>
 
+            {/* Çalışma Dönemleri: personel birden fazla kez çıkarılıp tekrar işe
+                alındıysa her dönem burada ayrı ayrı listelenir. Tek dönem varsa
+                zaten yukarıdaki "İşe Başlangıç Tarihi" ile örtüştüğü için gösterilmez. */}
+            {employmentPeriods.length > 1 && (
+              <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4 space-y-2">
+                <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
+                  <Briefcase size={13} /> Çalışma Dönemleri
+                </h4>
+                <div className="space-y-1.5">
+                  {employmentPeriods.map((p) => {
+                    const days = Math.round(
+                      ((p.exit_date ? new Date(p.exit_date).getTime() : Date.now()) - new Date(p.hire_date).getTime()) / (1000 * 60 * 60 * 24)
+                    );
+                    return (
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between gap-2 text-xs bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-lg px-3 py-2"
+                      >
+                        <span className="font-bold text-slate-600 dark:text-slate-300">
+                          {new Date(p.hire_date).toLocaleDateString('tr-TR')} →{' '}
+                          {p.exit_date ? new Date(p.exit_date).toLocaleDateString('tr-TR') : (
+                            <span className="text-emerald-600">Halen Çalışıyor</span>
+                          )}
+                        </span>
+                        <span className="text-slate-400">{days} gün</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Maaş Geçmişi: tarih-etkili maaş/zam satırları */}
             <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-4 space-y-3">
               <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1.5">
@@ -946,16 +1049,51 @@ export default function PersonnelCard({ personnelId, orgId, viewerRole, clients,
                     );
                   })}
                   {profile?.role === 'corporate_staff' && (
-                    <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={!!profile?.extra_permissions?.can_upload_personal_docs}
-                        disabled={savingPerm === 'can_upload_personal_docs'}
-                        onChange={(e) => handleTogglePermission('can_upload_personal_docs', e.target.checked)}
-                        className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
-                      />
-                      Şahsi Belge Yükleme
-                    </label>
+                    <div className="w-full">
+                      <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!profile?.extra_permissions?.can_upload_personal_docs}
+                          disabled={savingPerm === 'can_upload_personal_docs'}
+                          onChange={(e) => handleTogglePermission('can_upload_personal_docs', e.target.checked)}
+                          className="rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                        />
+                        Şahsi Belge Yükleme
+                      </label>
+
+                      {/* Şirket kotasından bu personele kesin bir pay ayırma —
+                          bkz. add_personal_storage_quota.sql. Boş bırakılırsa
+                          kişiye özel üst sınır olmaz, sadece genel şirket
+                          kotasıyla sınırlı kalır (bugünkü davranış). */}
+                      {profile?.extra_permissions?.can_upload_personal_docs && (
+                        <div className="mt-2 pl-5 flex flex-wrap items-center gap-2">
+                          <HardDrive size={13} className="text-slate-400 shrink-0" />
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={personalStorageQuotaMb}
+                            onChange={(e) => setPersonalStorageQuotaMb(e.target.value)}
+                            placeholder="Sınırsız (şirket kotası)"
+                            className="w-40 p-1.5 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          <span className="text-[10px] text-slate-400 font-bold">MB şahsi kota</span>
+                          <button
+                            type="button"
+                            onClick={handleSaveStorageQuota}
+                            disabled={savingStorageQuota}
+                            className="flex items-center gap-1 bg-slate-600 hover:bg-slate-700 text-white px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition disabled:opacity-50"
+                          >
+                            {savingStorageQuota ? <Loader size={11} className="animate-spin" /> : <Save size={11} />}
+                            Kaydet
+                          </button>
+                          <span className="text-[10px] text-slate-400 w-full">
+                            Kullanılan: {(myStorageUsed / (1024 * 1024)).toLocaleString('tr-TR', { maximumFractionDigits: 1 })} MB
+                            {' · '}Kalan tahsis edilebilir şirket kotası: {(Math.max(orgStorageLimit - otherAllocatedTotal, 0) / (1024 * 1024)).toLocaleString('tr-TR', { maximumFractionDigits: 1 })} MB
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
