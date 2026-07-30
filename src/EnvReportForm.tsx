@@ -25,7 +25,32 @@ interface Client {
   address: string;
   tax_no: string;
   phone: string;
+  permit_stage?: string;
+  permit_articles?: string[];
+  ced_status?: string;
+  ced_articles?: string[];
 }
+
+interface RegCategory {
+  stage: string;
+  code: string;
+  title: string;
+}
+
+// Çevre İzin ve Lisans Yönetmeliği ile ÇED Yönetmeliği'nin EK-1/EK-2
+// başlıkları — ced_project_categories / environmental_permit_categories
+// tablolarını oluşturan add_ced_status_and_admin_lists.sql ve
+// add_environmental_permit_categories.sql dosyalarındaki resmi liste
+// başlıklarıyla birebir aynı tutuluyor.
+const PERMIT_STAGE_TITLES: Record<string, string> = {
+  ek1: 'Çevre İznine Tabi Faaliyetler/Tesisler Listesi',
+  ek2: 'Çevre İzin ve Lisansına Tabi Faaliyetler/Tesisler Listesi',
+};
+const CED_STAGE_TITLES: Record<string, string> = {
+  ek1: 'Çevresel Etki Değerlendirmesi Uygulanacak Projeler Listesi',
+  ek2: 'Çevresel Etkileri Ön İnceleme ve Değerlendirmeye Tabi Projeler Listesi',
+};
+const TURKISH_MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
 // Tailwind JIT tam class adını kaynak kodda göremezse (örn. `text-${color}-600`
 // gibi bir template literal) o class'ı üretmez. Bu yüzden renkler burada statik
@@ -186,9 +211,46 @@ export default function EnvReportForm() {
   const [noAssignedClients, setNoAssignedClients] = useState(false);
   const [isCorporateExpired, setIsCorporateExpired] = useState(false);
 
+  // A - İŞLETME BİLGİLERİ bölümündeki otomatik alanlar için: seçilen firmanın
+  // Çevre İzin / ÇED madde kodlarını okunabilir başlığa çevirmek üzere bir
+  // kereye mahsus çekilen referans listeler, ve hizmet veren danışmanlık
+  // firmasının ünvanı (organizations.name).
+  const [permitCategories, setPermitCategories] = useState<RegCategory[]>([]);
+  const [cedCategories, setCedCategories] = useState<RegCategory[]>([]);
+  const [consultantOrgName, setConsultantOrgName] = useState('');
+
   useEffect(() => {
     fetchInitialData();
+    supabase.from('environmental_permit_categories').select('stage, code, title').then(({ data }) => {
+      if (data) setPermitCategories(data);
+    });
+    supabase.from('ced_project_categories').select('stage, code, title').then(({ data }) => {
+      if (data) setCedCategories(data);
+    });
   }, []);
+
+  // Seçilen işletme değiştiğinde, bu işletme için daha önce girilmiş "İşletme
+  // Yetkilisi" adı var mı diye en son rapora bakar (alan boşsa doldurur, kullanıcı
+  // zaten bir şey yazdıysa dokunmaz).
+  useEffect(() => {
+    if (!clientId || formData.A_yetkili_ad_soyad) return;
+    supabase
+      .from('env_reports')
+      .select('form_data')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        const prevName = data?.form_data?.A_yetkili_ad_soyad;
+        if (prevName) {
+          setFormData((prev: any) => (prev.A_yetkili_ad_soyad ? prev : { ...prev, A_yetkili_ad_soyad: prevName }));
+        }
+      });
+    // formData bilerek dependency'de değil: her alan değişikliğinde değil,
+    // sadece işletme değiştiğinde bir kere kontrol edilmesi isteniyor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId]);
 
   const fetchInitialData = async () => {
     const { data: { session } } = await supabase.auth.getSession();
@@ -203,6 +265,12 @@ export default function EnvReportForm() {
     if (profile) {
       setUserProfile(profile);
       const perms = profile.extra_permissions || {};
+
+      if (profile.organization_id) {
+        supabase.from('organizations').select('name').eq('id', profile.organization_id).single().then(({ data: orgRow }) => {
+          if (orgRow?.name) setConsultantOrgName(orgRow.name);
+        });
+      }
 
       // --- MOD TESPİTİ ---
       // Danışmanlık modu: kullanıcının bir şirkete bağlı olması YETERLİ değil,
@@ -622,10 +690,10 @@ export default function EnvReportForm() {
   };
 
   // ----- RENDER YARDIMCILARI -----
-  const renderTextInput = (label: string, fieldKey: string, placeholder: string = '', isTextArea = false, note: string = '') => {
+  const renderTextInput = (label: string, fieldKey: string, placeholder: string = '', isTextArea = false, note: string = '', noImage = false) => {
     const value = formData[fieldKey] || '';
-    const fieldImage = getFieldImage(fieldKey);
-    const imageBlock = (
+    const fieldImage = noImage ? null : getFieldImage(fieldKey);
+    const imageBlock = noImage ? null : (
       <FieldImageBlock
         image={fieldImage}
         uploading={uploadingFieldKey === fieldKey}
@@ -682,6 +750,179 @@ export default function EnvReportForm() {
     <h4 className={`font-bold text-base ${SECTION_COLOR_CLASSES[color] || SECTION_COLOR_CLASSES.blue} mb-3`}>{title}</h4>
   );
 
+  // Sistem tarafından otomatik doldurulan, kullanıcının elle değiştiremediği
+  // bir alanı gösterir (örn. seçilen işletmenin ünvanı/adresi, danışmanlık
+  // firması, sorumlu mühendis). Görsel ekleme desteklenmez.
+  const renderReadOnlyField = (label: string, value: string, note: string = '') => (
+    <div>
+      <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+        {label}
+      </label>
+      <div className={`w-full p-2.5 rounded-xl border border-gray-100 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 text-sm font-semibold whitespace-pre-wrap ${value ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 italic font-normal'}`}>
+        {value || 'Otomatik doldurulacak'}
+      </div>
+      {note && <p className="text-[10px] text-gray-400 mt-1 leading-tight italic">{note}</p>}
+    </div>
+  );
+
+  const renderDateInput = (label: string, fieldKey: string) => {
+    const value = formData[fieldKey] || '';
+    if (previewMode) {
+      return renderReadOnlyField(label, value ? new Date(value).toLocaleDateString('tr-TR') : '');
+    }
+    return (
+      <div>
+        <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+          {label}
+        </label>
+        <input
+          type="date"
+          value={value}
+          onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
+          className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+        />
+      </div>
+    );
+  };
+
+  // "Faturaya ait Hizmet Verilen Ay" — mevcut yıl ± 1 yıl aralığında Ay/Yıl seçimi.
+  const renderMonthSelect = (label: string, fieldKey: string) => {
+    const value = formData[fieldKey] || '';
+    if (previewMode) return renderReadOnlyField(label, value);
+    const currentYear = new Date().getFullYear();
+    const options: string[] = [];
+    for (let y = currentYear - 1; y <= currentYear + 1; y++) {
+      for (const m of TURKISH_MONTHS) options.push(`${m} ${y}`);
+    }
+    return (
+      <div>
+        <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+          {label}
+        </label>
+        <select
+          value={value}
+          onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
+          className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+        >
+          <option value="">Seçiniz...</option>
+          {options.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </div>
+    );
+  };
+
+  // Sadece rakam girilen sayaç alanları (personel sayıları vb.) için. Görsel
+  // eklenemez; her zaman noImage mantığıyla renderTextInput'un dışında tutulur.
+  const renderNumberInput = (label: string, fieldKey: string) => {
+    const value = formData[fieldKey] ?? '';
+    if (previewMode) return renderReadOnlyField(label, value !== '' ? String(value) : '');
+    return (
+      <div>
+        <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+          {label}
+        </label>
+        <input
+          type="number"
+          min="0"
+          value={value}
+          onChange={(e) => handleUpdateField(fieldKey, e.target.value)}
+          className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+        />
+      </div>
+    );
+  };
+
+  // Yıllık raporun "Personel Sayıları" bloğunda İdari/Mühendis/Teknisyen/Usta/İşçi
+  // sayaçlarının toplamını otomatik hesaplar; hiçbiri doldurulmamışsa boş döner.
+  const PERSONNEL_COUNT_KEYS = ['Y1_p_idari', 'Y1_p_muh', 'Y1_p_tek', 'Y1_p_usta', 'Y1_p_isci'];
+  const computePersonnelTotal = (): string => {
+    const anyFilled = PERSONNEL_COUNT_KEYS.some((k) => formData[k] !== undefined && formData[k] !== '');
+    if (!anyFilled) return '';
+    const sum = PERSONNEL_COUNT_KEYS.reduce((acc, k) => acc + (Number(formData[k]) || 0), 0);
+    return String(sum);
+  };
+
+  const getSelectedClient = () => clients.find((c) => c.id === clientId);
+
+  // Seçilen işletmenin consultant_clients.permit_stage / permit_articles
+  // kolonlarından "Çevre İzin ve Lisans Yönetmeliği Kapsamındaki Yeri" metnini
+  // otomatik üretir (bkz. add_permit_stage_to_clients.sql, ConsultantPanel'deki
+  // aynı alanın düzenlendiği yer).
+  const buildPermitScopeText = (client?: Client) => {
+    if (!client) return '';
+    const stage = client.permit_stage || 'out_of_scope';
+    if (stage === 'out_of_scope') return 'Çevre İzin ve Lisans Yönetmeliği kapsamı dışındadır.';
+    const stageLabel = stage === 'ek1' ? 'Ek-1' : 'Ek-2';
+    const stageTitle = PERMIT_STAGE_TITLES[stage] || '';
+    const codes = Array.isArray(client.permit_articles) ? client.permit_articles : [];
+    if (codes.length === 0) return `${stageLabel} - ${stageTitle}`;
+    const lines = codes.map((code) => {
+      const cat = permitCategories.find((c) => c.stage === stage && c.code === code);
+      return cat ? `${code} ${cat.title} maddesi` : `${code} maddesi`;
+    });
+    return `${stageLabel} - ${stageTitle}\n${lines.join('\n')}`;
+  };
+
+  // Aynı mantık, ÇED Yönetmeliği (consultant_clients.ced_status / ced_articles) için.
+  const buildCedScopeText = (client?: Client) => {
+    if (!client) return '';
+    const stage = client.ced_status || 'out_of_scope';
+    if (stage === 'out_of_scope') return 'ÇED Yönetmeliği kapsamı dışındadır.';
+    const stageLabel = stage === 'ek1' ? 'Ek-1' : 'Ek-2';
+    const stageTitle = CED_STAGE_TITLES[stage] || '';
+    const codes = Array.isArray(client.ced_articles) ? client.ced_articles : [];
+    if (codes.length === 0) return `${stageLabel} - ${stageTitle}`;
+    const lines = codes.map((code) => {
+      const cat = cedCategories.find((c) => c.stage === stage && c.code === code);
+      return cat ? `${code} ${cat.title} maddesi` : `${code} maddesi`;
+    });
+    return `${stageLabel} - ${stageTitle}\n${lines.join('\n')}`;
+  };
+
+  // renderReadOnlyField ile A bölümünde (aylık) ve 3/4. bölümlerde (yıllık)
+  // gösterilen ÇED / Çevre İzin metinleri sadece render sırasında
+  // hesaplanıyordu; formData'ya hiç yazılmadıkları için kayıt/çıktıda
+  // (EnvReportView) boş görünüyorlardı. Bu effect, seçilen işletme (veya
+  // referans listeler) değiştiğinde hesaplanan metinleri formData'ya da
+  // yazarak kaydedilmelerini sağlar.
+  useEffect(() => {
+    const selectedClient = clients.find((c) => c.id === clientId);
+    if (!selectedClient) return;
+    const permitText = buildPermitScopeText(selectedClient);
+    const cedText = buildCedScopeText(selectedClient);
+
+    const permitStage = selectedClient.permit_stage || 'out_of_scope';
+    const permitStageLabel = permitStage === 'ek1' ? 'Ek-1' : permitStage === 'ek2' ? 'Ek-2' : 'Kapsam Dışı';
+    const permitCodes = Array.isArray(selectedClient.permit_articles) ? selectedClient.permit_articles : [];
+    const permitTitles = permitCodes.map((code) => permitCategories.find((c) => c.stage === permitStage && c.code === code)?.title || '');
+
+    setFormData((prev: any) => {
+      const next = { ...prev };
+      let changed = false;
+      const setIfChanged = (key: string, val: string) => {
+        if (next[key] !== val) { next[key] = val; changed = true; }
+      };
+      setIfChanged('A_cevre_izin_yeri', permitText);
+      setIfChanged('A_ced_durumu', cedText);
+      setIfChanged('Y3_ced_oto', cedText);
+      setIfChanged('Y4_ek_liste', permitStageLabel);
+      setIfChanged('Y4_bolum_no', permitCodes.join(', '));
+      setIfChanged('Y4_faaliyet_adi', permitTitles.join(', '));
+      return changed ? next : prev;
+    });
+    // buildPermitScopeText/buildCedScopeText her render'da yeniden oluşan
+    // fonksiyonlar; deps'e eklemek gereksiz yere sonsuz effect döngüsüne yol açar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, clients, permitCategories, cedCategories]);
+
+  // Personel Sayıları: İdari/Mühendis/Teknisyen/Usta/İşçi değiştikçe Toplam'ı
+  // otomatik hesaplayıp formData'ya yazar (bkz. computePersonnelTotal).
+  useEffect(() => {
+    const total = computePersonnelTotal();
+    setFormData((prev: any) => (prev.Y1_p_toplam === total ? prev : { ...prev, Y1_p_toplam: total }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.Y1_p_idari, formData.Y1_p_muh, formData.Y1_p_tek, formData.Y1_p_usta, formData.Y1_p_isci]);
+
   const renderAttachments = () => (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-4">
@@ -707,19 +948,51 @@ export default function EnvReportForm() {
   );
 
   // --- AYLIK RAPOR ADIMLARI ---
-  const renderMonthlyStep2 = () => (
+  const renderMonthlyStep2 = () => {
+    const selectedClient = getSelectedClient();
+    return (
     <div className="space-y-6 animate-fadeIn">
       <h3 className="text-xl font-bold border-b pb-2">A - İŞLETME BİLGİLERİ</h3>
       <Section>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {renderTextInput('Faaliyet Konusu', 'A_faaliyet_konusu')}
-          {renderTextInput('Çevre İzin ve Lisans Yönetmeliği Kapsamındaki Yeri', 'A_cevre_izin_yeri', '', false, 'İşletmenin, Çevre İzin ve Lisans Yönetmeliğindeki ek listelerindeki kapsamı, bölüm numarası ve faaliyetin adı ile birlikte tam olarak belirtilmelidir.')}
-          {renderTextInput('ÇED Yönetmeliği Kapsamındaki Değerlendirmesi', 'A_ced_durumu', '', true, '1- Kapasite artışları dahil faaliyet ile ilgili olarak işletmenin ÇED Yönetmeliği kapsamındaki durumu (ÇED Olumlu, ÇED Gerekli Değildir ve kapsam dışı vb) belirtilmeli, konuya ilişkin Bakanlık merkez veya il müdürlüklerinden alınmış tüm resmi belgeler alındıkları mercii, tarih, sayı ve konusu ile birlikte tam olarak yazılmalıdır.')}
-          {renderTextInput('Çalışan Personel Sayısı', 'A_personel_sayisi')}
-          {renderTextInput('İşletme Yetkilisi', 'A_yetkili_ad_soyad')}
-          {renderTextInput('Son Ay Yapılan Ziyarete Ait Fatura Tarihi ve Numarası', 'A_fatura_bilgisi')}
-          {renderTextInput('Faturaya ait Hizmet Verilen Ay', 'A_fatura_ayi', 'Örn: Ocak 2024')}
+          {renderReadOnlyField('Ünvanı', selectedClient?.name || '')}
+          {renderReadOnlyField('Adresi', selectedClient?.address || '')}
         </div>
+
+        {renderTextInput('Faaliyet Konusu', 'A_faaliyet_konusu', '', false, '', true)}
+
+        {renderReadOnlyField(
+          'Çevre İzin ve Lisans Yönetmeliği Kapsamındaki Yeri',
+          buildPermitScopeText(selectedClient),
+          'İşletmenin Çevre İzin ve Lisans Yönetmeliği kapsamı, "Hizmet Verilen İşletmeler" tanımından otomatik çekilir.'
+        )}
+
+        <div className="space-y-2">
+          {renderReadOnlyField('ÇED Yönetmeliği Kapsamındaki Değerlendirmesi', buildCedScopeText(selectedClient))}
+          {renderTextInput(
+            'ÇED İle İlgili Resmi Yazılar / Notlar',
+            'A_ced_notlar',
+            'Örn: 10.01.2025 tarihli ÇED kapsam dışı yazısı alınmıştır.',
+            true,
+            'Bakanlık merkez veya il müdürlüklerinden alınmış resmi belgeler; alındıkları mercii, tarih, sayı ve konusu ile birlikte yazılmalıdır.',
+            true
+          )}
+        </div>
+
+        {renderTextInput('Çalışan Personel Sayısı', 'A_personel_sayisi', 'Örn: Taşeron: 500  Kadro: 200', false, '', true)}
+        {renderTextInput('İşletme Yetkilisi', 'A_yetkili_ad_soyad', '', false, '', true)}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {renderReadOnlyField('Hizmet Alınan Çevre Danışmanlık Firması', consultantOrgName)}
+          {renderReadOnlyField('Sorumlu Çevre Mühendisi / Yetkilendirilmiş Kişi', userProfile?.full_name || '')}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {renderDateInput('Son Ay Yapılan Ziyarete Ait Fatura Tarihi', 'A_fatura_tarihi')}
+          {renderTextInput('Fatura Numarası', 'A_fatura_no', '', false, '', true)}
+        </div>
+
+        {renderMonthSelect('Faturaya ait Hizmet Verilen Ay', 'A_fatura_ayi')}
       </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">B - FAALİYETİN ÇEVRESEL ETKİLERİ VE ALINAN/ALINACAK ÖNLEMLER</h3>
@@ -737,7 +1010,8 @@ export default function EnvReportForm() {
         </div>
       </Section>
     </div>
-  );
+    );
+  };
 
   const renderMonthlyStep3 = () => (
     <div className="space-y-6 animate-fadeIn">
@@ -846,53 +1120,53 @@ export default function EnvReportForm() {
       <h3 className="text-xl font-bold border-b pb-2">1 - İŞLETME BİLGİLERİ</h3>
       <Section>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {renderTextInput('Vergi Dairesi ve Numarası', 'Y1_vergi_bilgisi')}
-          {renderTextInput('Çevre Kimlik Numarası (ÇKN)', 'Y1_ckn')}
-          {renderTextInput('Beldesi / İlçesi / İli', 'Y1_il_ilce')}
-          {renderTextInput('Koordinat Bilgileri (UTM)', 'Y1_koordinat')}
-          {renderTextInput('Kurulu Olduğu Yer', 'Y1_kurulus_yeri', 'OSB, İOSB, Yerleşim alanı vb.')}
-          {renderTextInput('Çalışma Şekli', 'Y1_calisma_sekli', 'Sürekli / Mevsimlik')}
-          {renderTextInput('Vardiya Sayısı', 'Y1_vardiya')}
-          {renderTextInput('Üretim Konusu', 'Y1_uretim')}
+          {renderTextInput('Vergi Dairesi ve Numarası', 'Y1_vergi_bilgisi', '', false, '', true)}
+          {renderTextInput('Çevre Kimlik Numarası (ÇKN)', 'Y1_ckn', '', false, '', true)}
+          {renderTextInput('Beldesi / İlçesi / İli', 'Y1_il_ilce', '', false, '', true)}
+          {renderTextInput('Koordinat Bilgileri (UTM)', 'Y1_koordinat', '', false, '', true)}
+          {renderTextInput('Kurulu Olduğu Yer', 'Y1_kurulus_yeri', 'OSB, İOSB, Yerleşim alanı vb.', false, '', true)}
+          {renderTextInput('Çalışma Şekli', 'Y1_calisma_sekli', 'Sürekli / Mevsimlik', false, '', true)}
+          {renderTextInput('Vardiya Sayısı', 'Y1_vardiya', '', false, '', true)}
+          {renderTextInput('Üretim Konusu', 'Y1_uretim', '', false, '', true)}
         </div>
 
         <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
           <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">Alan Bilgileri (m²)</h5>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-            {renderTextInput('Açık Alan', 'Y1_alan_acik')}
-            {renderTextInput('Kapalı Alan', 'Y1_alan_kapali')}
-            {renderTextInput('Toplam Alan', 'Y1_alan_toplam')}
+            {renderTextInput('Açık Alan', 'Y1_alan_acik', '', false, '', true)}
+            {renderTextInput('Kapalı Alan', 'Y1_alan_kapali', '', false, '', true)}
+            {renderTextInput('Toplam Alan', 'Y1_alan_toplam', '', false, '', true)}
           </div>
         </div>
 
         <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
           <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">Personel Sayıları</h5>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-            {renderTextInput('İdari', 'Y1_p_idari')}
-            {renderTextInput('Mühendis', 'Y1_p_muh')}
-            {renderTextInput('Teknisyen', 'Y1_p_tek')}
-            {renderTextInput('Usta', 'Y1_p_usta')}
-            {renderTextInput('İşçi', 'Y1_p_isci')}
-            {renderTextInput('Toplam', 'Y1_p_toplam')}
+            {renderNumberInput('İdari', 'Y1_p_idari')}
+            {renderNumberInput('Mühendis', 'Y1_p_muh')}
+            {renderNumberInput('Teknisyen', 'Y1_p_tek')}
+            {renderNumberInput('Usta', 'Y1_p_usta')}
+            {renderNumberInput('İşçi', 'Y1_p_isci')}
+            {renderReadOnlyField('Toplam', computePersonnelTotal())}
           </div>
         </div>
 
         <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl border border-gray-100 dark:border-slate-700">
           <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">NACE Kodları</h5>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {renderTextInput('NACE Kodu', 'Y1_nace_kod')}
-            {renderTextInput('NACE Adı', 'Y1_nace_adi')}
+            {renderTextInput('NACE Kodu', 'Y1_nace_kod', '', false, '', true)}
+            {renderTextInput('NACE Adı', 'Y1_nace_adi', '', false, '', true)}
           </div>
         </div>
 
         <div>
           <h5 className="font-bold text-sm mb-3 text-gray-700 dark:text-gray-300">Kapasite ve Belgeler</h5>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {renderTextInput('ÇED Kararı Yazısı', 'Y1_kap_ced')}
-            {renderTextInput('Çevre İzni/Lisansı', 'Y1_kap_izin')}
-            {renderTextInput('Kapasite Raporu', 'Y1_kap_rapor')}
-            {renderTextInput('Çevre Yönetim Sistemi Belgesi', 'Y1_cys_belge')}
-            {renderTextInput('Teşvik ve Ödüller', 'Y1_tesvik_odul')}
+            {renderTextInput('ÇED Kararı Yazısı', 'Y1_kap_ced', '', false, '', true)}
+            {renderTextInput('Çevre İzni/Lisansı', 'Y1_kap_izin', '', false, '', true)}
+            {renderTextInput('Kapasite Raporu', 'Y1_kap_rapor', '', false, '', true)}
+            {renderTextInput('Çevre Yönetim Sistemi Belgesi', 'Y1_cys_belge', '', false, '', true)}
+            {renderTextInput('Teşvik ve Ödüller', 'Y1_tesvik_odul', '', false, '', true)}
           </div>
         </div>
       </Section>
@@ -900,26 +1174,29 @@ export default function EnvReportForm() {
       <h3 className="text-xl font-bold border-b pb-2 mt-8">2 - İŞLETME HAKKINDA GENEL BİLGİLER</h3>
       <Section>
         <div className="space-y-4">
-          {renderTextInput('Genel Bilgiler', 'Y2_genel_bilgiler', 'Pafta, parsel, ada no ve mülkiyet durumu...', true)}
-          {renderTextInput('Faaliyet Sahibi Bilgisi', 'Y2_faaliyet_sahibi', 'Unvan değişikliği vb. bilgiler', true)}
+          {renderTextInput('Genel Bilgiler', 'Y2_genel_bilgiler', 'Pafta, parsel, ada no ve mülkiyet durumu...', true, '', true)}
+          {renderTextInput('Faaliyet Sahibi Bilgisi', 'Y2_faaliyet_sahibi', 'Unvan değişikliği vb. bilgiler', true, '', true)}
         </div>
       </Section>
     </div>
   );
 
-  const renderYearlyStep3 = () => (
+  const renderYearlyStep3 = () => {
+    const selectedClient = getSelectedClient();
+    return (
     <div className="space-y-6 animate-fadeIn">
       <h3 className="text-xl font-bold border-b pb-2">3 - ÇED YÖNETMELİĞİNE GÖRE DURUMU</h3>
       <Section>
-        {renderTextInput('ÇED Değerlendirmesi', 'Y3_ced_durumu', 'ÇED Olumlu/Gerekli Değildir vb. resmi belgeler, tarih ve sayıları ile...', true, 'Son Kapasite Raporunda yer alan kapasiteye göre değerlendirilme yapılmalıdır.')}
+        {renderReadOnlyField('ÇED Kapsamı (Otomatik)', buildCedScopeText(selectedClient))}
+        {renderTextInput('ÇED Değerlendirmesi / Resmi Yazılar', 'Y3_ced_durumu', 'ÇED Olumlu/Gerekli Değildir vb. resmi belgeler, tarih ve sayıları ile...', true, 'Son Kapasite Raporunda yer alan kapasiteye göre değerlendirilme yapılmalıdır.')}
       </Section>
 
       <h3 className="text-xl font-bold border-b pb-2 mt-8">4 - ÇEVRE İZİN VE LİSANS YÖNETMELİĞİNE (ÇİLY) GÖRE DURUMU</h3>
       <Section>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {renderTextInput('Ek Liste', 'Y4_ek_liste')}
-          {renderTextInput('Bölüm No', 'Y4_bolum_no')}
-          {renderTextInput('Faaliyet Adı', 'Y4_faaliyet_adi')}
+          {renderReadOnlyField('Ek Liste', selectedClient?.permit_stage === 'ek1' ? 'Ek-1' : selectedClient?.permit_stage === 'ek2' ? 'Ek-2' : 'Kapsam Dışı')}
+          {renderReadOnlyField('Bölüm No', (selectedClient?.permit_articles || []).join(', '))}
+          {renderReadOnlyField('Faaliyet Adı', (selectedClient?.permit_articles || []).map((code) => permitCategories.find((c) => c.stage === selectedClient?.permit_stage && c.code === code)?.title || '').join(', '))}
         </div>
         <div className="space-y-4">
           {renderTextInput('İzin Konuları', 'Y4_izin_konulari', 'Hava emisyonu, atıksu deşarjı vb.')}
@@ -933,7 +1210,8 @@ export default function EnvReportForm() {
         {renderTextInput('İş Akımı ve Proses', 'Y5_proses_ozeti', 'Faaliyet alanı, vaziyet planı, üretim süreçleri ve emisyon çıkışları...', true)}
       </Section>
     </div>
-  );
+    );
+  };
 
   const renderYearlyStep4 = () => (
     <div className="space-y-6 animate-fadeIn">

@@ -399,7 +399,9 @@ export default function EnvReportView() {
                 <p><strong>ADRES:</strong> {report.client?.address}</p>
                 <p><strong>DANIŞMAN FİRMA:</strong> {consultantFirm?.name}</p>
                 <p><strong>SORUMLU MÜHENDİS:</strong> {report.creator?.full_name}</p>
-                <p><strong>FATURA BİLGİSİ:</strong> {fd.A_fatura_bilgisi || '-'}</p>
+                <p><strong>FATURA BİLGİSİ:</strong> {fd.A_fatura_tarihi || fd.A_fatura_no
+                  ? `${fd.A_fatura_tarihi ? new Date(fd.A_fatura_tarihi).toLocaleDateString('tr-TR') : '-'}${fd.A_fatura_no ? ' / No: ' + fd.A_fatura_no : ''}`
+                  : (fd.A_fatura_bilgisi || '-')}</p>
                 <p><strong>HİZMET AYI:</strong> {fd.A_fatura_ayi || '-'}</p>
               </div>
 
@@ -407,6 +409,7 @@ export default function EnvReportView() {
               {renderSection('Faaliyet Konusu', 'A_faaliyet_konusu')}
               {renderSection('Çevre İzin ve Lisans Kapsamı', 'A_cevre_izin_yeri')}
               {renderSection('ÇED Yönetmeliği Kapsamı', 'A_ced_durumu')}
+              {renderSection('ÇED İle İlgili Resmi Yazılar / Notlar', 'A_ced_notlar')}
               {renderSection('Çalışan Sayısı', 'A_personel_sayisi')}
               {renderSection('İşletme Yetkilisi', 'A_yetkili_ad_soyad')}
 
@@ -539,7 +542,8 @@ export default function EnvReportView() {
               {renderSection('Faaliyet Sahibi Değişikliği', 'Y2_faaliyet_sahibi')}
 
               {renderSubHeader('3 - ÇED YÖNETMELİĞİNE GÖRE DURUMU')}
-              {renderSection('Değerlendirme', 'Y3_ced_durumu')}
+              {renderSection('ÇED Kapsamı (Otomatik)', 'Y3_ced_oto')}
+              {renderSection('Değerlendirme / Resmi Yazılar', 'Y3_ced_durumu')}
 
               {renderSubHeader('4 - ÇEVRE İZİN VE LİSANS YÖNETMELİĞİ (ÇİLY)')}
               <div className="grid grid-cols-3 gap-4 mb-4 text-xs font-bold bg-gray-50 p-3 border">
@@ -610,7 +614,7 @@ export default function EnvReportView() {
            <div>
              <h4 className="font-bold text-[9px] mb-12 uppercase">İşletme Yetkilisi</h4>
              <div className="flex flex-col items-center">
-               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">{report.client?.name?.substring(0, 20)}...</p>
+               <p className="border-t border-gray-400 pt-1 font-bold text-[10px] w-full">{fd.A_yetkili_ad_soyad || '-'}</p>
                <p className="text-[8px] text-gray-500">Kaşe / İmza</p>
              </div>
            </div>
