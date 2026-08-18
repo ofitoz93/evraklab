@@ -6,6 +6,10 @@
   color-scheme: light;
 }
 
+html {
+  zoom: 85%;
+}
+
 .dark {
   color-scheme: dark;
 }
