@@ -38,15 +38,18 @@ import {
   Gift,
   Copy,
   Ban,
+  CheckSquare,
+  RefreshCw,
 } from 'lucide-react';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
+import { SYSTEM_MODULES, DEFAULT_MODULE_KEYS, SYSTEM_MODULE_CATEGORIES } from './moduleRegistry';
 
 import GOOGLE_SCRIPT_CODE from '../google_script_mail_template.js?raw';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'ced_categories' | 'permit_categories' | 'waste_codes' | 'payments' | 'gift_codes' | 'pricing'
+    'users' | 'companies' | 'tickets' | 'notifications' | 'email_settings' | 'system_settings' | 'legislations' | 'legislation_requests' | 'ced_categories' | 'permit_categories' | 'waste_codes' | 'payments' | 'gift_codes' | 'pricing' | 'module_settings'
   >('tickets');
 
   const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
@@ -275,6 +278,71 @@ export default function AdminPanel() {
   const [compLimit, setCompLimit] = useState(0);
   const [compDate, setCompDate] = useState('');
   const [compIsEnvConsultant, setCompIsEnvConsultant] = useState(false);
+  const [compEnabledModules, setCompEnabledModules] = useState<string[]>(DEFAULT_MODULE_KEYS);
+
+  // --- Sistem Modül Ayarları State & Handler'ları ---
+  const [sysDefaultModuleKeys, setSysDefaultModuleKeys] = useState<string[]>(DEFAULT_MODULE_KEYS);
+  const [fetchingModuleSettings, setFetchingModuleSettings] = useState(false);
+  const [savingModuleSettings, setSavingModuleSettings] = useState(false);
+  const [bulkApplyingModules, setBulkApplyingModules] = useState(false);
+
+  const fetchSystemModuleDefaults = async () => {
+    setFetchingModuleSettings(true);
+    try {
+      const { data, error } = await supabase
+        .from('pricing_settings')
+        .select('*')
+        .eq('key', 'default_system_modules')
+        .maybeSingle();
+
+      if (error) throw error;
+      if (data?.value && Array.isArray(data.value)) {
+        setSysDefaultModuleKeys(data.value);
+      }
+    } catch (err: any) {
+      console.warn('Varsayılan sistem modülleri yüklenemedi:', err.message);
+    } finally {
+      setFetchingModuleSettings(false);
+    }
+  };
+
+  const handleSaveSystemModuleDefaults = async () => {
+    setSavingModuleSettings(true);
+    try {
+      const { error } = await supabase
+        .from('pricing_settings')
+        .upsert({
+          key: 'default_system_modules',
+          value: sysDefaultModuleKeys,
+          updated_at: new Date().toISOString(),
+        });
+      if (error) throw error;
+      alert('Sistem varsayılan modül ayarları kaydedildi!');
+    } catch (err: any) {
+      alert('Modül ayarları kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingModuleSettings(false);
+    }
+  };
+
+  const handleBulkApplyDefaultModulesToAllCompanies = async () => {
+    if (!window.confirm('DİKKAT: Sistemdeki TÜM şirketlerin aktif modülleri, seçilen bu varsayılan liste ile güncellenecektir. Devam etmek istiyor musunuz?')) return;
+    setBulkApplyingModules(true);
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({ enabled_modules: sysDefaultModuleKeys })
+        .not('id', 'is', null);
+
+      if (error) throw error;
+      alert('Tüm şirketlerin modül izinleri başarıyla güncellendi!');
+      fetchCompanies();
+    } catch (err: any) {
+      alert('Toplu güncelleme sırasında hata: ' + err.message);
+    } finally {
+      setBulkApplyingModules(false);
+    }
+  };
 
   // --- Depolama Sağlayıcısı (Supabase / Firmanın kendi Google Drive'ı) ---
   const [compStoragePreference, setCompStoragePreference] = useState<'supabase' | 'google_drive'>('supabase');
@@ -603,6 +671,8 @@ export default function AdminPanel() {
       fetchPayments();
     } else if (activeTab === 'gift_codes') {
       fetchGiftCodes();
+    } else if (activeTab === 'module_settings') {
+      fetchSystemModuleDefaults();
     }
   }, [activeTab]);
 
@@ -1692,6 +1762,11 @@ export default function AdminPanel() {
         : ''
     );
     setCompIsEnvConsultant(!!comp.is_environmental_consultant);
+    setCompEnabledModules(
+      Array.isArray(comp.enabled_modules) && comp.enabled_modules.length > 0
+        ? comp.enabled_modules
+        : DEFAULT_MODULE_KEYS
+    );
     setCompanyQuotaMB(Math.round((comp.storage_limit || 0) / 1048576));
     setCompStoragePreference(comp.storage_preference === 'google_drive' ? 'google_drive' : 'supabase');
     setCompGoogleClientId(comp.google_client_id || '');
@@ -1722,6 +1797,7 @@ export default function AdminPanel() {
               subscription_end_date: finalDate,
               storage_limit: companyQuotaMB * 1048576,
               is_environmental_consultant: compIsEnvConsultant,
+              enabled_modules: compEnabledModules,
               storage_preference: compStoragePreference,
               google_client_id: compGoogleClientId || null,
               google_client_secret: compGoogleClientSecret || null,
@@ -1739,6 +1815,7 @@ export default function AdminPanel() {
             subscription_end_date: finalDate,
             storage_limit: companyQuotaMB * 1048576,
             is_environmental_consultant: compIsEnvConsultant,
+            enabled_modules: compEnabledModules,
             storage_preference: compStoragePreference,
             google_client_id: compGoogleClientId || null,
             google_client_secret: compGoogleClientSecret || null,
@@ -2137,13 +2214,24 @@ export default function AdminPanel() {
                 <Settings size={18} />
                 <span>Sistem Ayarları</span>
               </button>
+              <button
+                onClick={() => setActiveTab('module_settings')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'module_settings'
+                    ? 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <CheckSquare size={18} />
+                <span>Modül Ayarları</span>
+              </button>
             </nav>
           </div>
         </aside>
 
         {/* Sağ İçerik Alanı */}
         <main className="flex-1 w-full bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 min-h-[500px] space-y-4">
-        {activeTab !== 'tickets' && activeTab !== 'notifications' && activeTab !== 'email_settings' && activeTab !== 'system_settings' && activeTab !== 'pricing' && (
+        {activeTab !== 'tickets' && activeTab !== 'notifications' && activeTab !== 'email_settings' && activeTab !== 'system_settings' && activeTab !== 'pricing' && activeTab !== 'module_settings' && (
           <div className="flex items-center gap-2 bg-gray-50 p-2 rounded border">
             <Search className="text-gray-400" />
             <input
@@ -3895,6 +3983,185 @@ export default function AdminPanel() {
           </div>
         )}
 
+        {/* --- MODÜL AYARLARI TAB --- */}
+        {activeTab === 'module_settings' && (
+          <div className="animate-fadeIn space-y-6">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-purple-800 to-indigo-700 p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-lg text-white">
+              <div>
+                <h2 className="text-xl font-bold flex items-center gap-2 mb-1">
+                  <CheckSquare className="text-purple-300" size={22} /> Sistem Modül ve Varsayılan Paket Ayarları
+                </h2>
+                <p className="text-purple-100 text-xs font-medium">
+                  Yeni açılacak şirketlerin varsayılan modül paketlerini ve sistemdeki ekstra modülleri buradan yönetin.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSaveSystemModuleDefaults}
+                  disabled={savingModuleSettings}
+                  className="bg-white text-purple-900 hover:bg-purple-50 px-4 py-2.5 rounded-xl font-bold text-xs shadow-md transition flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                >
+                  {savingModuleSettings ? <Loader size={14} className="animate-spin" /> : <Save size={14} />} Varsayılanları Kaydet
+                </button>
+                <button
+                  onClick={handleBulkApplyDefaultModulesToAllCompanies}
+                  disabled={bulkApplyingModules}
+                  className="bg-purple-900/60 hover:bg-purple-950 text-white border border-purple-400/40 px-4 py-2.5 rounded-xl font-bold text-xs transition flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                >
+                  {bulkApplyingModules ? <Loader size={14} className="animate-spin" /> : <RefreshCw size={14} />} Tüm Şirketlere Toplu Uygula
+                </button>
+              </div>
+            </div>
+
+            {fetchingModuleSettings ? (
+              <div className="py-16 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
+                <Loader className="animate-spin" size={16} /> Modül ayarları yükleniyor...
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-slate-700 p-6 shadow-sm space-y-6">
+                <div className="border-b border-gray-100 dark:border-slate-700 pb-3 flex justify-between items-center">
+                  <div>
+                    <h3 className="font-bold text-gray-800 dark:text-white text-base">Sistemdeki Tüm Modüller</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Yeni kaydolan şirketlerin varsayılan modüllerini belirlemek için ilgili modülleri işaretleyin.
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold text-purple-700 bg-purple-50 dark:bg-purple-950/30 px-3 py-1.5 rounded-xl border border-purple-100 dark:border-purple-900">
+                    {sysDefaultModuleKeys.length} / {SYSTEM_MODULES.length} Varsayılan Modül Seçili
+                  </span>
+                </div>
+
+                <div className="space-y-6">
+                  {SYSTEM_MODULE_CATEGORIES.map((cat) => {
+                    const isCatDefault = sysDefaultModuleKeys.includes(cat.key);
+                    const catModules = SYSTEM_MODULES.filter((m) => m.category === cat.key);
+
+                    const toggleCatDefault = (enabled: boolean) => {
+                      if (enabled) {
+                        setSysDefaultModuleKeys(Array.from(new Set([...sysDefaultModuleKeys, cat.key])));
+                      } else {
+                        const subKeys = catModules.map((m) => m.key);
+                        setSysDefaultModuleKeys(sysDefaultModuleKeys.filter((k) => k !== cat.key && !subKeys.includes(k)));
+                      }
+                    };
+
+                    return (
+                      <div
+                        key={cat.key}
+                        className={`space-y-4 p-5 rounded-2xl border transition ${
+                          isCatDefault
+                            ? 'bg-purple-50/40 border-purple-200 dark:bg-purple-950/20 dark:border-purple-900'
+                            : 'bg-gray-50/70 border-gray-200 dark:bg-slate-900/40 dark:border-slate-700 opacity-80'
+                        }`}
+                      >
+                        <div className="flex justify-between items-center border-b pb-3 border-purple-200/60 dark:border-slate-700">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-bold text-sm text-gray-800 dark:text-white flex items-center gap-2">
+                                <CheckSquare size={16} className="text-purple-600" />
+                                {cat.name}
+                              </h4>
+                              <span
+                                className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                                  isCatDefault
+                                    ? 'bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900 dark:text-purple-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400'
+                                }`}
+                              >
+                                {isCatDefault ? 'Varsayılan Ana Modül' : 'Ekstra Ana Modül'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium mt-0.5">
+                              {cat.description}
+                            </p>
+                          </div>
+
+                          <label className="inline-flex items-center cursor-pointer gap-2 shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={isCatDefault}
+                              onChange={(e) => toggleCatDefault(e.target.checked)}
+                              className="sr-only peer"
+                            />
+                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 relative"></div>
+                            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                              {isCatDefault ? 'Varsayılan' : 'Ekstra'}
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* Alt Modüller */}
+                        {isCatDefault ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {catModules.map((m) => {
+                              const isDefaultSelected = sysDefaultModuleKeys.includes(m.key);
+                              return (
+                                <div
+                                  key={m.key}
+                                  className={`p-3.5 rounded-xl border transition space-y-2 flex flex-col justify-between ${
+                                    isDefaultSelected
+                                      ? 'bg-white border-purple-200 dark:bg-slate-800 dark:border-purple-900 shadow-sm'
+                                      : 'bg-gray-100/60 border-gray-200 dark:bg-slate-900/50 dark:border-slate-700 opacity-75'
+                                  }`}
+                                >
+                                  <div className="space-y-1">
+                                    <div className="flex justify-between items-start gap-1">
+                                      <span className="font-bold text-xs text-gray-800 dark:text-white">{m.name}</span>
+                                      <span
+                                        className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border shrink-0 ${
+                                          isDefaultSelected
+                                            ? 'bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900 dark:text-purple-200'
+                                            : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400'
+                                        }`}
+                                      >
+                                        {isDefaultSelected ? 'Varsayılan' : 'Ekstra'}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
+                                      {m.description}
+                                    </p>
+                                  </div>
+
+                                  <div className="pt-2 border-t border-gray-100 dark:border-slate-700 flex justify-between items-center">
+                                    <span className="text-[10px] font-mono text-gray-400">key: {m.key}</span>
+                                    <label className="inline-flex items-center cursor-pointer gap-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={isDefaultSelected}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setSysDefaultModuleKeys([...sysDefaultModuleKeys, m.key]);
+                                          } else {
+                                            setSysDefaultModuleKeys(sysDefaultModuleKeys.filter((k) => k !== m.key));
+                                          }
+                                        }}
+                                        className="sr-only peer"
+                                      />
+                                      <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-600 relative"></div>
+                                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                        {isDefaultSelected ? 'Açık' : 'Kapalı'}
+                                      </span>
+                                    </label>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-gray-400 dark:text-gray-500 font-medium italic p-2 bg-gray-100/50 dark:bg-slate-900/40 rounded-xl">
+                            🔒 Bu ana modül varsayılan paket dışındadır (Ekstra Modül). İstenirse yeni şirket açılırken veya şirket düzenleme ekranında bu ana modül ve alt sayfaları aktif edilebilir.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* --- PRICING TAB --- */}
         {activeTab === 'pricing' && (
           <div className="animate-fadeIn space-y-6">
@@ -4776,6 +5043,120 @@ export default function AdminPanel() {
                     onChange={(e) => setCompanyQuotaMB(parseInt(e.target.value) || 0)}
                   />
                   <span className="text-xs font-bold text-purple-700 bg-purple-100 px-3 py-2 rounded-xl">MB</span>
+                </div>
+              </div>
+
+              {/* MODÜL İZİNLERİ VE EKSTRA PAKET TANIMLARI */}
+              <div className="bg-purple-50/50 p-4 rounded-2xl border border-purple-100 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <CheckSquare size={14} className="text-purple-600" />
+                    Modül İzinleri & Ekstra Paket Tanımları
+                  </label>
+                  <p className="text-[11px] text-slate-500 font-medium leading-relaxed mt-0.5">
+                    Şirket / Danışmanlık firmasının erişebileceği modülleri seçin. Varsayılan modüller haricindeki ekstra modüller Admin tarafından veya satın almaya bağlı aktif edilir.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  {SYSTEM_MODULE_CATEGORIES.map((cat) => {
+                    const isCatEnabled = compEnabledModules.includes(cat.key);
+                    const catModules = SYSTEM_MODULES.filter((m) => m.category === cat.key);
+
+                    const toggleCat = (enabled: boolean) => {
+                      if (enabled) {
+                        setCompEnabledModules(Array.from(new Set([...compEnabledModules, cat.key])));
+                      } else {
+                        const subKeys = catModules.map((m) => m.key);
+                        setCompEnabledModules(compEnabledModules.filter((k) => k !== cat.key && !subKeys.includes(k)));
+                      }
+                    };
+
+                    return (
+                      <div
+                        key={cat.key}
+                        className={`space-y-3 p-3.5 rounded-2xl border transition ${
+                          isCatEnabled
+                            ? 'bg-purple-50/50 border-purple-200'
+                            : 'bg-slate-100/70 border-slate-200 opacity-75'
+                        }`}
+                      >
+                        <div className="flex justify-between items-center border-b pb-2 border-purple-200/60">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-xs text-purple-950">{cat.name}</span>
+                              {cat.isDefault ? (
+                                <span className="text-[9px] bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-bold uppercase">Varsayılan Ana Modül</span>
+                              ) : (
+                                <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-bold uppercase">Ekstra Ana Modül</span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-500 font-normal mt-0.5">{cat.description}</p>
+                          </div>
+
+                          <label className="inline-flex items-center cursor-pointer gap-2 shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={isCatEnabled}
+                              onChange={(e) => toggleCat(e.target.checked)}
+                              className="sr-only peer"
+                            />
+                            <div className="w-9 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 relative"></div>
+                            <span className="text-xs font-bold text-slate-700">
+                              {isCatEnabled ? 'Ana Modül Açık' : 'Kapalı'}
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* Alt Modüller */}
+                        {isCatEnabled ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                            {catModules.map((m) => {
+                              const isChecked = compEnabledModules.includes(m.key);
+                              return (
+                                <label
+                                  key={m.key}
+                                  className={`flex items-start gap-2.5 p-2 rounded-xl border text-xs font-semibold cursor-pointer transition ${
+                                    isChecked
+                                      ? 'bg-purple-100/60 border-purple-300 text-purple-950'
+                                      : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setCompEnabledModules([...compEnabledModules, m.key]);
+                                      } else {
+                                        setCompEnabledModules(compEnabledModules.filter((k) => k !== m.key));
+                                      }
+                                    }}
+                                    className="mt-0.5 rounded text-purple-600 focus:ring-purple-500"
+                                  />
+                                  <div>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span>{m.name}</span>
+                                      {m.isDefault ? (
+                                        <span className="text-[9px] bg-slate-200 text-slate-700 px-1.5 py-0.2 rounded font-bold uppercase">Varsayılan</span>
+                                      ) : (
+                                        <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-bold uppercase">Ekstra Modül</span>
+                                      )}
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 font-normal mt-0.5">{m.description}</p>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-slate-400 font-medium italic p-2 bg-slate-200/40 rounded-xl">
+                            🔒 Bu ana modül kapalı olduğu için alt sayfaları kullanıcı ve danışman panellerinde görüntülenmez.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

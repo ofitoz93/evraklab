@@ -422,6 +422,10 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
           (isChief && profile?.permissions?.can_view_team_docs) ||
           (isRestrictedRole && perms.can_view_all_clients);
         const finalDocs = (data || []).filter((doc) => {
+          const typeLabel = doc.type_def?.label?.toLowerCase() || '';
+          if (typeLabel.includes('msds') || typeLabel.includes('güvenlik bilgi formu')) {
+            return false;
+          }
           if (role === 'admin') return true;
           const isMyDoc = doc.uploader_id === session.user.id;
           const isCorporateDoc = !!doc.organization_id;

@@ -50,8 +50,10 @@ import {
   Inbox,
   LogOut,
   FlaskConical,
+  ShoppingBag,
 } from 'lucide-react';
 
+import ModuleStore from './ModuleStore';
 import QRCode from 'qrcode';
 import ExcelJS from 'exceljs';
 import { MapPickerModal, calculatePolygonAreaM2, formatArea } from './MapPickerModal';
@@ -59,10 +61,13 @@ import type { AreaPoint } from './MapPickerModal';
 import { Link } from 'react-router-dom';
 import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
+import { isModuleEnabled } from './moduleRegistry';
 import { parseLegislationText } from './parserUtils';
 import {
   computeMsdsStatus,
   computeDaysRemaining,
+  computeExpiryDate,
+  parseMsdsText,
   type MsdsStatus,
   MSDS_STATUS_LABELS_TR as STATUS_LABELS_TR,
   MSDS_STATUS_BADGE_CLASSES as STATUS_BADGE_CLASSES_MSDS,
@@ -602,6 +607,7 @@ export default function ConsultantPanel() {
   const [selfTrackingClient, setSelfTrackingClient] = useState<any>(null);
 
   // --- FİNANS & MALİYET MODÜLÜ STATE'LERİ ---
+  const [showModuleStoreModal, setShowModuleStoreModal] = useState(false);
   const [financePayments, setFinancePayments] = useState<any[]>([]);
   const [financeExpenses, setFinanceExpenses] = useState<any[]>([]);
   const [loadingFinance, setLoadingFinance] = useState(false);
@@ -816,6 +822,133 @@ export default function ConsultantPanel() {
   const [msdsClientFilter, setMsdsClientFilter] = useState('');
   const [msdsStatusFilter, setMsdsStatusFilter] = useState<'all' | MsdsStatus>('all');
 
+  // MSDS Düzenleme & Yenileme State'leri
+  const [editingMsds, setEditingMsds] = useState<any | null>(null);
+  const [msdsEditProductName, setMsdsEditProductName] = useState('');
+  const [msdsEditPrimaryDate, setMsdsEditPrimaryDate] = useState('');
+  const [msdsEditValidityYears, setMsdsEditValidityYears] = useState(5);
+  const [msdsEditWarningDays, setMsdsEditWarningDays] = useState(30);
+  const [msdsEditFile, setMsdsEditFile] = useState<File | null>(null);
+  const [msdsParsing, setMsdsParsing] = useState(false);
+  const [msdsSaving, setMsdsSaving] = useState(false);
+
+  const handleStartEditMsds = (m: any) => {
+    setEditingMsds(m);
+    setMsdsEditProductName(m.product_name || '');
+    setMsdsEditPrimaryDate(m.primary_date || '');
+    setMsdsEditValidityYears(m.validity_years || 5);
+    setMsdsEditWarningDays(m.warning_threshold_days || 30);
+    setMsdsEditFile(null);
+  };
+
+  const handleMsdsFileSelect = async (file: File) => {
+    setMsdsEditFile(file);
+    setMsdsParsing(true);
+    try {
+      const text = await extractTextFromPdf(file);
+      const parsed = parseMsdsText(text);
+      if (parsed.productName.productName) setMsdsEditProductName(parsed.productName.productName);
+      if (parsed.dates.primaryDate) setMsdsEditPrimaryDate(parsed.dates.primaryDate.date);
+    } catch (err: any) {
+      console.error('MSDS PDF okuma hatası:', err.message);
+    } finally {
+      setMsdsParsing(false);
+    }
+  };
+
+  const handleSaveMsdsEdit = async () => {
+    if (!editingMsds) return;
+    if (!msdsEditProductName.trim() || !msdsEditPrimaryDate) {
+      alert('Lütfen Ürün Adı ve Ana Tarih alanlarını doldurun.');
+      return;
+    }
+    setMsdsSaving(true);
+    try {
+      let fileUrl = editingMsds.file_url;
+      let fileType = editingMsds.file_type;
+      let fileSize = editingMsds.file_size;
+      let originalFileName = editingMsds.original_file_name;
+
+      if (msdsEditFile) {
+        const fileExt = msdsEditFile.name.split('.').pop() || 'pdf';
+        const filePath = `${orgId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+        const { error: uploadErr } = await supabase.storage.from('documents').upload(filePath, msdsEditFile);
+        if (uploadErr) throw uploadErr;
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(filePath);
+        fileUrl = urlData.publicUrl;
+        fileType = fileExt;
+        fileSize = msdsEditFile.size;
+        originalFileName = msdsEditFile.name;
+      }
+
+      const expiry = computeExpiryDate(msdsEditPrimaryDate, msdsEditValidityYears);
+
+      if (editingMsds.document_id) {
+        const { error: docErr } = await supabase
+          .from('documents')
+          .update({
+            title: msdsEditProductName.trim(),
+            acquisition_date: msdsEditPrimaryDate,
+            expiry_date: expiry,
+            application_deadline: expiry,
+            reminder_days: msdsEditWarningDays,
+            file_url: fileUrl,
+            file_type: fileType,
+            file_size: fileSize,
+          })
+          .eq('id', editingMsds.document_id);
+        if (docErr) console.warn('Bağlı document kaydı güncellenirken uyarı:', docErr.message);
+      }
+
+      const { error: msdsErr } = await supabase
+        .from('msds_documents')
+        .update({
+          product_name: msdsEditProductName.trim(),
+          product_name_manual_override: true,
+          primary_date: msdsEditPrimaryDate,
+          primary_date_manual_override: true,
+          primary_date_source_label: null,
+          primary_date_tier: null,
+          primary_date_day_defaulted: false,
+          validity_years: msdsEditValidityYears,
+          warning_threshold_days: msdsEditWarningDays,
+          expiry_date: expiry,
+          extraction_status: 'manual',
+          original_file_name: originalFileName,
+          file_url: fileUrl,
+          file_type: fileType,
+          file_size: fileSize,
+        })
+        .eq('id', editingMsds.id);
+
+      if (msdsErr) throw msdsErr;
+
+      alert('MSDS kaydı başarıyla güncellendi.');
+      setEditingMsds(null);
+      setMsdsEditFile(null);
+      await fetchMsdsDocuments();
+    } catch (err: any) {
+      alert('MSDS kaydedilirken hata: ' + err.message);
+    } finally {
+      setMsdsSaving(false);
+    }
+  };
+
+  const handleDeleteMsds = async (m: any) => {
+    if (!confirm(`"${m.product_name || 'Bu MSDS'}" kaydını silmek istediğinize emin misiniz?`)) return;
+    try {
+      if (m.document_id) {
+        await supabase.from('documents').delete().eq('id', m.document_id);
+      }
+      const { error } = await supabase.from('msds_documents').delete().eq('id', m.id);
+      if (error) throw error;
+      alert('MSDS kaydı silindi.');
+      await fetchMsdsDocuments();
+    } catch (err: any) {
+      alert('MSDS silinirken hata: ' + err.message);
+    }
+  };
+
   // Sunucudan zaten expiry_date'e göre sıralı gelir (bkz. fetchMsdsDocuments);
   // burada sadece firma/durum filtreleri uygulanır.
   const msdsFilteredSorted = msdsDocuments
@@ -827,6 +960,7 @@ export default function ConsultantPanel() {
   const [userId, setUserId] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [orgId, setOrgId] = useState('');
+  const [orgEnabledModules, setOrgEnabledModules] = useState<string[] | null>(null);
   const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
 
   // Finans & İK modülleri — firma sahibi her girişte parolasını doğrulamalı
@@ -2808,6 +2942,19 @@ export default function ConsultantPanel() {
         setPreviousRole(profile.previous_role || null);
         const perms = profile.extra_permissions || {};
         setCurrentUserPerms(perms);
+
+        if (profile.organization_id) {
+          supabase
+            .from('organizations')
+            .select('enabled_modules')
+            .eq('id', profile.organization_id)
+            .maybeSingle()
+            .then(({ data: orgRes }) => {
+              if (orgRes?.enabled_modules) {
+                setOrgEnabledModules(orgRes.enabled_modules);
+              }
+            });
+        }
 
         if (profile.role === 'corporate_chief') {
           if (perms.can_view_team !== false) {
@@ -6355,7 +6502,7 @@ export default function ConsultantPanel() {
     }
   };
 
-  const canViewFinance = ['premium_corporate', 'admin', 'system_admin'].includes(userRole);
+  const canViewFinance = ['premium_corporate', 'corporate_chief', 'corporate_staff', 'admin', 'system_admin'].includes(userRole);
 
   const modules = [
     {
@@ -6363,73 +6510,73 @@ export default function ConsultantPanel() {
       label: 'Operasyon & İşletmeler',
       icon: <Building size={18} />,
       tabs: [
-        { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients },
-        { id: 'terminated_clients', label: 'Hizmeti Sonlandırılan Firmalar', icon: <XCircle size={14} />, show: canViewFinance },
-        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: true },
-        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: true },
-      ]
+        { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients && isModuleEnabled('clients', orgEnabledModules, userRole, 'operations') },
+        { id: 'terminated_clients', label: 'Hizmeti Sonlandırılan Firmalar', icon: <XCircle size={14} />, show: canViewFinance && isModuleEnabled('terminated_clients', orgEnabledModules, userRole, 'operations') },
+        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: isModuleEnabled('inspections', orgEnabledModules, userRole, 'operations') },
+        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: isModuleEnabled('waste', orgEnabledModules, userRole, 'operations') },
+      ].filter(t => t.show)
     },
     {
       id: 'compliance',
       label: 'Yasal Uyum & Takip',
       icon: <Scale size={18} />,
       tabs: [
-        { id: 'legislations', label: 'Mevzuat Takip', icon: <Scale size={14} />, show: true },
-        { id: 'requests', label: 'Mevzuat Talepleri', icon: <Bell size={14} />, show: true },
-      ]
+        { id: 'legislations', label: 'Mevzuat Takip', icon: <Scale size={14} />, show: isModuleEnabled('legislations', orgEnabledModules, userRole, 'compliance') },
+        { id: 'requests', label: 'Mevzuat Talepleri', icon: <Bell size={14} />, show: isModuleEnabled('requests', orgEnabledModules, userRole, 'compliance') },
+      ].filter(t => t.show)
     },
     {
       id: 'actions',
       label: 'Aksiyon Takip',
       icon: <CheckCircle size={18} />,
       tabs: [
-        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: true },
-      ]
+        { id: 'actions', label: 'Aksiyon Takip', icon: <CheckCircle size={14} />, show: isModuleEnabled('actions', orgEnabledModules, userRole, 'compliance') },
+      ].filter(t => t.show)
     },
     {
       id: 'documents',
       label: 'Dokümantasyon',
       icon: <FileText size={18} />,
       tabs: [
-        { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports },
-        { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: true },
-        { id: 'document_requests', label: 'Evrak Talepleri', icon: <Inbox size={14} />, show: true },
-        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: true },
-        { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: true },
+        { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports && isModuleEnabled('reports', orgEnabledModules, userRole, 'documents') },
+        { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: isModuleEnabled('document_matrix', orgEnabledModules, userRole, 'documents') },
+        { id: 'document_requests', label: 'Evrak Talepleri', icon: <Inbox size={14} />, show: isModuleEnabled('document_requests', orgEnabledModules, userRole, 'documents') },
+        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: isModuleEnabled('msds', orgEnabledModules, userRole, 'documents') },
+        { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: isModuleEnabled('opinions', orgEnabledModules, userRole, 'compliance') },
         {
           id: 'definitions',
           label: 'Belge & Şablon Tanımları',
           icon: <SettingsIcon size={14} />,
-          show: userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual' || userRole === 'corporate_staff'
+          show: (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual' || userRole === 'corporate_staff') && isModuleEnabled('definitions', orgEnabledModules, userRole, 'documents')
         },
-      ]
+      ].filter(t => t.show)
     },
     {
       id: 'finance',
       label: 'Finans & Maliyet',
       icon: <PieChart size={18} />,
       tabs: [
-        { id: 'finance_summary', label: 'Finansal Özet', icon: <PieChart size={14} />, show: canViewFinance },
-        { id: 'finance_payments', label: 'Müşteri Ödemeleri', icon: <CheckCircle size={14} />, show: canViewFinance },
-        { id: 'finance_expenses', label: 'Gider Yönetimi', icon: <Trash2 size={14} />, show: canViewFinance },
-        { id: 'staff_expense_submission', label: 'Gider Ekle', icon: <PlusCircle size={14} />, show: userRole === 'corporate_staff' || userRole === 'corporate_chief' },
-      ]
+        { id: 'finance_summary', label: 'Finansal Özet', icon: <PieChart size={14} />, show: canViewFinance && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
+        { id: 'finance_payments', label: 'Müşteri Ödemeleri', icon: <CheckCircle size={14} />, show: canViewFinance && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
+        { id: 'finance_expenses', label: 'Gider Yönetimi', icon: <Trash2 size={14} />, show: canViewFinance && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
+        { id: 'staff_expense_submission', label: 'Gider Ekle', icon: <PlusCircle size={14} />, show: (userRole === 'corporate_staff' || userRole === 'corporate_chief') && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
+      ].filter(t => t.show)
     },
     {
       id: 'hr',
       label: 'İnsan Kaynakları',
       icon: <Users size={18} />,
       tabs: [
-        { id: 'team', label: 'Ekip Yönetimi', icon: <Users size={14} />, show: canViewTeam },
-        { id: 'org_chart', label: 'Organizasyon Şeması', icon: <Network size={14} />, show: canViewTeam },
+        { id: 'team', label: 'Ekip Yönetimi', icon: <Users size={14} />, show: canViewTeam && isModuleEnabled('team', orgEnabledModules, userRole, 'hr') },
+        { id: 'org_chart', label: 'Organizasyon Şeması', icon: <Network size={14} />, show: canViewTeam && isModuleEnabled('org_chart', orgEnabledModules, userRole, 'hr') },
         {
           id: 'evaluations',
           label: 'Çalışan Değerlendirmeleri',
           icon: <Star size={14} />,
-          show: ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole)
+          show: ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && isModuleEnabled('evaluations', orgEnabledModules, userRole, 'hr')
         },
-        { id: 'departed', label: 'Ayrılan Personeller', icon: <LogOut size={14} />, show: userRole === 'premium_corporate' },
-      ]
+        { id: 'departed', label: 'Ayrılan Personeller', icon: <LogOut size={14} />, show: userRole === 'premium_corporate' && isModuleEnabled('departed', orgEnabledModules, userRole, 'hr') },
+      ].filter(t => t.show)
     },
     {
       id: 'settings',
@@ -6438,9 +6585,9 @@ export default function ConsultantPanel() {
       tabs: [
         { id: 'settings', label: 'Şirket Ayarları', icon: <SettingsIcon size={14} />, show: userRole === 'premium_corporate' },
         { id: 'storage_settings', label: 'Depolama Ayarları', icon: <HardDrive size={14} />, show: userRole === 'premium_corporate' },
-      ]
+      ].filter(t => t.show)
     }
-  ];
+  ].filter(m => m.tabs.length > 0);
 
   const renderDocumentMatrix = () => {
     return (
@@ -6674,6 +6821,14 @@ export default function ConsultantPanel() {
                 <Lock size={16} /> Rapor Oluştur (Premium Gerekli)
               </Link>
             )
+          )}
+          {['premium_corporate', 'admin', 'system_admin'].includes(userRole) && (
+            <button
+              onClick={() => setShowModuleStoreModal(true)}
+              className="flex items-center gap-2 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-md transition active:scale-95 whitespace-nowrap cursor-pointer"
+            >
+              <ShoppingBag size={15} /> ⚡ Ekstra Modül Satın Al
+            </button>
           )}
         </div>
       </div>
@@ -8993,6 +9148,7 @@ export default function ConsultantPanel() {
                       <th className="text-left px-4 py-2.5 font-bold">Geçerlilik Bitiş</th>
                       <th className="text-left px-4 py-2.5 font-bold">Durum</th>
                       <th className="text-left px-4 py-2.5 font-bold">Kalan/Geçen Gün</th>
+                      <th className="text-right px-4 py-2.5 font-bold">İşlemler</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
@@ -9018,6 +9174,35 @@ export default function ConsultantPanel() {
                           <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400">
                             {days === null ? '—' : days >= 0 ? `${days} gün kaldı` : `${Math.abs(days)} gün geçti`}
                           </td>
+                          <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {m.file_url && (
+                                <a
+                                  href={m.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Dosyayı İncele"
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-teal-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                                >
+                                  <ExternalLink size={14} />
+                                </a>
+                              )}
+                              <button
+                                onClick={() => handleStartEditMsds(m)}
+                                title="Düzenle / Yenile"
+                                className="flex items-center gap-1 text-[11px] font-bold text-teal-600 hover:text-teal-700 bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/30 dark:hover:bg-teal-900/50 px-2 py-1 rounded-lg transition"
+                              >
+                                <Edit2 size={13} /> Düzenle
+                              </button>
+                              <button
+                                onClick={() => handleDeleteMsds(m)}
+                                title="Sil"
+                                className="p-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 transition"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       );
                     })}
@@ -9026,6 +9211,107 @@ export default function ConsultantPanel() {
               </div>
             )}
           </div>
+
+          {/* MSDS DÜZENLEME & YENİLEME MODALI */}
+          {editingMsds && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fadeIn">
+              <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-gray-200 dark:border-slate-700 max-w-lg w-full overflow-hidden p-6 space-y-4">
+                <div className="flex justify-between items-center border-b border-gray-100 dark:border-slate-700 pb-3">
+                  <h3 className="text-base font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                    <FlaskConical className="text-teal-600" size={20} /> MSDS Düzenle / Yenile
+                  </h3>
+                  <button
+                    onClick={() => setEditingMsds(null)}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-lg"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <label className="block font-bold text-gray-700 dark:text-gray-300 mb-1">Ürün Adı</label>
+                    <input
+                      type="text"
+                      value={msdsEditProductName}
+                      onChange={(e) => setMsdsEditProductName(e.target.value)}
+                      placeholder="Örn. Solvent Bazlı Astar"
+                      className="w-full p-2.5 rounded-xl border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-teal-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-gray-700 dark:text-gray-300 mb-1">Ana Tarih (Yayın/Revizyon)</label>
+                      <input
+                        type="date"
+                        value={msdsEditPrimaryDate}
+                        onChange={(e) => setMsdsEditPrimaryDate(e.target.value)}
+                        className="w-full p-2.5 rounded-xl border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-teal-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-bold text-gray-700 dark:text-gray-300 mb-1">Geçerlilik Süresi (Yıl)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={msdsEditValidityYears}
+                        onChange={(e) => setMsdsEditValidityYears(Number(e.target.value))}
+                        className="w-full p-2.5 rounded-xl border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-teal-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Yeni Dosya Yükleme / Revizyon */}
+                  <div className="border border-dashed border-teal-300 dark:border-teal-800 bg-teal-50/50 dark:bg-teal-950/20 p-3.5 rounded-xl space-y-2">
+                    <label className="block font-bold text-teal-800 dark:text-teal-300">
+                      Yeni MSDS PDF Dosyası Yükle (Revizyon/Yenileme)
+                    </label>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                      Ürünün yeni versiyon MSDS belgesi geldiyse PDF dosyasını seçerek dosya ve tarihleri otomatik yenileyebilirsiniz.
+                    </p>
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          handleMsdsFileSelect(e.target.files[0]);
+                        }
+                      }}
+                      className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-teal-600 file:text-white hover:file:bg-teal-700 cursor-pointer"
+                    />
+                    {msdsParsing && (
+                      <div className="flex items-center gap-1.5 text-teal-600 text-xs font-medium pt-1">
+                        <Loader size={14} className="animate-spin" /> Yeni PDF ayrıştırılıyor ve veriler okunuyor...
+                      </div>
+                    )}
+                    {msdsEditFile && !msdsParsing && (
+                      <div className="text-[11px] text-emerald-600 font-bold pt-1 flex items-center gap-1">
+                        <CheckCircle size={13} /> Seçilen yeni dosya: {msdsEditFile.name}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 border-t border-gray-100 dark:border-slate-700 pt-3">
+                  <button
+                    onClick={() => setEditingMsds(null)}
+                    className="px-4 py-2 rounded-xl text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 font-bold transition text-xs"
+                  >
+                    İptal
+                  </button>
+                  <button
+                    onClick={handleSaveMsdsEdit}
+                    disabled={msdsSaving || msdsParsing}
+                    className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-xl font-bold transition text-xs shadow-sm disabled:opacity-50"
+                  >
+                    {msdsSaving ? <Loader size={14} className="animate-spin" /> : <RefreshCw size={14} />} Güncelle & Kaydet
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -16476,6 +16762,33 @@ export default function ConsultantPanel() {
           onConfirm={handleTerminateService}
           onCancel={() => setTerminatingClientId(null)}
         />
+      )}
+
+      {/* EKSTRA MODÜL SATIN ALMA MODALİ */}
+      {showModuleStoreModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-gray-100 dark:border-slate-800 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b border-gray-100 dark:border-slate-800 pb-3">
+              <span className="font-bold text-sm text-gray-700 dark:text-gray-200 flex items-center gap-2">
+                <ShoppingBag size={18} className="text-purple-600" /> Şirket Ekstra Paket & Modül Mağazası
+              </span>
+              <button
+                onClick={() => setShowModuleStoreModal(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-white p-1 rounded-lg transition"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <ModuleStore
+              organizationId={orgId}
+              userRole={userRole}
+              onModulesUpdated={() => {
+                fetchCompanies();
+              }}
+              onClose={() => setShowModuleStoreModal(false)}
+            />
+          </div>
+        </div>
       )}
       </div>
     </div>

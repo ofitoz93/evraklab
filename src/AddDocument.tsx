@@ -326,7 +326,11 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
           uniqueTypesMap.set(key, d);
         }
       });
-      const uniqueTypes = Array.from(uniqueTypesMap.values());
+      const uniqueTypes = Array.from(uniqueTypesMap.values()).filter(
+        (t) =>
+          !t.label?.toLowerCase().includes('msds') &&
+          !t.label?.toLowerCase().includes('güvenlik bilgi formu')
+      );
       setTypeOptions(uniqueTypes);
 
       const uniqueLocsMap = new Map<string, any>();
