@@ -54,6 +54,7 @@ import {
 } from 'lucide-react';
 
 import ModuleStore from './ModuleStore';
+import ModuleExpiredLock from './ModuleExpiredLock';
 import QRCode from 'qrcode';
 import ExcelJS from 'exceljs';
 import { MapPickerModal, calculatePolygonAreaM2, formatArea } from './MapPickerModal';
@@ -608,6 +609,11 @@ export default function ConsultantPanel() {
 
   // --- FİNANS & MALİYET MODÜLÜ STATE'LERİ ---
   const [showModuleStoreModal, setShowModuleStoreModal] = useState(false);
+  const [expiredModuleKeys, setExpiredModuleKeys] = useState<string[]>([]);
+  // Bir modül kategorisi (ör. "Dokümantasyon") içinde en son ziyaret edilen
+  // alt sekmeyi hatırlar; kategori butonuna tekrar tıklandığında her zaman
+  // sabit bir sekmeye (ör. Raporlar) değil, kullanıcının kaldığı yere döner.
+  const [lastTabByModule, setLastTabByModule] = useState<Record<string, string>>({});
   const [financePayments, setFinancePayments] = useState<any[]>([]);
   const [financeExpenses, setFinanceExpenses] = useState<any[]>([]);
   const [loadingFinance, setLoadingFinance] = useState(false);
@@ -962,6 +968,55 @@ export default function ConsultantPanel() {
   const [orgId, setOrgId] = useState('');
   const [orgEnabledModules, setOrgEnabledModules] = useState<string[] | null>(null);
   const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
+
+  // Nav sekmeleri "show" hesaplamasıyla (isModuleEnabled) gizlense de, içerik
+  // blokları sadece `activeTab === 'x'` kontrolü yaptığından ve `activeTab`'ın
+  // ilk değeri ('clients') veya bir önceki oturumdan kalan değeri modül
+  // durumundan bağımsız olduğundan, kapatılmış bir modülün içeriği hâlâ
+  // görüntülenebiliyordu (sekme butonu gizli ama içerik sızıyordu). Bu efekt,
+  // geçerli sekmenin bağlı olduğu modül artık kapalıysa kullanıcıyı güvenli
+  // bir sekmeye yönlendirir.
+  const TAB_MODULE_MAP: Record<string, { moduleKey: string; categoryKey: string }> = {
+    clients: { moduleKey: 'clients', categoryKey: 'operations' },
+    terminated_clients: { moduleKey: 'terminated_clients', categoryKey: 'operations' },
+    inspections: { moduleKey: 'inspections', categoryKey: 'operations' },
+    waste: { moduleKey: 'waste', categoryKey: 'operations' },
+    legislations: { moduleKey: 'legislations', categoryKey: 'compliance' },
+    requests: { moduleKey: 'requests', categoryKey: 'compliance' },
+    actions: { moduleKey: 'actions', categoryKey: 'compliance' },
+    reports: { moduleKey: 'reports', categoryKey: 'documents' },
+    document_matrix: { moduleKey: 'document_matrix', categoryKey: 'documents' },
+    document_requests: { moduleKey: 'document_requests', categoryKey: 'documents' },
+    msds: { moduleKey: 'msds', categoryKey: 'documents' },
+    opinions: { moduleKey: 'opinions', categoryKey: 'compliance' },
+    finance_summary: { moduleKey: 'finance_management', categoryKey: 'finance' },
+    finance_payments: { moduleKey: 'finance_management', categoryKey: 'finance' },
+    finance_expenses: { moduleKey: 'finance_management', categoryKey: 'finance' },
+    staff_expense_submission: { moduleKey: 'finance_management', categoryKey: 'finance' },
+    team: { moduleKey: 'team', categoryKey: 'hr' },
+    org_chart: { moduleKey: 'org_chart', categoryKey: 'hr' },
+    evaluations: { moduleKey: 'evaluations', categoryKey: 'hr' },
+    departed: { moduleKey: 'departed', categoryKey: 'hr' },
+  };
+  // Finansal Özet / Müşteri Ödemeleri / Gider Yönetimi firmanın TÜM finans
+  // verisini gösterir — sadece firma sahibi ve admin görebilir, şef/personel
+  // göremez (onlar için tek erişilebilir sekme "Gider Ekle"dir).
+  const FINANCE_OWNER_ONLY_TABS = ['finance_summary', 'finance_payments', 'finance_expenses'];
+  useEffect(() => {
+    if (loading) return;
+    if (FINANCE_OWNER_ONLY_TABS.includes(activeTab) && !['premium_corporate', 'admin', 'system_admin'].includes(userRole)) {
+      setActiveTab('staff_expense_submission' as any);
+      return;
+    }
+    const mapping = TAB_MODULE_MAP[activeTab];
+    if (!mapping) return;
+    const enabled =
+      isModuleEnabled(mapping.moduleKey, orgEnabledModules, userRole, mapping.categoryKey) ||
+      expiredModuleKeys.includes(mapping.moduleKey);
+    if (!enabled) {
+      setActiveTab('settings' as any);
+    }
+  }, [loading, activeTab, orgEnabledModules, userRole, expiredModuleKeys]);
 
   // Finans & İK modülleri — firma sahibi her girişte parolasını doğrulamalı
   // (ekranı açık bırakıp başkasının maaş/finans verisini görmesini engellemek için).
@@ -2980,6 +3035,7 @@ export default function ConsultantPanel() {
         if (profile.organization_id) {
           const { data: org } = await supabase.from('organizations').select('*').eq('id', profile.organization_id).single();
           setOrgData(org);
+          fetchExpiredModuleKeys(profile.organization_id);
         }
 
         await Promise.all([
@@ -4682,6 +4738,25 @@ export default function ConsultantPanel() {
       alert('Talep gönderilirken hata: ' + err.message);
     } finally {
       setSubmittingRequest(false);
+    }
+  };
+
+  const fetchExpiredModuleKeys = async (oId: string) => {
+    if (!oId) return;
+    try {
+      await supabase.rpc('sync_expired_modules', { p_organization_id: oId });
+    } catch (err) {
+      console.warn('Modül süre kontrolü uyarısı:', err);
+    }
+    try {
+      const { data } = await supabase
+        .from('organization_module_purchases')
+        .select('module_key')
+        .eq('organization_id', oId)
+        .eq('status', 'expired');
+      setExpiredModuleKeys((data || []).map((r: any) => r.module_key));
+    } catch (err) {
+      console.warn('Süresi dolan modüller alınamadı:', err);
     }
   };
 
@@ -6470,6 +6545,16 @@ export default function ConsultantPanel() {
   };
 
   const selectModule = (moduleName: 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings') => {
+    // Bu kategoride daha önce ziyaret edilmiş ve hâlâ görünür (satın alınmış/
+    // süresi dolmamış) bir alt sekme varsa, sabit varsayılan yerine oraya dön.
+    const remembered = lastTabByModule[moduleName];
+    if (remembered) {
+      const mod = modules.find((m) => m.id === moduleName);
+      if (mod?.tabs.some((t: any) => t.id === remembered && t.show)) {
+        setActiveTab(remembered as any);
+        return;
+      }
+    }
     if (moduleName === 'operations') {
       if (canViewClients) {
         setActiveTab('clients');
@@ -6483,10 +6568,10 @@ export default function ConsultantPanel() {
     } else if (moduleName === 'documents') {
       setActiveTab('reports');
     } else if (moduleName === 'finance') {
-      // Personel/şef finance_summary'yi göremez (canViewFinance=false) - o
-      // sekmeye zorlarsak içerik alanı boş kalır ("sayfa açılmıyor" hatası).
-      // Onlar için tek görebildikleri "Gider Ekle" sekmesine gidilir.
-      if (canViewFinance) {
+      // Personel/şef Finansal Özet/Müşteri Ödemeleri/Gider Yönetimi'ni göremez
+      // (canViewFinanceTabs=false) - o sekmelere zorlarsak içerik alanı boş
+      // kalır. Onlar için tek görebildikleri "Gider Ekle" sekmesine gidilir.
+      if (canViewFinanceTabs) {
         setActiveTab('finance_summary');
       } else {
         setActiveTab('staff_expense_submission');
@@ -6503,6 +6588,13 @@ export default function ConsultantPanel() {
   };
 
   const canViewFinance = ['premium_corporate', 'corporate_chief', 'corporate_staff', 'admin', 'system_admin'].includes(userRole);
+  // Finansal Özet / Müşteri Ödemeleri / Gider Yönetimi (firmanın TÜM finans
+  // verisini gösteren 3 sekme) sadece firma sahibi ve admin'e açık — şef ve
+  // personel bu verileri göremez, onlar için sadece "Gider Ekle" (kendi
+  // gönderdiği giderler) kalır. canViewFinance'ten bilerek ayrı tutuldu çünkü
+  // o değişken "Hizmeti Sonlandırılan Firmalar" ve müşteri ücret görünürlüğü
+  // gibi başka, kasıtlı olarak şef/personele de açık yerlerde kullanılıyor.
+  const canViewFinanceTabs = ['premium_corporate', 'admin', 'system_admin'].includes(userRole);
 
   const modules = [
     {
@@ -6512,8 +6604,8 @@ export default function ConsultantPanel() {
       tabs: [
         { id: 'clients', label: 'Hizmet Verilen İşletmeler', icon: <Building size={14} />, show: canViewClients && isModuleEnabled('clients', orgEnabledModules, userRole, 'operations') },
         { id: 'terminated_clients', label: 'Hizmeti Sonlandırılan Firmalar', icon: <XCircle size={14} />, show: canViewFinance && isModuleEnabled('terminated_clients', orgEnabledModules, userRole, 'operations') },
-        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: isModuleEnabled('inspections', orgEnabledModules, userRole, 'operations') },
-        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: isModuleEnabled('waste', orgEnabledModules, userRole, 'operations') },
+        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: isModuleEnabled('inspections', orgEnabledModules, userRole, 'operations') || expiredModuleKeys.includes('inspections') },
+        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: isModuleEnabled('waste', orgEnabledModules, userRole, 'operations') || expiredModuleKeys.includes('waste') },
       ].filter(t => t.show)
     },
     {
@@ -6541,8 +6633,8 @@ export default function ConsultantPanel() {
         { id: 'reports', label: 'Aylık & Yıllık Raporlar', icon: <FileText size={14} />, show: canViewReports && isModuleEnabled('reports', orgEnabledModules, userRole, 'documents') },
         { id: 'document_matrix', label: 'Zorunlu Belge Matrisi', icon: <Table size={14} />, show: isModuleEnabled('document_matrix', orgEnabledModules, userRole, 'documents') },
         { id: 'document_requests', label: 'Evrak Talepleri', icon: <Inbox size={14} />, show: isModuleEnabled('document_requests', orgEnabledModules, userRole, 'documents') },
-        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: isModuleEnabled('msds', orgEnabledModules, userRole, 'documents') },
-        { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: isModuleEnabled('opinions', orgEnabledModules, userRole, 'compliance') },
+        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: isModuleEnabled('msds', orgEnabledModules, userRole, 'documents') || expiredModuleKeys.includes('msds') },
+        { id: 'opinions', label: 'Görüşler', icon: <PenLine size={14} />, show: isModuleEnabled('opinions', orgEnabledModules, userRole, 'compliance') || expiredModuleKeys.includes('opinions') },
         {
           id: 'definitions',
           label: 'Belge & Şablon Tanımları',
@@ -6556,10 +6648,10 @@ export default function ConsultantPanel() {
       label: 'Finans & Maliyet',
       icon: <PieChart size={18} />,
       tabs: [
-        { id: 'finance_summary', label: 'Finansal Özet', icon: <PieChart size={14} />, show: canViewFinance && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
-        { id: 'finance_payments', label: 'Müşteri Ödemeleri', icon: <CheckCircle size={14} />, show: canViewFinance && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
-        { id: 'finance_expenses', label: 'Gider Yönetimi', icon: <Trash2 size={14} />, show: canViewFinance && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
-        { id: 'staff_expense_submission', label: 'Gider Ekle', icon: <PlusCircle size={14} />, show: (userRole === 'corporate_staff' || userRole === 'corporate_chief') && isModuleEnabled('finance', orgEnabledModules, userRole, 'finance') },
+        { id: 'finance_summary', label: 'Finansal Özet', icon: <PieChart size={14} />, show: canViewFinanceTabs && (isModuleEnabled('finance_management', orgEnabledModules, userRole, 'finance') || expiredModuleKeys.includes('finance_management')) },
+        { id: 'finance_payments', label: 'Müşteri Ödemeleri', icon: <CheckCircle size={14} />, show: canViewFinanceTabs && (isModuleEnabled('finance_management', orgEnabledModules, userRole, 'finance') || expiredModuleKeys.includes('finance_management')) },
+        { id: 'finance_expenses', label: 'Gider Yönetimi', icon: <Trash2 size={14} />, show: canViewFinanceTabs && (isModuleEnabled('finance_management', orgEnabledModules, userRole, 'finance') || expiredModuleKeys.includes('finance_management')) },
+        { id: 'staff_expense_submission', label: 'Gider Ekle', icon: <PlusCircle size={14} />, show: (userRole === 'corporate_staff' || userRole === 'corporate_chief') && (isModuleEnabled('finance_management', orgEnabledModules, userRole, 'finance') || expiredModuleKeys.includes('finance_management')) },
       ].filter(t => t.show)
     },
     {
@@ -6573,7 +6665,7 @@ export default function ConsultantPanel() {
           id: 'evaluations',
           label: 'Çalışan Değerlendirmeleri',
           icon: <Star size={14} />,
-          show: ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && isModuleEnabled('evaluations', orgEnabledModules, userRole, 'hr')
+          show: ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && (isModuleEnabled('evaluations', orgEnabledModules, userRole, 'hr') || expiredModuleKeys.includes('evaluations'))
         },
         { id: 'departed', label: 'Ayrılan Personeller', icon: <LogOut size={14} />, show: userRole === 'premium_corporate' && isModuleEnabled('departed', orgEnabledModules, userRole, 'hr') },
       ].filter(t => t.show)
@@ -6796,14 +6888,6 @@ export default function ConsultantPanel() {
           <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
         </div>
           <div className="flex items-center gap-2">
-            {activeTab === 'clients' && canCreateClients && (
-              <button
-                onClick={() => setShowAddClient(true)}
-                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
-              >
-                <Plus size={18} /> Yeni İşletme
-              </button>
-            )}
           {activeTab === 'reports' && (
             isPremiumActive ? (
               <Link
@@ -6878,7 +6962,10 @@ export default function ConsultantPanel() {
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
+                  onClick={() => {
+                    setActiveTab(tab.id as any);
+                    setLastTabByModule((prev) => ({ ...prev, [currentMod!.id]: tab.id }));
+                  }}
                   className={`px-4 py-2 text-xs font-extrabold rounded-lg transition-all duration-200 flex items-center gap-1.5 cursor-pointer border ${
                     isActive
                       ? 'bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 border-blue-100 dark:border-blue-900/30'
@@ -6982,12 +7069,22 @@ export default function ConsultantPanel() {
                   <span className="text-gray-400 font-normal"> ({clients.filter((c) => c.parent_client_id).length} şube dahil değil)</span>
                 )}
               </span>
-              <button
-                onClick={handleExportClientsToExcel}
-                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition"
-              >
-                <Download size={14} /> Excel'e Aktar
-              </button>
+              <div className="flex items-center gap-2">
+                {canCreateClients && (
+                  <button
+                    onClick={() => setShowAddClient(true)}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition"
+                  >
+                    <Plus size={14} /> Yeni İşletme
+                  </button>
+                )}
+                <button
+                  onClick={handleExportClientsToExcel}
+                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition"
+                >
+                  <Download size={14} /> Excel'e Aktar
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {clients.map((client) => {
@@ -9059,7 +9156,10 @@ export default function ConsultantPanel() {
       )}
 
       {/* MSDS/SDS TAKİBİ TAB */}
-      {activeTab === 'msds' && (
+      {activeTab === 'msds' && expiredModuleKeys.includes('msds') && (
+        <ModuleExpiredLock moduleName="MSDS/SDS Takibi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'msds' && !expiredModuleKeys.includes('msds') && (
         <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
             <div>
@@ -9316,7 +9416,10 @@ export default function ConsultantPanel() {
       )}
 
       {/* GÖRÜŞLER TAB */}
-      {activeTab === 'opinions' && (
+      {activeTab === 'opinions' && expiredModuleKeys.includes('opinions') && (
+        <ModuleExpiredLock moduleName="Görüşler" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'opinions' && !expiredModuleKeys.includes('opinions') && (
         <div className="space-y-6 animate-fadeIn">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
             <div>
@@ -11023,14 +11126,20 @@ export default function ConsultantPanel() {
       )}
 
       {/* --- ATIK YÖNETİMİ TAB PANELİ --- */}
-      {activeTab === 'waste' && (
+      {activeTab === 'waste' && expiredModuleKeys.includes('waste') && (
+        <ModuleExpiredLock moduleName="Atık Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'waste' && !expiredModuleKeys.includes('waste') && (
         <div className="animate-fadeIn">
           <WasteManagement />
         </div>
       )}
 
       {/* --- SAHA QR DENETİMLERİ TAB PANELİ --- */}
-      {activeTab === 'inspections' && (
+      {activeTab === 'inspections' && expiredModuleKeys.includes('inspections') && (
+        <ModuleExpiredLock moduleName="Saha QR Denetimleri" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'inspections' && !expiredModuleKeys.includes('inspections') && (
         <div className="animate-fadeIn space-y-6">
           <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
             <div>
@@ -11254,14 +11363,20 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'evaluations' && !requiresFinanceHrReAuth && ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && (
+      {activeTab === 'evaluations' && !requiresFinanceHrReAuth && ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && expiredModuleKeys.includes('evaluations') && (
+        <ModuleExpiredLock moduleName="Çalışan Değerlendirmeleri" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'evaluations' && !requiresFinanceHrReAuth && ['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(userRole) && !expiredModuleKeys.includes('evaluations') && (
         <EvaluationPanel />
       )}
 
       {/* ==========================================
          FINANCE & COSTS TABS RENDER
          ========================================== */}
-      {activeTab === 'finance_summary' && canViewFinance && !requiresFinanceHrReAuth && (
+      {activeTab === 'finance_summary' && canViewFinanceTabs && !requiresFinanceHrReAuth && expiredModuleKeys.includes('finance_management') && (
+        <ModuleExpiredLock moduleName="Finans & Gider Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'finance_summary' && canViewFinanceTabs && !requiresFinanceHrReAuth && !expiredModuleKeys.includes('finance_management') && (
         <div className="space-y-6">
           {/* Top-level Finance Dashboard Cards */}
           {(() => {
@@ -11663,7 +11778,10 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'finance_payments' && canViewFinance && !requiresFinanceHrReAuth && (
+      {activeTab === 'finance_payments' && canViewFinanceTabs && !requiresFinanceHrReAuth && expiredModuleKeys.includes('finance_management') && (
+        <ModuleExpiredLock moduleName="Finans & Gider Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'finance_payments' && canViewFinanceTabs && !requiresFinanceHrReAuth && !expiredModuleKeys.includes('finance_management') && (
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6 animate-fadeIn">
           <div>
             <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 flex items-center gap-2">
@@ -11953,7 +12071,10 @@ export default function ConsultantPanel() {
         </div>
       )}
 
-      {activeTab === 'finance_expenses' && canViewFinance && !requiresFinanceHrReAuth && (
+      {activeTab === 'finance_expenses' && canViewFinanceTabs && !requiresFinanceHrReAuth && expiredModuleKeys.includes('finance_management') && (
+        <ModuleExpiredLock moduleName="Finans & Gider Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'finance_expenses' && canViewFinanceTabs && !requiresFinanceHrReAuth && !expiredModuleKeys.includes('finance_management') && (
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6 animate-fadeIn">
           <div className="flex justify-between items-center gap-4 flex-wrap">
             <div>
@@ -12089,7 +12210,10 @@ export default function ConsultantPanel() {
       )}
 
       {/* --- PERSONEL/ŞEF GİDER EKLEME (dar kapsamlı) --- */}
-      {activeTab === 'staff_expense_submission' && (
+      {activeTab === 'staff_expense_submission' && expiredModuleKeys.includes('finance_management') && (
+        <ModuleExpiredLock moduleName="Finans & Gider Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'staff_expense_submission' && !expiredModuleKeys.includes('finance_management') && (
         <div className="max-w-2xl mx-auto space-y-6 animate-fadeIn">
           <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
             <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2 mb-1">
@@ -16782,8 +16906,10 @@ export default function ConsultantPanel() {
             <ModuleStore
               organizationId={orgId}
               userRole={userRole}
-              onModulesUpdated={() => {
-                fetchCompanies();
+              onModulesUpdated={async () => {
+                const { data: org } = await supabase.from('organizations').select('*').eq('id', orgId).single();
+                if (org) setOrgData(org);
+                fetchExpiredModuleKeys(orgId);
               }}
               onClose={() => setShowModuleStoreModal(false)}
             />

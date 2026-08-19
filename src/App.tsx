@@ -42,6 +42,8 @@ import EditDocument from './EditDocument';
 
 import Pricing from './Pricing';
 import Storage from './Storage';
+import PaymentReturn from './PaymentReturn';
+import PaymentStatus from './PaymentStatus';
 import AdminPanel from './AdminPanel';
 import Settings from './Settings';
 import Notifications from './Notifications';
@@ -1014,6 +1016,8 @@ function AppContent() {
                   }
                 />
                 <Route path="/storage" element={<Storage />} />
+                <Route path="/odeme/sonuc" element={<PaymentReturn />} />
+                <Route path="/odeme/durum" element={<PaymentStatus />} />
                 <Route path="/settings" element={<Settings session={session} />} />
                 <Route path="/notifications" element={<Notifications />} />
                 <Route path="/support" element={<Support />} />

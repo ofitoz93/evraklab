@@ -18,7 +18,7 @@ export const SYSTEM_MODULE_CATEGORIES: SystemCategory[] = [
   { key: 'operations', name: 'Operasyon & İşletmeler', isDefault: true, description: 'İşletme takibi, saha denetimleri ve atık yönetimi ana modülü' },
   { key: 'compliance', name: 'Yasal Uyum & Takip', isDefault: true, description: 'Mevzuat takibi, talepler, aksiyonlar ve görüşler ana modülü' },
   { key: 'documents', name: 'Dokümantasyon', isDefault: true, description: 'Raporlar, zorunlu belgeler, evrak talepleri ve MSDS ana modülü' },
-  { key: 'finance', name: 'Finans & Maliyet', isDefault: false, description: 'Gelir, ödeme, faturalandırma ve gider takibi ana modülü' },
+  { key: 'finance', name: 'Finans & Maliyet', isDefault: true, description: 'Gelir, ödeme, faturalandırma ve gider takibi ana modülü' },
   { key: 'hr', name: 'İnsan Kaynakları & Yönetim', isDefault: true, description: 'Ekip yönetimi, şemalar, performans ve ayrılanlar ana modülü' },
 ];
 
@@ -43,7 +43,11 @@ export const SYSTEM_MODULES: SystemModule[] = [
   { key: 'definitions', name: 'Belge & Şablon Tanımları', category: 'documents', categoryName: 'Dokümantasyon', isDefault: true, description: 'Kullanıcı tanımlı evrak şablonları' },
 
   // 4. Finans & Maliyet (category: 'finance')
-  { key: 'finance', name: 'Finans & Gider Yönetimi', category: 'finance', categoryName: 'Finans & Maliyet', isDefault: false, description: 'Gelir, ödeme, fatura ve gider takibi (Ekstra Modül)' },
+  // NOT: modül anahtarı bilerek kategori anahtarından ('finance') farklı
+  // tutuluyor ('finance_management') — aynı olsaydı admin panelindeki
+  // varsayılan-modül listesi (düz string dizisi) modülü kapatınca kategoriyi
+  // de kapatıyordu (ikisi de aynı 'finance' string'ini paylaştığı için).
+  { key: 'finance_management', name: 'Finans & Gider Yönetimi', category: 'finance', categoryName: 'Finans & Maliyet', isDefault: false, description: 'Gelir, ödeme, fatura ve gider takibi (Ekstra Modül)' },
 
   // 5. İnsan Kaynakları & Yönetim (category: 'hr')
   { key: 'team', name: 'Ekip Yönetimi', category: 'hr', categoryName: 'İnsan Kaynakları & Yönetim', isDefault: true, description: 'Personel yetkileri ve kullanıcı hesapları' },
@@ -132,6 +136,6 @@ export const DEFAULT_EXTRA_MODULE_PRICING: ExtraModulePricing = {
   waste: { price: 100, period: 'monthly' },
   msds: { price: 75, period: 'monthly' },
   opinions: { price: 100, period: 'monthly' },
-  finance: { price: 200, period: 'monthly' },
+  finance_management: { price: 200, period: 'monthly' },
   evaluations: { price: 75, period: 'monthly' },
 };

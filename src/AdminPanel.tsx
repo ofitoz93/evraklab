@@ -43,7 +43,7 @@ import {
 } from 'lucide-react';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
-import { SYSTEM_MODULES, DEFAULT_MODULE_KEYS, SYSTEM_MODULE_CATEGORIES } from './moduleRegistry';
+import { SYSTEM_MODULES, DEFAULT_MODULE_KEYS, SYSTEM_MODULE_CATEGORIES, DEFAULT_EXTRA_MODULE_PRICING } from './moduleRegistry';
 
 import GOOGLE_SCRIPT_CODE from '../google_script_mail_template.js?raw';
 
@@ -150,8 +150,10 @@ export default function AdminPanel() {
   };
   const [subscriptionPlans, setSubscriptionPlans] = useState<any>(DEFAULT_SUBSCRIPTION_PLANS);
   const [storagePricing, setStoragePricing] = useState<any>(DEFAULT_STORAGE_PRICING);
+  const [moduleExtraPricing, setModuleExtraPricing] = useState<any>(DEFAULT_EXTRA_MODULE_PRICING);
   const [fetchingPricing, setFetchingPricing] = useState(false);
   const [savingPricing, setSavingPricing] = useState(false);
+  const [savingModulePricing, setSavingModulePricing] = useState(false);
   const PLAN_LABELS: Record<string, string> = {
     individual_standard: 'Bireysel Premium (Yeni Üyelik)',
     individual_renewal: 'Bireysel Premium (Yenileme)',
@@ -167,6 +169,7 @@ export default function AdminPanel() {
       data?.forEach((row: any) => {
         if (row.key === 'subscription_plans') setSubscriptionPlans(row.value);
         if (row.key === 'storage_pricing') setStoragePricing(row.value);
+        if (row.key === 'extra_module_pricing') setModuleExtraPricing(row.value);
       });
     } catch (err: any) {
       console.error('Fiyatlandırma ayarları yüklenemedi:', err.message);
@@ -262,6 +265,28 @@ export default function AdminPanel() {
     }
   };
 
+  const updateModulePriceField = (moduleKey: string, value: string) => {
+    setModuleExtraPricing((prev: any) => ({
+      ...prev,
+      [moduleKey]: { ...prev[moduleKey], price: value === '' ? '' : Number(value), period: 'monthly' },
+    }));
+  };
+
+  const handleSaveModulePricing = async () => {
+    setSavingModulePricing(true);
+    try {
+      const { error } = await supabase
+        .from('pricing_settings')
+        .upsert({ key: 'extra_module_pricing', value: moduleExtraPricing, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      alert('Ekstra modül fiyatları başarıyla kaydedildi!');
+    } catch (err: any) {
+      alert('Kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingModulePricing(false);
+    }
+  };
+
   // --- Kullanıcı ve Şirket State'leri ---
   const [userQuotaMB, setUserQuotaMB] = useState(0);
   const [companyQuotaMB, setCompanyQuotaMB] = useState(0);
@@ -285,6 +310,80 @@ export default function AdminPanel() {
   const [fetchingModuleSettings, setFetchingModuleSettings] = useState(false);
   const [savingModuleSettings, setSavingModuleSettings] = useState(false);
   const [bulkApplyingModules, setBulkApplyingModules] = useState(false);
+  const [modulePurchases, setModulePurchases] = useState<any[]>([]);
+  const [fetchingModulePurchases, setFetchingModulePurchases] = useState(false);
+  const [modulePurchaseSearch, setModulePurchaseSearch] = useState('');
+  const [moduleSettingsSubTab, setModuleSettingsSubTab] = useState<'defaults' | 'purchases'>('defaults');
+  const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
+  const [editPurchaseForm, setEditPurchaseForm] = useState<{ price: string; expiresAt: string; status: string }>({ price: '', expiresAt: '', status: 'active' });
+  const [savingPurchaseEdit, setSavingPurchaseEdit] = useState(false);
+
+  const fetchModulePurchases = async () => {
+    setFetchingModulePurchases(true);
+    try {
+      const { data, error } = await supabase
+        .from('organization_module_purchases')
+        .select('*, organizations(name)')
+        .order('purchased_at', { ascending: false });
+
+      if (error) throw error;
+      setModulePurchases(data || []);
+    } catch (err: any) {
+      console.warn('Satın alınan modüller yüklenemedi:', err.message);
+    } finally {
+      setFetchingModulePurchases(false);
+    }
+  };
+
+  const startEditingPurchase = (p: any) => {
+    setEditingPurchaseId(p.id);
+    setEditPurchaseForm({
+      price: String(p.price ?? ''),
+      expiresAt: p.expires_at ? new Date(p.expires_at).toISOString().split('T')[0] : '',
+      status: p.status,
+    });
+  };
+
+  const handleAdminSaveModulePurchase = async (purchase: any) => {
+    setSavingPurchaseEdit(true);
+    try {
+      const newStatus = editPurchaseForm.status;
+      const updates: any = {
+        price: Number(editPurchaseForm.price) || 0,
+        expires_at: editPurchaseForm.expiresAt ? new Date(editPurchaseForm.expiresAt).toISOString() : null,
+        status: newStatus,
+        cancelled_at: newStatus === 'cancelled' ? (purchase.cancelled_at || new Date().toISOString()) : null,
+      };
+
+      const { error } = await supabase
+        .from('organization_module_purchases')
+        .update(updates)
+        .eq('id', purchase.id);
+      if (error) throw error;
+
+      const { data: org } = await supabase
+        .from('organizations')
+        .select('enabled_modules')
+        .eq('id', purchase.organization_id)
+        .single();
+      let mods: string[] = Array.isArray(org?.enabled_modules) ? [...org.enabled_modules] : [];
+      if (newStatus === 'active') {
+        if (!mods.includes(purchase.category_key)) mods.push(purchase.category_key);
+        if (!mods.includes(purchase.module_key)) mods.push(purchase.module_key);
+      } else {
+        mods = mods.filter((k) => k !== purchase.module_key);
+      }
+      await supabase.from('organizations').update({ enabled_modules: mods }).eq('id', purchase.organization_id);
+
+      alert('Satın alma kaydı güncellendi!');
+      setEditingPurchaseId(null);
+      fetchModulePurchases();
+    } catch (err: any) {
+      alert('Güncellenemedi: ' + err.message);
+    } finally {
+      setSavingPurchaseEdit(false);
+    }
+  };
 
   const fetchSystemModuleDefaults = async () => {
     setFetchingModuleSettings(true);
@@ -657,6 +756,7 @@ export default function AdminPanel() {
       fetchSystemLogoSettings();
     } else if (activeTab === 'pricing') {
       fetchPricingSettings();
+      fetchSystemModuleDefaults();
     } else if (activeTab === 'legislations') {
       fetchGlobalLegislations();
       fetchLegislationRequests();
@@ -673,6 +773,7 @@ export default function AdminPanel() {
       fetchGiftCodes();
     } else if (activeTab === 'module_settings') {
       fetchSystemModuleDefaults();
+      fetchModulePurchases();
     }
   }, [activeTab]);
 
@@ -4014,7 +4115,30 @@ export default function AdminPanel() {
               </div>
             </div>
 
-            {fetchingModuleSettings ? (
+            <div className="flex border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1.5 rounded-lg shadow-sm gap-2 flex-wrap">
+              <button
+                onClick={() => setModuleSettingsSubTab('defaults')}
+                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                  moduleSettingsSubTab === 'defaults'
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+                }`}
+              >
+                Varsayılan Paket Ayarları
+              </button>
+              <button
+                onClick={() => setModuleSettingsSubTab('purchases')}
+                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                  moduleSettingsSubTab === 'purchases'
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700 dark:text-gray-400'
+                }`}
+              >
+                Satın Alınan Ekstra Modüller
+              </button>
+            </div>
+
+            {moduleSettingsSubTab === 'defaults' && (fetchingModuleSettings ? (
               <div className="py-16 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
                 <Loader className="animate-spin" size={16} /> Modül ayarları yükleniyor...
               </div>
@@ -4158,6 +4282,158 @@ export default function AdminPanel() {
                   })}
                 </div>
               </div>
+            ))}
+
+            {moduleSettingsSubTab === 'purchases' && (
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-slate-700 p-6 shadow-sm space-y-4">
+              <div className="border-b border-gray-100 dark:border-slate-700 pb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                <div>
+                  <h3 className="font-bold text-gray-800 dark:text-white text-base">Satın Alınan Ekstra Modüller</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Hangi şirketin hangi ekstra modülü ne zamandan beri kullandığını, fiyatını ve bitiş tarihini buradan düzenleyin.
+                  </p>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Şirket adına göre ara..."
+                  value={modulePurchaseSearch}
+                  onChange={(e) => setModulePurchaseSearch(e.target.value)}
+                  className="w-full sm:w-64 p-2.5 rounded-xl border border-gray-200 dark:border-slate-700 dark:bg-slate-900 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition text-sm"
+                />
+              </div>
+
+              {fetchingModulePurchases ? (
+                <div className="py-10 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
+                  <Loader className="animate-spin" size={16} /> Yükleniyor...
+                </div>
+              ) : (
+                (() => {
+                  const filtered = modulePurchases.filter((p) =>
+                    (p.organizations?.name || '').toLowerCase().includes(modulePurchaseSearch.toLowerCase())
+                  );
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="py-10 text-center text-xs text-gray-400">
+                        Henüz satın alınmış bir ekstra modül bulunmuyor.
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left text-gray-400 dark:text-gray-500 uppercase text-[10px] font-bold border-b border-gray-100 dark:border-slate-700">
+                            <th className="py-2 pr-4">Şirket</th>
+                            <th className="py-2 pr-4">Modül</th>
+                            <th className="py-2 pr-4">Fiyat</th>
+                            <th className="py-2 pr-4">Satın Alma Tarihi</th>
+                            <th className="py-2 pr-4">Bitiş / İptal Tarihi</th>
+                            <th className="py-2 pr-4">Durum</th>
+                            <th className="py-2 pr-4">İşlem</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filtered.map((p) => {
+                            const modInfo = SYSTEM_MODULES.find((m) => m.key === p.module_key);
+                            const isEditing = editingPurchaseId === p.id;
+                            const statusLabel = p.status === 'active' ? 'Aktif' : p.status === 'expired' ? 'Süresi Doldu' : 'İptal Edildi';
+                            const statusClass =
+                              p.status === 'active'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400'
+                                : p.status === 'expired'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400'
+                                : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-slate-900/40 dark:text-gray-400';
+
+                            if (isEditing) {
+                              return (
+                                <tr key={p.id} className="border-b border-gray-50 dark:border-slate-700/60 last:border-0 bg-purple-50/40 dark:bg-purple-950/20">
+                                  <td className="py-2 pr-4 font-bold text-gray-700 dark:text-gray-200">{p.organizations?.name || '—'}</td>
+                                  <td className="py-2 pr-4 text-gray-600 dark:text-gray-300">{modInfo?.name || p.module_key}</td>
+                                  <td className="py-2 pr-4">
+                                    <input
+                                      type="number"
+                                      value={editPurchaseForm.price}
+                                      onChange={(e) => setEditPurchaseForm((f) => ({ ...f, price: e.target.value }))}
+                                      className="w-20 p-1.5 rounded-lg border border-gray-200 dark:border-slate-700 dark:bg-slate-900 outline-none focus:ring-2 focus:ring-purple-500/20 text-xs"
+                                    />
+                                  </td>
+                                  <td className="py-2 pr-4 text-gray-500 dark:text-gray-400">
+                                    {p.purchased_at ? new Date(p.purchased_at).toLocaleDateString('tr-TR') : '-'}
+                                  </td>
+                                  <td className="py-2 pr-4">
+                                    <input
+                                      type="date"
+                                      value={editPurchaseForm.expiresAt}
+                                      onChange={(e) => setEditPurchaseForm((f) => ({ ...f, expiresAt: e.target.value }))}
+                                      className="p-1.5 rounded-lg border border-gray-200 dark:border-slate-700 dark:bg-slate-900 outline-none focus:ring-2 focus:ring-purple-500/20 text-xs"
+                                    />
+                                  </td>
+                                  <td className="py-2 pr-4">
+                                    <select
+                                      value={editPurchaseForm.status}
+                                      onChange={(e) => setEditPurchaseForm((f) => ({ ...f, status: e.target.value }))}
+                                      className="p-1.5 rounded-lg border border-gray-200 dark:border-slate-700 dark:bg-slate-900 outline-none focus:ring-2 focus:ring-purple-500/20 text-xs"
+                                    >
+                                      <option value="active">Aktif</option>
+                                      <option value="expired">Süresi Doldu</option>
+                                      <option value="cancelled">İptal Edildi</option>
+                                    </select>
+                                  </td>
+                                  <td className="py-2 pr-4 flex items-center gap-2">
+                                    <button
+                                      onClick={() => handleAdminSaveModulePurchase(p)}
+                                      disabled={savingPurchaseEdit}
+                                      className="text-emerald-600 hover:text-emerald-800 font-bold disabled:opacity-50"
+                                    >
+                                      {savingPurchaseEdit ? <Loader size={14} className="animate-spin" /> : 'Kaydet'}
+                                    </button>
+                                    <button
+                                      onClick={() => setEditingPurchaseId(null)}
+                                      className="text-gray-400 hover:text-gray-600"
+                                    >
+                                      Vazgeç
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            return (
+                              <tr key={p.id} className="border-b border-gray-50 dark:border-slate-700/60 last:border-0">
+                                <td className="py-2 pr-4 font-bold text-gray-700 dark:text-gray-200">{p.organizations?.name || '—'}</td>
+                                <td className="py-2 pr-4 text-gray-600 dark:text-gray-300">{modInfo?.name || p.module_key}</td>
+                                <td className="py-2 pr-4 text-gray-500 dark:text-gray-400">₺{p.price}/Ay</td>
+                                <td className="py-2 pr-4 text-gray-500 dark:text-gray-400">
+                                  {p.purchased_at ? new Date(p.purchased_at).toLocaleDateString('tr-TR') : '-'}
+                                </td>
+                                <td className="py-2 pr-4 text-gray-500 dark:text-gray-400">
+                                  {p.status === 'cancelled'
+                                    ? (p.cancelled_at ? new Date(p.cancelled_at).toLocaleDateString('tr-TR') : '-')
+                                    : (p.expires_at ? new Date(p.expires_at).toLocaleDateString('tr-TR') : '-')}
+                                </td>
+                                <td className="py-2 pr-4">
+                                  <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border ${statusClass}`}>
+                                    {statusLabel}
+                                  </span>
+                                </td>
+                                <td className="py-2 pr-4">
+                                  <button
+                                    onClick={() => startEditingPurchase(p)}
+                                    className="text-purple-600 hover:text-purple-800 font-bold"
+                                  >
+                                    Düzenle
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()
+              )}
+            </div>
             )}
           </div>
         )}
@@ -4362,6 +4638,49 @@ export default function AdminPanel() {
                   >
                     {savingPricing ? <Loader className="animate-spin" size={16} /> : <Save size={16} />}
                     {savingPricing ? 'Kaydediliyor...' : 'Depolama Fiyatlandırmasını Kaydet'}
+                  </button>
+                </div>
+
+                {/* Ekstra Modül Fiyatlandırma */}
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-6">
+                  <h3 className="font-bold text-gray-800 text-base border-b pb-3 flex items-center gap-2">
+                    <CheckSquare size={16} className="text-green-600" /> Ekstra Modül Fiyatlandırma
+                  </h3>
+                  <p className="text-xs text-gray-500 -mt-4">
+                    Danışman/şirket panellerindeki "Ekstra Modül Mağazası"nda gösterilen aylık modül fiyatları. Değişiklikler yeni satın almalarda geçerli olur.
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="text-left text-gray-500 text-xs uppercase">
+                          <th className="py-2 pr-4">Modül</th>
+                          <th className="py-2 pr-4">Aylık Fiyat (TL)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {SYSTEM_MODULES.filter((m) => !sysDefaultModuleKeys.includes(m.key)).map((m) => (
+                          <tr key={m.key} className="border-t">
+                            <td className="py-2 pr-4 font-semibold text-gray-600">{m.name}</td>
+                            <td className="py-2 pr-4">
+                              <input
+                                type="number"
+                                className="w-28 p-2 rounded-lg border border-gray-200 outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 text-sm font-bold"
+                                value={moduleExtraPricing[m.key]?.price ?? ''}
+                                onChange={(e) => updateModulePriceField(m.key, e.target.value)}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button
+                    onClick={handleSaveModulePricing}
+                    disabled={savingModulePricing}
+                    className="w-full sm:w-auto bg-green-700 hover:bg-green-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition shadow-lg disabled:opacity-50"
+                  >
+                    {savingModulePricing ? <Loader className="animate-spin" size={16} /> : <Save size={16} />}
+                    {savingModulePricing ? 'Kaydediliyor...' : 'Modül Fiyatlarını Kaydet'}
                   </button>
                 </div>
               </>

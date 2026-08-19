@@ -42,6 +42,7 @@ import {
   ShoppingBag,
 } from 'lucide-react';
 import ModuleStore from './ModuleStore';
+import ModuleExpiredLock from './ModuleExpiredLock';
 import QRCode from 'qrcode';
 import ExcelJS from 'exceljs';
 import { WASTE_CODES, RECOVERY_CODES, DISPOSAL_CODES } from './wasteCodes';
@@ -59,6 +60,12 @@ import {
   MSDS_STATUS_LABELS_TR as STATUS_LABELS_TR,
   MSDS_STATUS_BADGE_CLASSES as STATUS_BADGE_CLASSES_MSDS,
 } from './msdsParser';
+
+const PAYMENT_TYPE_LABELS: Record<string, string> = {
+  sirket_karti: 'Şirket Kartı',
+  sirket_sahsi: 'Şirket Şahsi',
+  kisisel_odeme: 'Kişisel Ödeme (Cepten)',
+};
 
 // Boyut formatlama (Byte -> MB/GB)
 function formatBytes(bytes: number, decimals = 1) {
@@ -91,7 +98,7 @@ export default function CompanyPanel() {
   // Compliance (Mevzuatlarımız) states
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = searchParams.get('tab') || 'team';
-  const [activeTab, setActiveTab] = useState<'team' | 'compliance' | 'requests' | 'actions' | 'waste' | 'inspections' | 'msds'>(initialTab as any);
+  const [activeTab, setActiveTab] = useState<'team' | 'compliance' | 'requests' | 'actions' | 'waste' | 'inspections' | 'msds' | 'finance'>(initialTab as any);
 
   // --- MSDS/SDS TAKİBİ STATE'LERİ ---
   const [msdsDocuments, setMsdsDocuments] = useState<any[]>([]);
@@ -431,6 +438,42 @@ export default function CompanyPanel() {
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [selectedRegId, setSelectedRegId] = useState<string>('');
   const [showModuleStoreModal, setShowModuleStoreModal] = useState(false);
+  const [expiredModuleKeys, setExpiredModuleKeys] = useState<string[]>([]);
+  // Bir modül kategorisi (ör. "Operasyon & Çevre") içinde en son ziyaret
+  // edilen alt sekmeyi hatırlar; kategori butonuna tekrar tıklandığında her
+  // zaman sabit bir sekmeye (ör. Atık Yönetimi) değil, kullanıcının kaldığı
+  // yere döner.
+  const [lastTabByModule, setLastTabByModule] = useState<Record<string, string>>({});
+
+  // --- FİNANS & MALİYET MODÜLÜ STATE'LERİ ---
+  const [financeExpenses, setFinanceExpenses] = useState<any[]>([]);
+  const [loadingFinance, setLoadingFinance] = useState(false);
+  const [financePeriodType, setFinancePeriodType] = useState<'all' | 'monthly' | 'yearly'>('all');
+  const [financeSelectedMonth, setFinanceSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [financeSelectedYear, setFinanceSelectedYear] = useState(String(new Date().getFullYear()));
+  const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
+  const [newExpense, setNewExpense] = useState({
+    title: '',
+    category: 'Ofis/Kira',
+    amount: '',
+    expense_date: new Date().toISOString().split('T')[0],
+    notes: '',
+    employee_id: '',
+  });
+  const [savingExpense, setSavingExpense] = useState(false);
+  // Personel/Şef Gider Ekleme (dar kapsamlı, sadece kendi gönderdiklerini görür)
+  const [newStaffExpense, setNewStaffExpense] = useState({
+    title: '',
+    category: 'Diğer',
+    amount: '',
+    expense_date: new Date().toISOString().split('T')[0],
+    payment_type: 'sirket_karti' as 'sirket_karti' | 'sirket_sahsi' | 'kisisel_odeme',
+    notes: '',
+  });
+  const [staffExpenseReceiptFile, setStaffExpenseReceiptFile] = useState<File | null>(null);
+  const [savingStaffExpense, setSavingStaffExpense] = useState(false);
+  const [myStaffExpenses, setMyStaffExpenses] = useState<any[]>([]);
+  const [loadingMyStaffExpenses, setLoadingMyStaffExpenses] = useState(false);
 
   // Request Modal & List states
   const [showRequestModal, setShowRequestModal] = useState(false);
@@ -505,6 +548,233 @@ export default function CompanyPanel() {
     fetchCompanyData();
   }, []);
 
+  const fetchExpiredModuleKeys = async (oId: string) => {
+    if (!oId) return;
+    try {
+      await supabase.rpc('sync_expired_modules', { p_organization_id: oId });
+    } catch (err) {
+      console.warn('Modül süre kontrolü uyarısı:', err);
+    }
+    try {
+      const { data } = await supabase
+        .from('organization_module_purchases')
+        .select('module_key')
+        .eq('organization_id', oId)
+        .eq('status', 'expired');
+      setExpiredModuleKeys((data || []).map((r: any) => r.module_key));
+    } catch (err) {
+      console.warn('Süresi dolan modüller alınamadı:', err);
+    }
+  };
+
+  const matchesFinancePeriod = (dateStr: string | null | undefined) => {
+    if (!dateStr) return financePeriodType === 'all';
+    if (financePeriodType === 'all') return true;
+    if (financePeriodType === 'monthly') return dateStr.slice(0, 7) === financeSelectedMonth;
+    return dateStr.slice(0, 4) === financeSelectedYear;
+  };
+
+  const renderFinancePeriodSelector = () => (
+    <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 p-2">
+      <div className="flex gap-1 p-1 bg-white dark:bg-slate-800 rounded-lg border border-slate-100 dark:border-slate-700">
+        {(['all', 'monthly', 'yearly'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setFinancePeriodType(t)}
+            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
+              financePeriodType === t ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            {t === 'all' ? 'Tümü' : t === 'monthly' ? 'Aylık' : 'Yıllık'}
+          </button>
+        ))}
+      </div>
+      {financePeriodType === 'monthly' && (
+        <input
+          type="month"
+          value={financeSelectedMonth}
+          onChange={(e) => setFinanceSelectedMonth(e.target.value)}
+          className="border rounded-lg p-2 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold outline-none focus:ring-1 focus:ring-blue-500"
+        />
+      )}
+      {financePeriodType === 'yearly' && (
+        <select
+          value={financeSelectedYear}
+          onChange={(e) => setFinanceSelectedYear(e.target.value)}
+          className="border rounded-lg p-2 text-xs bg-white dark:bg-slate-900 dark:border-slate-700 font-bold outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          {Array.from({ length: 10 }, (_, i) => String(new Date().getFullYear() - i)).map((y) => (
+            <option key={y} value={y}>{y}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+
+  // Yönetici/Şef görünümü: organizasyondaki TÜM gider kayıtlarını çeker (RLS
+  // "Manage expenses policy" zaten sadece premium_corporate/corporate_chief/
+  // admin/system_admin için tam erişim veriyor).
+  const fetchCompanyExpenses = async (oId: string) => {
+    if (!oId) return;
+    setLoadingFinance(true);
+    try {
+      const { data, error } = await supabase
+        .from('company_expenses')
+        .select('*')
+        .eq('consultant_company_id', oId)
+        .order('expense_date', { ascending: false });
+      if (error) throw error;
+      setFinanceExpenses(data || []);
+    } catch (err: any) {
+      console.error('Gider verileri çekilirken hata:', err);
+    } finally {
+      setLoadingFinance(false);
+    }
+  };
+
+  const handleSaveExpense = async () => {
+    if (!newExpense.title.trim() || !newExpense.amount) {
+      alert('Lütfen başlık ve tutar giriniz!');
+      return;
+    }
+    setSavingExpense(true);
+    try {
+      const { error } = await supabase.from('company_expenses').insert({
+        consultant_company_id: myOrg.id,
+        title: newExpense.title.trim(),
+        category: newExpense.category,
+        amount: parseFloat(newExpense.amount),
+        expense_date: newExpense.expense_date,
+        notes: newExpense.notes.trim() || null,
+        employee_id: newExpense.category === 'Maaş/Personel' && newExpense.employee_id ? newExpense.employee_id : null,
+      });
+      if (error) throw error;
+
+      setShowAddExpenseModal(false);
+      setNewExpense({
+        title: '',
+        category: 'Ofis/Kira',
+        amount: '',
+        expense_date: new Date().toISOString().split('T')[0],
+        notes: '',
+        employee_id: '',
+      });
+      await fetchCompanyExpenses(myOrg.id);
+      alert('Gider kaydı başarıyla eklendi!');
+    } catch (err: any) {
+      alert('Gider kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingExpense(false);
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    if (!window.confirm('Bu gider kaydını silmek istediğinizden emin misiniz?')) return;
+    try {
+      const { error } = await supabase.from('company_expenses').delete().eq('id', expenseId);
+      if (error) throw error;
+      await fetchCompanyExpenses(myOrg.id);
+      alert('Gider kaydı silindi.');
+    } catch (err: any) {
+      alert('Gider silinirken hata: ' + err.message);
+    }
+  };
+
+  const handleApproveExpense = async (expenseId: string) => {
+    try {
+      const { error } = await supabase
+        .from('company_expenses')
+        .update({ approved_at: new Date().toISOString(), approved_by: myProfile?.id })
+        .eq('id', expenseId);
+      if (error) throw error;
+      await fetchCompanyExpenses(myOrg.id);
+    } catch (err: any) {
+      alert('Onaylanırken hata: ' + err.message);
+    }
+  };
+
+  // Personel/Şef görünümü: sadece kendi gönderdiği kayıtları çeker (RLS "Staff
+  // view own submitted expenses" zaten corporate_staff için submitted_by=
+  // auth.uid() ile sınırlıyor).
+  const fetchMyStaffExpenses = async () => {
+    if (!myProfile?.id) return;
+    setLoadingMyStaffExpenses(true);
+    try {
+      const { data, error } = await supabase
+        .from('company_expenses')
+        .select('*')
+        .eq('submitted_by', myProfile.id)
+        .order('expense_date', { ascending: false });
+      if (error) throw error;
+      setMyStaffExpenses(data || []);
+    } catch (err: any) {
+      console.error('Giderlerim yüklenirken hata:', err.message);
+    } finally {
+      setLoadingMyStaffExpenses(false);
+    }
+  };
+
+  const handleSaveStaffExpense = async () => {
+    if (!newStaffExpense.title.trim() || !newStaffExpense.amount) {
+      alert('Lütfen açıklama ve tutar giriniz.');
+      return;
+    }
+    setSavingStaffExpense(true);
+    try {
+      let receiptUrl: string | null = null;
+      if (staffExpenseReceiptFile) {
+        const fileExt = staffExpenseReceiptFile.name.split('.').pop() || 'pdf';
+        const filePath = `expense-receipts/${myOrg.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+        const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, staffExpenseReceiptFile);
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(filePath);
+        receiptUrl = urlData.publicUrl;
+      }
+
+      const { error } = await supabase.from('company_expenses').insert({
+        consultant_company_id: myOrg.id,
+        title: newStaffExpense.title.trim(),
+        category: newStaffExpense.category,
+        amount: parseFloat(newStaffExpense.amount),
+        expense_date: newStaffExpense.expense_date,
+        notes: newStaffExpense.notes.trim() || null,
+        payment_type: newStaffExpense.payment_type,
+        receipt_url: receiptUrl,
+        submitted_by: myProfile?.id,
+        is_auto_salary: false,
+      });
+      if (error) throw error;
+
+      setNewStaffExpense({
+        title: '',
+        category: 'Diğer',
+        amount: '',
+        expense_date: new Date().toISOString().split('T')[0],
+        payment_type: 'sirket_karti',
+        notes: '',
+      });
+      setStaffExpenseReceiptFile(null);
+      await fetchMyStaffExpenses();
+      alert('Gider kaydınız başarıyla eklendi.');
+    } catch (err: any) {
+      alert('Gider kaydedilirken hata: ' + err.message);
+    } finally {
+      setSavingStaffExpense(false);
+    }
+  };
+
+  const handleDeleteMyStaffExpense = async (expenseId: string) => {
+    if (!window.confirm('Bu gideri silmek istediğinizden emin misiniz?')) return;
+    try {
+      const { error } = await supabase.from('company_expenses').delete().eq('id', expenseId);
+      if (error) throw error;
+      await fetchMyStaffExpenses();
+    } catch (err: any) {
+      alert('Silinirken hata: ' + err.message);
+    }
+  };
+
   const fetchCompanyData = async () => {
     setLoading(true);
     try {
@@ -533,6 +803,7 @@ export default function CompanyPanel() {
 
           if (orgData) {
             setMyOrg(orgData);
+            fetchExpiredModuleKeys(profile.organization_id);
 
             // Kota: herkes toplam kullanımı görebilsin
             supabase
@@ -3122,6 +3393,17 @@ export default function CompanyPanel() {
   const activeModule = getModuleForTab(activeTab);
 
   const selectModule = (moduleName: 'compliance' | 'actions' | 'operations' | 'hr') => {
+    // Bu kategoride daha önce ziyaret edilmiş ve hâlâ görünür (satın alınmış/
+    // süresi dolmamış) bir alt sekme varsa, sabit varsayılan yerine oraya dön.
+    const remembered = lastTabByModule[moduleName];
+    if (remembered) {
+      const mod = modules.find((m) => m.id === moduleName);
+      if (mod?.tabs.some((t: any) => t.id === remembered && t.show)) {
+        setActiveTab(remembered as any);
+        setSearchParams({ tab: remembered });
+        return;
+      }
+    }
     if (moduleName === 'compliance') {
       setActiveTab('compliance');
       setSearchParams({ tab: 'compliance' });
@@ -3139,6 +3421,44 @@ export default function CompanyPanel() {
 
   const orgModules = myOrg?.enabled_modules;
   const currentUserRole = myProfile?.role;
+
+  // Nav sekmeleri "show" hesaplamasıyla (isModuleEnabled) gizlense de, içerik
+  // blokları sadece `activeTab === 'x'` kontrolü yaptığından ve `activeTab`'ın
+  // ilk değeri (URL'deki ?tab= parametresi veya 'team') modül durumundan
+  // bağımsız olduğundan, kapatılmış bir modülün içeriği hâlâ görüntülenebiliyordu.
+  // Bu efekt, geçerli sekmenin bağlı olduğu modül artık kapalıysa kullanıcıyı
+  // güvenli bir sekmeye yönlendirir.
+  const TAB_MODULE_MAP: Record<string, { moduleKey: string; categoryKey: string }> = {
+    compliance: { moduleKey: 'legislations', categoryKey: 'compliance' },
+    requests: { moduleKey: 'requests', categoryKey: 'compliance' },
+    actions: { moduleKey: 'actions', categoryKey: 'compliance' },
+    waste: { moduleKey: 'waste', categoryKey: 'operations' },
+    inspections: { moduleKey: 'inspections', categoryKey: 'operations' },
+    msds: { moduleKey: 'msds', categoryKey: 'documents' },
+    team: { moduleKey: 'team', categoryKey: 'hr' },
+    finance: { moduleKey: 'finance_management', categoryKey: 'finance' },
+  };
+  useEffect(() => {
+    if (loading) return;
+    const mapping = TAB_MODULE_MAP[activeTab];
+    if (!mapping) return;
+    const enabled =
+      isModuleEnabled(mapping.moduleKey, orgModules, currentUserRole, mapping.categoryKey) ||
+      expiredModuleKeys.includes(mapping.moduleKey);
+    if (!enabled) {
+      setActiveTab('team' as any);
+      setSearchParams({ tab: 'team' });
+    }
+  }, [loading, activeTab, orgModules, currentUserRole, expiredModuleKeys]);
+
+  useEffect(() => {
+    if (!myOrg?.id || activeTab !== 'finance') return;
+    if (['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(currentUserRole)) {
+      fetchCompanyExpenses(myOrg.id);
+    } else if (currentUserRole === 'corporate_staff') {
+      fetchMyStaffExpenses();
+    }
+  }, [myOrg?.id, activeTab, currentUserRole]);
 
   const modules = [
     {
@@ -3163,9 +3483,9 @@ export default function CompanyPanel() {
       label: 'Operasyon & Çevre',
       icon: <PieChart size={18} />,
       tabs: [
-        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: isModuleEnabled('waste', orgModules, currentUserRole, 'operations') },
-        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: isModuleEnabled('inspections', orgModules, currentUserRole, 'operations') },
-        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: isModuleEnabled('msds', orgModules, currentUserRole, 'documents') },
+        { id: 'waste', label: 'Atık Yönetimi', icon: <Trash2 size={14} />, show: isModuleEnabled('waste', orgModules, currentUserRole, 'operations') || expiredModuleKeys.includes('waste') },
+        { id: 'inspections', label: 'Saha QR Denetimleri', icon: <QrCode size={14} />, show: isModuleEnabled('inspections', orgModules, currentUserRole, 'operations') || expiredModuleKeys.includes('inspections') },
+        { id: 'msds', label: 'MSDS/SDS Takibi', icon: <FlaskConical size={14} />, show: isModuleEnabled('msds', orgModules, currentUserRole, 'documents') || expiredModuleKeys.includes('msds') },
       ].filter(t => t.show)
     },
     {
@@ -3181,7 +3501,7 @@ export default function CompanyPanel() {
       label: 'Finans & Maliyet',
       icon: <PieChart size={18} />,
       tabs: [
-        { id: 'finance', label: 'Finans & Gider Takibi', icon: <PieChart size={14} />, show: isModuleEnabled('finance', orgModules, currentUserRole, 'finance') },
+        { id: 'finance', label: 'Finans & Gider Takibi', icon: <PieChart size={14} />, show: isModuleEnabled('finance_management', orgModules, currentUserRole, 'finance') || expiredModuleKeys.includes('finance_management') },
       ].filter(t => t.show)
     }
   ].filter(m => m.tabs.length > 0);
@@ -3285,6 +3605,7 @@ export default function CompanyPanel() {
                   onClick={() => {
                     setActiveTab(tab.id as any);
                     setSearchParams({ tab: tab.id });
+                    setLastTabByModule((prev) => ({ ...prev, [currentMod!.id]: tab.id }));
                   }}
                   className={`px-4 py-2 text-xs font-extrabold rounded-lg transition-all duration-200 flex items-center gap-1.5 cursor-pointer border ${
                     isActive
@@ -4757,13 +5078,19 @@ export default function CompanyPanel() {
         </div>
       )}
 
-      {activeTab === 'waste' && (
+      {activeTab === 'waste' && expiredModuleKeys.includes('waste') && (
+        <ModuleExpiredLock moduleName="Atık Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'waste' && !expiredModuleKeys.includes('waste') && (
         <div className="animate-fadeIn">
           <WasteManagement />
         </div>
       )}
 
-      {activeTab === 'inspections' && (
+      {activeTab === 'inspections' && expiredModuleKeys.includes('inspections') && (
+        <ModuleExpiredLock moduleName="Saha QR Denetimleri" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'inspections' && !expiredModuleKeys.includes('inspections') && (
         <div className="animate-fadeIn space-y-6">
           <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700">
             <div>
@@ -5414,7 +5741,10 @@ export default function CompanyPanel() {
       )}
 
       {/* MSDS/SDS TAKİBİ TAB */}
-      {activeTab === 'msds' && (
+      {activeTab === 'msds' && expiredModuleKeys.includes('msds') && (
+        <ModuleExpiredLock moduleName="MSDS/SDS Takibi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'msds' && !expiredModuleKeys.includes('msds') && (
         <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
             <div>
@@ -5657,6 +5987,427 @@ export default function CompanyPanel() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === 'finance' && expiredModuleKeys.includes('finance_management') && (
+        <ModuleExpiredLock moduleName="Finans & Gider Yönetimi" onPurchase={() => setShowModuleStoreModal(true)} />
+      )}
+      {activeTab === 'finance' && !expiredModuleKeys.includes('finance_management') && (
+        <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn">
+          {['premium_corporate', 'corporate_chief', 'admin', 'system_admin'].includes(currentUserRole) ? (
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 shadow-sm space-y-6">
+              <div className="flex justify-between items-center gap-4 flex-wrap">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-750 dark:text-slate-200 flex items-center gap-2">
+                    <Trash2 className="text-blue-600" size={18} /> Şirket Giderleri Listesi
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">Şirketinizin aylık giderlerini girin ve takip edin.</p>
+                </div>
+                <button
+                  onClick={() => setShowAddExpenseModal(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-sm"
+                >
+                  <Plus size={14} /> Yeni Gider Ekle
+                </button>
+              </div>
+
+              {renderFinancePeriodSelector()}
+
+              {loadingFinance ? (
+                <div className="flex justify-center py-12">
+                  <Loader className="animate-spin text-blue-600" size={24} />
+                </div>
+              ) : financeExpenses.filter((exp) => matchesFinancePeriod(exp.expense_date)).length === 0 ? (
+                <div className="text-center text-slate-400 italic text-sm py-12">
+                  {financeExpenses.length === 0
+                    ? 'Henüz herhangi bir gider kaydı eklenmemiş. "Yeni Gider Ekle" butonuna basarak başlayabilirsiniz.'
+                    : 'Seçilen dönemde gider kaydı yok.'}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-150 dark:border-slate-750 text-slate-400 font-bold uppercase tracking-wider">
+                        <th className="pb-3 font-bold">Gider Açıklaması</th>
+                        <th className="pb-3 font-bold">Kategori</th>
+                        <th className="pb-3 font-bold">Tutar</th>
+                        <th className="pb-3 font-bold">Gider Tarihi</th>
+                        <th className="pb-3 font-bold">Gönderen / Ödeme Türü</th>
+                        <th className="pb-3 font-bold">Notlar</th>
+                        <th className="pb-3 font-bold text-right">İşlem</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-750/30 text-slate-700 dark:text-slate-300 font-medium">
+                      {financeExpenses.filter((exp) => matchesFinancePeriod(exp.expense_date)).map((exp) => (
+                        <tr key={exp.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/10">
+                          <td className="py-3.5 font-bold text-slate-800 dark:text-slate-200">
+                            {exp.title}
+                            {exp.employee_id && (
+                              <div className="text-[10px] font-bold text-blue-500 dark:text-blue-400 mt-0.5 normal-case">
+                                {teamMembers.find((m) => m.id === exp.employee_id)?.full_name || 'Bilinmeyen Personel'}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3.5">
+                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black border uppercase ${
+                              exp.category === 'Maaş/Personel'
+                                ? 'bg-blue-50 dark:bg-blue-950/20 text-blue-600 border-blue-100'
+                                : exp.category === 'Ofis/Kira'
+                                ? 'bg-teal-50 dark:bg-teal-950/20 text-teal-600 border-teal-100'
+                                : exp.category === 'Yol/Ulaşım'
+                                ? 'bg-amber-50 dark:bg-amber-955/20 text-amber-600 border-amber-100'
+                                : exp.category === 'Yazılım/Lisans'
+                                ? 'bg-purple-50 dark:bg-purple-950/20 text-purple-600 border-purple-100'
+                                : exp.category === 'Vergi/Harç'
+                                ? 'bg-orange-50 dark:bg-orange-955/20 text-orange-600 border-orange-100'
+                                : 'bg-slate-50 dark:bg-slate-900 text-slate-600 border-slate-200'
+                            }`}>
+                              {exp.category}
+                            </span>
+                          </td>
+                          <td className="py-3.5 text-rose-600 font-bold">
+                            {Number(exp.amount).toLocaleString('tr-TR')} TL
+                          </td>
+                          <td className="py-3.5 text-slate-500 font-bold">
+                            {new Date(exp.expense_date).toLocaleDateString('tr-TR')}
+                          </td>
+                          <td className="py-3.5">
+                            {exp.submitted_by ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-slate-600 dark:text-slate-300 font-bold">
+                                  {teamMembers.find((m) => m.id === exp.submitted_by)?.full_name || 'Bilinmeyen Personel'}
+                                </span>
+                                {exp.payment_type && (
+                                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700 uppercase whitespace-nowrap">
+                                    {PAYMENT_TYPE_LABELS[exp.payment_type] || exp.payment_type}
+                                  </span>
+                                )}
+                                {exp.receipt_url && (
+                                  <a href={exp.receipt_url} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title="Dekont/Fiş">
+                                    <ExternalLink size={12} />
+                                  </a>
+                                )}
+                                {exp.approved_at ? (
+                                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/50 uppercase whitespace-nowrap">Onaylandı</span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApproveExpense(exp.id)}
+                                    className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase whitespace-nowrap hover:bg-amber-100 dark:hover:bg-amber-950/40 transition"
+                                    title="Onaylayınca personel bu gideri artık silemez"
+                                  >
+                                    Onayla
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-300 dark:text-slate-600">-</span>
+                            )}
+                          </td>
+                          <td className="py-3.5 text-slate-400 max-w-xs truncate" title={exp.notes}>
+                            {exp.notes || '-'}
+                          </td>
+                          <td className="py-3.5 text-right">
+                            <button
+                              onClick={() => handleDeleteExpense(exp.id)}
+                              className="text-red-500 hover:text-red-700 cursor-pointer transition p-1"
+                              title="Sil"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="max-w-2xl mx-auto space-y-6">
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm">
+                <h2 className="text-lg font-bold text-gray-800 dark:text-white flex items-center gap-2 mb-1">
+                  <PlusCircle className="text-blue-600" size={20} /> Gider Ekle
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-5 font-medium">
+                  Şirket adına ya da kendi cebinizden yaptığınız bir harcamayı buradan girin.
+                </p>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Açıklama *</label>
+                    <input
+                      type="text"
+                      className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                      placeholder="Örn: Müşteri ziyareti yakıt gideri"
+                      value={newStaffExpense.title}
+                      onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, title: e.target.value }))}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Tarih *</label>
+                      <input
+                        type="date"
+                        className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                        value={newStaffExpense.expense_date}
+                        onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, expense_date: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Tutar (TL) *</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                        placeholder="0.00"
+                        value={newStaffExpense.amount}
+                        onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, amount: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Kategori</label>
+                      <select
+                        className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                        value={newStaffExpense.category}
+                        onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, category: e.target.value }))}
+                      >
+                        <option value="Ofis/Kira">Ofis / Kira</option>
+                        <option value="Yol/Ulaşım">Yol / Ulaşım</option>
+                        <option value="Yazılım/Lisans">Yazılım / Lisans</option>
+                        <option value="Vergi/Harç">Vergi / Harç</option>
+                        <option value="Diğer">Diğer</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Ödeme Türü *</label>
+                      <select
+                        className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                        value={newStaffExpense.payment_type}
+                        onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, payment_type: e.target.value as typeof prev.payment_type }))}
+                      >
+                        <option value="sirket_karti">{PAYMENT_TYPE_LABELS.sirket_karti}</option>
+                        <option value="sirket_sahsi">{PAYMENT_TYPE_LABELS.sirket_sahsi}</option>
+                        <option value="kisisel_odeme">{PAYMENT_TYPE_LABELS.kisisel_odeme}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Dekont / Fiş (opsiyonel)</label>
+                    <input
+                      type="file"
+                      accept="image/*,.pdf"
+                      onChange={(e) => setStaffExpenseReceiptFile(e.target.files?.[0] || null)}
+                      className="w-full text-xs text-slate-600 dark:text-slate-300"
+                    />
+                    {staffExpenseReceiptFile && (
+                      <span className="text-[11px] text-emerald-600 block mt-1">{staffExpenseReceiptFile.name} seçildi</span>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Not</label>
+                    <textarea
+                      rows={2}
+                      className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                      value={newStaffExpense.notes}
+                      onChange={(e) => setNewStaffExpense((prev) => ({ ...prev, notes: e.target.value }))}
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleSaveStaffExpense}
+                    disabled={savingStaffExpense}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-xl font-bold text-sm shadow-md transition disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {savingStaffExpense ? <Loader size={16} className="animate-spin" /> : <PlusCircle size={16} />}
+                    {savingStaffExpense ? 'Kaydediliyor...' : 'Gideri Kaydet'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-sm overflow-hidden">
+                <div className="p-4 border-b border-gray-100 dark:border-slate-700">
+                  <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200">Gönderdiğim Giderler</h3>
+                </div>
+                {loadingMyStaffExpenses ? (
+                  <div className="py-8 text-center text-xs text-gray-400">Yükleniyor...</div>
+                ) : myStaffExpenses.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-gray-400 italic">Henüz gider göndermediniz.</div>
+                ) : (
+                  <div className="divide-y divide-gray-100 dark:divide-slate-700">
+                    {myStaffExpenses.map((exp) => (
+                      <div key={exp.id} className="p-3.5 flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-xs text-gray-800 dark:text-slate-200 flex items-center gap-1.5">
+                            {exp.title}
+                            {exp.approved_at ? (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/50 uppercase">Onaylandı</span>
+                            ) : (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/50 uppercase">Onay Bekliyor</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-gray-500 dark:text-slate-400 mt-0.5">
+                            {new Date(exp.expense_date).toLocaleDateString('tr-TR')} · {exp.category} · {PAYMENT_TYPE_LABELS[exp.payment_type] || exp.payment_type}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-xs font-bold text-rose-600">{Number(exp.amount).toLocaleString('tr-TR')} TL</span>
+                          {exp.receipt_url && (
+                            <a href={exp.receipt_url} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title="Dekont/Fiş">
+                              <ExternalLink size={13} />
+                            </a>
+                          )}
+                          {!exp.approved_at && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMyStaffExpense(exp.id)}
+                              className="text-red-500 hover:text-red-700 cursor-pointer transition p-1"
+                              title="Sil (yanlışlıkla eklediysem)"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showAddExpenseModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 dark:border-slate-700 animate-scaleIn">
+            <div className="p-5 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-blue-600 text-white">
+              <div>
+                <h3 className="font-bold text-base flex items-center gap-2">
+                  <Trash2 size={18} />
+                  Yeni Gider Kaydı Oluştur
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowAddExpenseModal(false)}
+                className="p-1 hover:bg-white/10 rounded-full text-white transition"
+              >
+                <XCircle size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Gider Başlığı / Açıklama *</label>
+                <input
+                  type="text"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  placeholder="Örn: Haziran Ofis Kirası"
+                  value={newExpense.title}
+                  onChange={(e) => setNewExpense(prev => ({ ...prev, title: e.target.value }))}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Kategori *</label>
+                  <select
+                    required
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                    value={newExpense.category}
+                    onChange={(e) => setNewExpense(prev => ({ ...prev, category: e.target.value }))}
+                  >
+                    <option value="Ofis/Kira">Ofis / Kira</option>
+                    <option value="Maaş/Personel">Maaş / Personel</option>
+                    <option value="Yol/Ulaşım">Yol / Ulaşım</option>
+                    <option value="Yazılım/Lisans">Yazılım / Lisans</option>
+                    <option value="Vergi/Harç">Vergi / Harç</option>
+                    <option value="Diğer">Diğer</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Tutar (TL) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                    placeholder="Tutar girin"
+                    value={newExpense.amount}
+                    onChange={(e) => setNewExpense(prev => ({ ...prev, amount: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              {newExpense.category === 'Maaş/Personel' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Personel (Opsiyonel)</label>
+                  <select
+                    className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                    value={newExpense.employee_id}
+                    onChange={(e) => setNewExpense(prev => ({ ...prev, employee_id: e.target.value }))}
+                  >
+                    <option value="">-- Belirli bir personele bağlama --</option>
+                    {teamMembers.filter(m => m.role !== 'normal').map(m => (
+                      <option key={m.id} value={m.id}>{m.full_name}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">Bir personel seçerseniz bu gider, o personelin kartındaki geçmişte de görünür.</p>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Gider Tarihi *</label>
+                <input
+                  type="date"
+                  required
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-bold text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  value={newExpense.expense_date}
+                  onChange={(e) => setNewExpense(prev => ({ ...prev, expense_date: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1 uppercase">Notlar (Opsiyonel)</label>
+                <textarea
+                  rows={2}
+                  className="w-full p-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs text-slate-700 dark:text-slate-300 border-slate-200"
+                  placeholder="Ek notlar varsa buraya yazabilirsiniz..."
+                  value={newExpense.notes}
+                  onChange={(e) => setNewExpense(prev => ({ ...prev, notes: e.target.value }))}
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t border-slate-100 dark:border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setShowAddExpenseModal(false)}
+                  disabled={savingExpense}
+                  className="px-4 py-2 border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold transition text-gray-700 dark:text-gray-300"
+                >
+                  İptal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveExpense}
+                  disabled={savingExpense || !newExpense.title.trim() || !newExpense.amount}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-40"
+                >
+                  {savingExpense ? 'Kaydediliyor...' : 'Kaydet'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -6956,8 +7707,10 @@ export default function CompanyPanel() {
             <ModuleStore
               organizationId={myOrg.id}
               userRole={currentUserRole}
-              onModulesUpdated={() => {
-                fetchInitialData();
+              onModulesUpdated={async () => {
+                const { data: org } = await supabase.from('organizations').select('*').eq('id', myOrg.id).single();
+                if (org) setMyOrg(org);
+                fetchExpiredModuleKeys(myOrg.id);
               }}
               onClose={() => setShowModuleStoreModal(false)}
             />

@@ -19,6 +19,8 @@ import {
   HardDrive,
 } from 'lucide-react';
 import { formatBytes } from './utils'; // Utils dosyasını oluşturduysan import et, yoksa aşağıya fonksiyonu ekle
+import PaytrCheckoutModal from './PaytrCheckoutModal';
+import type { PaytrPurpose } from './PaytrCheckoutModal';
 
 // --- FİYATLANDIRMA AYARLARI ---
 // Bu değerler artık admin panelinden ("Fiyatlandırma" sekmesi) `pricing_settings`
@@ -110,6 +112,7 @@ export default function Pricing() {
   // Modallar
   const [showLeaveWarning, setShowLeaveWarning] = useState(false);
   const [showIndToCorpWarning, setShowIndToCorpWarning] = useState(false);
+  const [checkoutInfo, setCheckoutInfo] = useState<{ purpose: PaytrPurpose; purposePayload: any; amount: number; itemLabel: string } | null>(null);
 
   useEffect(() => {
     fetchUserData();
@@ -158,7 +161,7 @@ export default function Pricing() {
           // Bireysel premium hesaplar, Premium Panel özellikleri (Saha Denetimleri,
           // Atık Yönetimi, Mevzuat Takip, Aksiyon Takip) çalışabilsin diye kendilerine
           // özel "kişisel" bir organizations kaydına bağlı olabilir (bkz.
-          // executePurchaseMock). Bu org kurumsal bir şirket DEĞİLDİR, bu yüzden
+          // api/paytrShared.ts > activatePurchase). Bu org kurumsal bir şirket DEĞİLDİR, bu yüzden
           // orgData var olsa bile burada her zaman bireysel plan gösterilir.
           setViewMode('dashboard');
           setSelectedPlan('individual');
@@ -218,7 +221,7 @@ export default function Pricing() {
 
   const initiatePurchase = () => {
     if (purchaseType === 'storage') {
-      executePurchaseMock();
+      prepareCheckout();
       return;
     }
 
@@ -242,257 +245,79 @@ export default function Pricing() {
         setShowIndToCorpWarning(true);
         return;
       }
-      executePurchaseMock();
+      prepareCheckout();
     } else {
-      executePurchaseMock();
+      prepareCheckout();
     }
   };
 
-  const executePurchaseMock = async () => {
+  // Satın alma artık anlık aktive ETMEZ — PayTR'a yönlendirilir, gerçek
+  // aktivasyon (bu fonksiyonun eskiden yaptığı organizations/profiles/
+  // subscription_payments yazımları) sadece ödeme onaylandıktan sonra
+  // api/paytr-callback.ts tarafından (aynı mantıkla, api/paytrShared.ts
+  // içindeki activatePurchase() üzerinden) sunucu tarafında yapılır.
+  const prepareCheckout = () => {
     setShowLeaveWarning(false);
     setShowIndToCorpWarning(false);
-    setProcessing(true);
 
     const totalAmount = calculateTotal();
+    if (totalAmount <= 0) {
+      alert('Ödenecek tutar bulunamadı, lütfen tekrar deneyin.');
+      return;
+    }
 
-    try {
-      if (purchaseType === 'storage') {
-        const pack = storagePricing.packages[selectedStorageIndex];
-        const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
-        // Şirket sahibi/yöneticisi olmayan bir firma üyesi "Şahsi Kotam"ı seçtiyse
-        // satın alınan alan şirkete değil, kendi bireysel kotasına eklenir.
-        const useOwnPersonalQuota =
-          !!profile?.organization_id && profile?.role !== 'premium_corporate' && storageTarget === 'personal';
-        const targetId = useOwnPersonalQuota ? user.id : (profile?.organization_id || user.id);
-        const isCorporate = useOwnPersonalQuota ? false : !!profile?.organization_id;
+    if (purchaseType === 'storage') {
+      const pack = storagePricing.packages[selectedStorageIndex];
+      const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
+      const useOwnPersonalQuota =
+        !!profile?.organization_id && profile?.role !== 'premium_corporate' && storageTarget === 'personal';
+      const targetId = useOwnPersonalQuota ? user.id : (profile?.organization_id || user.id);
+      const isCorporate = useOwnPersonalQuota ? false : !!profile?.organization_id;
 
-        const { error } = await supabase.rpc('add_storage_limit', {
-          target_id: targetId,
-          is_corporate: isCorporate,
-          bytes_to_add: totalBytesToAdd,
-        });
+      setCheckoutInfo({
+        purpose: 'storage',
+        purposePayload: { targetId, isCorporate, bytesToAdd: totalBytesToAdd },
+        amount: totalAmount,
+        itemLabel: `Ekstra Depolama (${formatBytes(totalBytesToAdd)})`,
+      });
+      return;
+    }
 
-        if (error) throw error;
+    const now = new Date();
+    const finalDate = new Date(now.setMonth(now.getMonth() + addDuration)).toISOString();
 
-        await supabase.from('subscription_payments').insert({
-          user_id: user.id,
-          organization_id: useOwnPersonalQuota ? null : (profile?.organization_id || null),
-          plan_type: 'storage',
-          amount: totalAmount,
-          storage_bytes: totalBytesToAdd,
-        });
-
-        alert(
-          `✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı${
-            useOwnPersonalQuota ? ' (Şahsi Kotanız)' : isCorporate ? ' (Şirket Ortak Kotası)' : ''
-          }.`
-        );
-      } else {
-        // subscription
-        const now = new Date();
-        const finalDate = new Date(now.setMonth(now.getMonth() + addDuration)).toISOString();
-
-        if (selectedPlan === 'corporate') {
-          if (viewMode === 'selection') {
-            if (!companyName.trim()) {
-              throw new Error('Lütfen şirket adı giriniz.');
-            }
-
-            // 1. Şirket oluştur (organizations tablosu)
-            const { data: newOrg, error: orgErr } = await supabase
-              .from('organizations')
-              .insert([
-                {
-                  name: companyName,
-                  member_limit: targetSeats,
-                  subscription_end_date: finalDate,
-                  storage_limit: 1073741824, // 1 GB default
-                  is_environmental_consultant: false,
-                  storage_preference: corpStorageProvider || 'supabase',
-                },
-              ])
-              .select()
-              .single();
-
-            if (orgErr) throw orgErr;
-
-            // Firma kendi Google Drive'ını seçtiyse, bağlantıyı sadece admin
-            // panelinden tamamlayabildiğimiz için ekibimize otomatik bir destek
-            // talebi düşürülür (bkz. AdminPanel > Şirketler > Depolama Ayarları).
-            if (corpStorageProvider === 'google_drive') {
-              const { data: driveTicket } = await supabase
-                .from('tickets')
-                .insert([
-                  {
-                    user_id: user.id,
-                    subject: `Google Drive Bağlantısı Talebi - ${companyName}`,
-                    status: 'open',
-                    message: `"${companyName}" firması kurulum sırasında depolama sağlayıcısı olarak kendi Google Drive'ını seçti. Lütfen Admin Panel > Şirketler > Depolama Ayarları üzerinden bu firmanın Google Drive bağlantısını tamamlayın. Bağlantı tamamlanana kadar bu firma belge yükleyemez.`,
-                  },
-                ])
-                .select()
-                .single();
-              if (driveTicket) {
-                await supabase.from('ticket_messages').insert([
-                  {
-                    ticket_id: driveTicket.id,
-                    sender_role: 'user',
-                    message: `"${companyName}" firması kurulum sırasında depolama sağlayıcısı olarak kendi Google Drive'ını seçti. Lütfen Admin Panel > Şirketler > Depolama Ayarları üzerinden bu firmanın Google Drive bağlantısını tamamlayın. Bağlantı tamamlanana kadar bu firma belge yükleyemez.`,
-                  },
-                ]);
-              }
-            }
-
-            // 2. Kullanıcı profilini güncelle (premium_corporate rolü ve organization_id)
-            const { error: profErr } = await supabase
-              .from('profiles')
-              .update({
-                role: 'premium_corporate',
-                organization_id: newOrg.id,
-                subscription_end_date: null,
-              })
-              .eq('id', user.id);
-
-            if (profErr) throw profErr;
-
-            await supabase.from('subscription_payments').insert({
-              user_id: user.id,
-              organization_id: newOrg.id,
-              plan_type: 'corporate_new',
-              amount: totalAmount,
-              duration_months: addDuration,
-              seats: targetSeats,
-            });
-
-            alert(
-              corpStorageProvider === 'google_drive'
-                ? `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.\n\n⚠️ Google Drive bağlantınız henüz tamamlanmadı. Ekibimiz kısa süre içinde sizinle iletişime geçip bağlantıyı kuracak; bağlantı tamamlanana kadar belge yükleyemezsiniz.`
-                : `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.`
-            );
-          } else {
-            // Dashboard mode - extend subscription and seats
-            if (!profile?.organization_id) throw new Error('Şirketiniz bulunamadı.');
-
-            const { error: orgErr } = await supabase
-              .from('organizations')
-              .update({
-                member_limit: targetSeats,
-                subscription_end_date: finalDate,
-              })
-              .eq('id', profile.organization_id);
-
-            if (orgErr) throw orgErr;
-
-            // Abonelik süresi dolduğunda 'normal' rolüne düşürülen ekip
-            // üyelerini (previous_role kaydı varsa) eski rollerine geri yükle.
-            await supabase.rpc('restore_org_roles', { org_id: profile.organization_id });
-
-            await supabase.from('subscription_payments').insert({
-              user_id: user.id,
-              organization_id: profile.organization_id,
-              plan_type: 'corporate_renewal',
-              amount: totalAmount,
-              duration_months: addDuration,
-              seats: targetSeats,
-            });
-
-            alert(`✅ Kurumsal Aboneliğiniz Başarıyla Güncellendi!\nŞirket personel limitiniz ${targetSeats} kişiye yükseltildi ve abonelik süreniz ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar uzatıldı.`);
-          }
-        } else {
-          // individual
-          // Premium Panel özellikleri (Saha Denetimleri, Atık Yönetimi, Mevzuat
-          // Takip, Aksiyon Takip) organizasyon/firma kimliğine ihtiyaç duyduğu
-          // için, bireysel premium hesaba kendine özel (danışmanlık firması
-          // OLMAYAN) küçük bir "kişisel organizasyon" ve bu organizasyona bağlı,
-          // kendi adını taşıyan bir "kişisel firma" (consultant_clients) kaydı
-          // otomatik tanımlanır/yeniden kullanılır. Zaten varsa (yenileme) yeni
-          // kayıt oluşturulmaz.
-          let personalOrgId: string | null = profile?.organization_id || null;
-          const personalName = profile?.full_name?.trim() || user.email;
-          const isFirstPersonalOrg = !personalOrgId;
-
-          if (isFirstPersonalOrg) {
-            const { data: newPersonalOrg, error: personalOrgErr } = await supabase
-              .from('organizations')
-              .insert([
-                {
-                  name: personalName,
-                  member_limit: 1,
-                  is_environmental_consultant: false,
-                  is_personal: true,
-                },
-              ])
-              .select()
-              .single();
-            if (personalOrgErr) throw personalOrgErr;
-            personalOrgId = newPersonalOrg.id;
-          }
-
-          // Rolü/organizasyonu önce güncelliyoruz: consultant_clients RLS
-          // politikası 'premium_individual' rolünü şart koşuyor, bu yüzden
-          // "kişisel firma" kaydı ancak rol güncellendikten sonra eklenebilir.
-          const { error: profErr } = await supabase
-            .from('profiles')
-            .update({
-              role: 'premium_individual',
-              organization_id: personalOrgId,
-              subscription_end_date: finalDate,
-            })
-            .eq('id', user.id);
-
-          if (profErr) throw profErr;
-
-          if (isFirstPersonalOrg) {
-            // Not: kayıt kasıtlı olarak kullanıcının kendi adıyla değil "Lokasyon 1"
-            // adıyla oluşturuluyor - Aksiyon/Görüş/Mevzuat gibi yerlerdeki seçim
-            // listelerinde "kendi adı soyadı" görünmesin diye. Kullanıcı Premium
-            // Panel > Dokümantasyon > Tanımlar'dan kendi lokasyon adlarını
-            // tanımladıkça bu listeye ek kayıtlar (aynı mekanizmayla) eklenir.
-            const { error: personalClientErr } = await supabase
-              .from('consultant_clients')
-              .insert([
-                {
-                  consultant_company_id: personalOrgId,
-                  name: 'Lokasyon 1',
-                },
-              ]);
-            if (personalClientErr) throw personalClientErr;
-
-            // consultant_clients kaydıyla birebir aynı isimde bir
-            // user_definitions (category='location') kaydı da oluşturuyoruz;
-            // Evrak Yükle / Belge Ekle sayfalarındaki "Lokasyon" seçimi bu
-            // tabloyu okuyor, ikisi senkron olmazsa listeler eşleşmez.
-            const { error: personalLocDefErr } = await supabase
-              .from('user_definitions')
-              .insert([
-                {
-                  user_id: user.id,
-                  category: 'location',
-                  label: 'Lokasyon 1',
-                  organization_id: personalOrgId,
-                },
-              ]);
-            if (personalLocDefErr) throw personalLocDefErr;
-          }
-
-          await supabase.from('subscription_payments').insert({
-            user_id: user.id,
-            organization_id: personalOrgId,
-            plan_type: 'individual',
-            amount: totalAmount,
-            duration_months: addDuration,
-          });
-
-          alert(`✅ Bireysel Premium Aboneliğiniz Başarıyla Aktifleştirildi!\nTüm premium özellikler ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar hesabınıza tanımlandı.`);
+    if (selectedPlan === 'corporate') {
+      if (viewMode === 'selection') {
+        if (!companyName.trim()) {
+          alert('Lütfen şirket adı giriniz.');
+          return;
         }
+        setCheckoutInfo({
+          purpose: 'subscription_corporate_new',
+          purposePayload: { companyName, targetSeats, finalDate, storageProvider: corpStorageProvider || 'supabase', durationMonths: addDuration },
+          amount: totalAmount,
+          itemLabel: `Kurumsal Premium Üyelik (${addDuration} Ay)`,
+        });
+      } else {
+        if (!profile?.organization_id) {
+          alert('Şirketiniz bulunamadı.');
+          return;
+        }
+        setCheckoutInfo({
+          purpose: 'subscription_corporate_renewal',
+          purposePayload: { targetSeats, finalDate, durationMonths: addDuration },
+          amount: totalAmount,
+          itemLabel: `Kurumsal Premium Üyelik Yenileme (${addDuration} Ay)`,
+        });
       }
-
-      // Refresh
-      window.location.reload();
-    } catch (err: any) {
-      alert('Hata: ' + err.message);
-    } finally {
-      setProcessing(false);
+    } else {
+      const personalName = profile?.full_name?.trim() || user.email;
+      setCheckoutInfo({
+        purpose: 'subscription_individual',
+        purposePayload: { existingOrganizationId: profile?.organization_id || null, personalName, finalDate, durationMonths: addDuration },
+        amount: totalAmount,
+        itemLabel: `Bireysel Premium Üyelik (${addDuration} Ay)`,
+      });
     }
   };
 
@@ -903,7 +728,7 @@ export default function Pricing() {
               'İşleniyor...'
             ) : (
               <>
-                <CreditCard size={18} /> <span className="hidden sm:inline">Ödeme Sistemi (Yakında)</span><span className="sm:hidden">Ödeme (Yakında)</span> <ChevronRight size={18} />
+                <CreditCard size={18} /> <span className="hidden sm:inline">Ödemeye Geç</span><span className="sm:hidden">Öde</span> <ChevronRight size={18} />
               </>
             )}
           </button>
@@ -935,7 +760,7 @@ export default function Pricing() {
                 İptal
               </button>
               <button
-                onClick={executePurchaseMock}
+                onClick={prepareCheckout}
                 className="flex-1 py-3 rounded-xl font-bold text-white bg-orange-600 hover:bg-orange-700 transition"
               >
                 Evet, Ayrılıyorum
@@ -969,7 +794,7 @@ export default function Pricing() {
                 İptal
               </button>
               <button
-                onClick={executePurchaseMock}
+                onClick={prepareCheckout}
                 className="flex-1 py-3 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-700 transition"
               >
                 Anladım, Devam Et
@@ -977,6 +802,21 @@ export default function Pricing() {
             </div>
           </div>
         </div>
+      )}
+
+      {checkoutInfo && user && (
+        <PaytrCheckoutModal
+          purpose={checkoutInfo.purpose}
+          purposePayload={checkoutInfo.purposePayload}
+          amount={checkoutInfo.amount}
+          itemLabel={checkoutInfo.itemLabel}
+          organizationId={profile?.organization_id || null}
+          userId={user.id}
+          userEmail={profile?.email || user.email}
+          userFullName={profile?.full_name}
+          userPhone={profile?.phone}
+          onClose={() => setCheckoutInfo(null)}
+        />
       )}
     </div>
   );

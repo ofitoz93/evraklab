@@ -9,6 +9,7 @@ import {
   Database,
 } from 'lucide-react';
 import { formatBytes } from './utils';
+import PaytrCheckoutModal from './PaytrCheckoutModal';
 
 // Depolama fiyatı = Supabase maliyeti (USD/GB/Ay) × Dolar Kuru × (1 + Kar Marjı).
 // Bir pakette override_price tanımlıysa otomatik hesaplama yerine o sabit fiyat kullanılır.
@@ -46,6 +47,7 @@ export default function Storage() {
 
   const [selectedStorageIndex, setSelectedStorageIndex] = useState(1); // Varsayılan 1 GB
   const [storageQuantity, setStorageQuantity] = useState(1);
+  const [checkoutInfo, setCheckoutInfo] = useState<{ amount: number; itemLabel: string; bytesToAdd: number } | null>(null);
 
   useEffect(() => {
     fetchUserData();
@@ -81,43 +83,24 @@ export default function Storage() {
     return calcStoragePackagePrice(pack, storagePricing) * storageQuantity;
   };
 
-  const executePurchase = async () => {
-    setProcessing(true);
+  // Satın alma artık anlık aktive ETMEZ — PayTR checkout'una yönlendirilir;
+  // gerçek RPC çağrısı (add_storage_limit) sadece ödeme callback'i
+  // doğrulandıktan sonra api/paytrShared.ts > activatePurchase() içinde
+  // sunucu tarafında yapılır.
+  const prepareCheckout = () => {
     const totalAmount = calculateTotal();
-
-    try {
-      const pack = storagePricing.packages[selectedStorageIndex];
-      const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
-
-      // Bu sayfa yalnızca firmaya bağlı danışmanlar (corporate_chief /
-      // corporate_staff) tarafından kullanılır; satın alınan alan her zaman
-      // kendi şahsi kotalarına eklenir. Kurumsal ortak kota yalnızca firma
-      // sahibi (premium_corporate) tarafından /pricing üzerinden satın alınabilir.
-      const { error } = await supabase.rpc('add_storage_limit', {
-        target_id: user.id,
-        is_corporate: false,
-        bytes_to_add: totalBytesToAdd,
-      });
-      if (error) throw error;
-
-      await supabase.from('subscription_payments').insert({
-        user_id: user.id,
-        organization_id: null,
-        plan_type: 'storage',
-        amount: totalAmount,
-        storage_bytes: totalBytesToAdd,
-      });
-
-      alert(
-        `✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı (Şahsi Kotanız).`
-      );
-
-      window.location.reload();
-    } catch (err: any) {
-      alert('Hata: ' + err.message);
-    } finally {
-      setProcessing(false);
+    if (totalAmount <= 0) {
+      alert('Ödenecek tutar bulunamadı, lütfen tekrar deneyin.');
+      return;
     }
+    const pack = storagePricing.packages[selectedStorageIndex];
+    const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
+
+    setCheckoutInfo({
+      amount: totalAmount,
+      itemLabel: `Ekstra Depolama (${formatBytes(totalBytesToAdd)}, Şahsi Kota)`,
+      bytesToAdd: totalBytesToAdd,
+    });
   };
 
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;
@@ -240,7 +223,7 @@ export default function Storage() {
             </div>
           </div>
           <button
-            onClick={executePurchase}
+            onClick={prepareCheckout}
             disabled={processing}
             className="px-4 sm:px-8 py-3 rounded-xl font-bold text-white text-sm sm:text-lg shadow-lg transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 hover:bg-blue-700 shrink-0"
           >
@@ -248,12 +231,25 @@ export default function Storage() {
               'İşleniyor...'
             ) : (
               <>
-                <CreditCard size={18} /> <span className="hidden sm:inline">Ödeme Sistemi (Yakında)</span><span className="sm:hidden">Ödeme (Yakında)</span> <ChevronRight size={18} />
+                <CreditCard size={18} /> <span className="hidden sm:inline">Ödemeye Geç</span><span className="sm:hidden">Öde</span> <ChevronRight size={18} />
               </>
             )}
           </button>
         </div>
       </div>
+
+      {checkoutInfo && user && (
+        <PaytrCheckoutModal
+          purpose="storage"
+          purposePayload={{ targetId: user.id, isCorporate: false, bytesToAdd: checkoutInfo.bytesToAdd }}
+          amount={checkoutInfo.amount}
+          itemLabel={checkoutInfo.itemLabel}
+          organizationId={null}
+          userId={user.id}
+          userEmail={user.email}
+          onClose={() => setCheckoutInfo(null)}
+        />
+      )}
     </div>
   );
 }

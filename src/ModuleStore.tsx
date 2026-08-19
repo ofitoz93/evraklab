@@ -4,6 +4,7 @@ import {
   SYSTEM_MODULES,
   SYSTEM_MODULE_CATEGORIES,
   DEFAULT_EXTRA_MODULE_PRICING,
+  DEFAULT_MODULE_KEYS,
   isModuleEnabled,
 } from './moduleRegistry';
 import {
@@ -23,7 +24,10 @@ import {
   X,
   CreditCard,
   Lock,
+  Eye,
 } from 'lucide-react';
+import { MODULE_PREVIEWS, ModulePreviewModal } from './modulePreviews';
+import PaytrCheckoutModal from './PaytrCheckoutModal';
 
 interface ModuleStoreProps {
   organizationId: string;
@@ -43,6 +47,16 @@ export default function ModuleStore({
   const [orgData, setOrgData] = useState<any>(null);
   const [enabledModules, setEnabledModules] = useState<string[]>([]);
   const [modulePrices, setModulePrices] = useState<any>(DEFAULT_EXTRA_MODULE_PRICING);
+  const [purchases, setPurchases] = useState<any[]>([]);
+  const [previewModuleKey, setPreviewModuleKey] = useState<string | null>(null);
+  // Admin panelindeki "Varsayılan Paket Ayarları"nda hangi modüllerin
+  // Varsayılan/Ekstra işaretlendiği — moduleRegistry.ts'teki statik isDefault
+  // alanı yerine bu dinamik liste kullanılır, böylece admin bir modülü
+  // Ekstra yaptığında mağazada anında (kod değişikliği gerekmeden) satın
+  // alınabilir olarak görünür.
+  const [defaultModuleKeys, setDefaultModuleKeys] = useState<string[]>(DEFAULT_MODULE_KEYS);
+  const [currentUser, setCurrentUser] = useState<{ id: string; email: string; fullName: string; phone: string } | null>(null);
+  const [checkoutInfo, setCheckoutInfo] = useState<{ moduleKey: string; moduleName: string; price: number; categoryKey: string } | null>(null);
 
   // Modal State'leri
   const [confirmModal, setConfirmModal] = useState<{
@@ -74,6 +88,17 @@ export default function ModuleStore({
   const fetchStoreData = async () => {
     setLoading(true);
     try {
+      // 0. Süresi dolmuş satın alımları pasifleştir (gerçek bir ödeme
+      // gateway'i/cron altyapısı olmadığından, mağaza her açıldığında fırsatçı
+      // şekilde tetiklenir). Otomatik yenileme YOK — süre dolan modül düşer.
+      if (organizationId) {
+        try {
+          await supabase.rpc('sync_expired_modules', { p_organization_id: organizationId });
+        } catch (syncErr) {
+          console.warn('Modül süre kontrolü uyarısı:', syncErr);
+        }
+      }
+
       // 1. Şirket verisini ve aktif modülleri çek
       if (organizationId) {
         const { data: org } = await supabase
@@ -86,6 +111,14 @@ export default function ModuleStore({
           setOrgData(org);
           setEnabledModules(Array.isArray(org.enabled_modules) ? org.enabled_modules : []);
         }
+
+        const { data: purchaseRows } = await supabase
+          .from('organization_module_purchases')
+          .select('*')
+          .eq('organization_id', organizationId)
+          .order('purchased_at', { ascending: false });
+
+        setPurchases(purchaseRows || []);
       }
 
       // 2. Fiyatlandırma ayarlarını çek
@@ -101,6 +134,42 @@ export default function ModuleStore({
         }
       } catch (e) {
         console.warn('Pricing settings fetch fallback:', e);
+      }
+
+      // 3. Hangi modüllerin Varsayılan/Ekstra olduğunu (admin panelinde
+      // ayarlanan güncel liste) çek.
+      try {
+        const { data: defaultsData } = await supabase
+          .from('pricing_settings')
+          .select('*')
+          .eq('key', 'default_system_modules')
+          .maybeSingle();
+
+        if (defaultsData?.value && Array.isArray(defaultsData.value)) {
+          setDefaultModuleKeys(defaultsData.value);
+        }
+      } catch (e) {
+        console.warn('Varsayılan modül listesi fetch fallback:', e);
+      }
+
+      // 4. PayTR ödeme checkout'unda kullanılacak fatura/iletişim bilgileri.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const { data: prof } = await supabase
+            .from('profiles')
+            .select('full_name, email, phone')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          setCurrentUser({
+            id: session.user.id,
+            email: prof?.email || session.user.email || '',
+            fullName: prof?.full_name || '',
+            phone: prof?.phone || '',
+          });
+        }
+      } catch (e) {
+        console.warn('Kullanıcı bilgisi fetch fallback:', e);
       }
     } catch (err: any) {
       console.error('Mağaza verisi yüklenirken hata:', err.message);
@@ -120,7 +189,7 @@ export default function ModuleStore({
         return <FlaskConical size={24} className="text-amber-600 dark:text-amber-400" />;
       case 'opinions':
         return <PenLine size={24} className="text-blue-600 dark:text-blue-400" />;
-      case 'finance':
+      case 'finance_management':
         return <PieChart size={24} className="text-indigo-600 dark:text-indigo-400" />;
       case 'evaluations':
         return <Star size={24} className="text-yellow-600 dark:text-yellow-400" />;
@@ -130,63 +199,42 @@ export default function ModuleStore({
   };
 
   // Sadece Ekstra / Opsiyonel Modüller
-  const extraModules = SYSTEM_MODULES.filter((m) => !m.isDefault);
+  const extraModules = SYSTEM_MODULES.filter((m) => !defaultModuleKeys.includes(m.key));
 
-  // Satın Alma İşlemini Onayla
+  // Satın Alma İşlemini Onayla (İptal etmek ödeme gerektirmediği için doğrudan
+  // RPC ile devam eder; satın alma ise PayTR checkout'una yönlendirilir —
+  // modül gerçek ödeme onaylanana kadar aktif edilmez.)
   const handleConfirmAction = async () => {
     if (!organizationId || !confirmModal.moduleKey) return;
+
+    if (confirmModal.type === 'add') {
+      setCheckoutInfo({
+        moduleKey: confirmModal.moduleKey,
+        moduleName: confirmModal.moduleName,
+        price: confirmModal.price,
+        categoryKey: confirmModal.categoryKey,
+      });
+      setConfirmModal({ ...confirmModal, show: false });
+      return;
+    }
+
     setSaving(true);
     try {
-      let updatedList = [...enabledModules];
+      const { error } = await supabase.rpc('cancel_extra_module', {
+        p_organization_id: organizationId,
+        p_module_key: confirmModal.moduleKey,
+      });
+      if (error) throw error;
 
-      if (confirmModal.type === 'add') {
-        // Hem kategori key hem de modül key eklensin
-        if (!updatedList.includes(confirmModal.categoryKey)) {
-          updatedList.push(confirmModal.categoryKey);
-        }
-        if (!updatedList.includes(confirmModal.moduleKey)) {
-          updatedList.push(confirmModal.moduleKey);
-        }
-      } else {
-        // Modül key çıkarılsın
-        updatedList = updatedList.filter((k) => k !== confirmModal.moduleKey);
-      }
-
-      // 1. Veritabanını Güncelle (organizations.enabled_modules)
-      const { error: updateErr } = await supabase
-        .from('organizations')
-        .update({ enabled_modules: updatedList })
-        .eq('id', organizationId);
-
-      if (updateErr) throw updateErr;
-
-      // 2. Güvenli Ödeme Log Kaydı (subscription_payments)
-      if (confirmModal.type === 'add') {
-        try {
-          const { data: userData } = await supabase.auth.getUser();
-          await supabase.from('subscription_payments').insert({
-            organization_id: organizationId,
-            user_id: userData?.user?.id || null,
-            amount: confirmModal.price,
-            plan_type: 'extra_module',
-          });
-        } catch (logErr) {
-          console.warn('Abonelik ödeme log kaydı uyarısı:', logErr);
-        }
-      }
-
-      setEnabledModules(updatedList);
       setConfirmModal({ ...confirmModal, show: false });
 
       setNotification({
         show: true,
-        message:
-          confirmModal.type === 'add'
-            ? `🎉 ${confirmModal.moduleName} modülü başarıyla paketinize eklendi ve anında aktif edildi!`
-            : `ℹ️ ${confirmModal.moduleName} modülü paketinizden çıkarıldı.`,
+        message: `ℹ️ ${confirmModal.moduleName} modülü paketinizden çıkarıldı.`,
         type: 'success',
       });
 
+      await fetchStoreData();
       if (onModulesUpdated) onModulesUpdated();
     } catch (err: any) {
       setNotification({
@@ -198,6 +246,14 @@ export default function ModuleStore({
       setSaving(false);
     }
   };
+
+  const formatDate = (value?: string | null) => {
+    if (!value) return '-';
+    return new Date(value).toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+
+  const getPurchaseFor = (moduleKey: string) =>
+    purchases.find((p) => p.module_key === moduleKey && p.status === 'active');
 
   // Toplam Aylık Ekstra Ücret Hesapla
   const totalExtraMonthlyFee = extraModules.reduce((sum, m) => {
@@ -290,6 +346,7 @@ export default function ModuleStore({
             {extraModules.map((m) => {
               const isActive = enabledModules.includes(m.key);
               const price = modulePrices[m.key]?.price || DEFAULT_EXTRA_MODULE_PRICING[m.key]?.price || 0;
+              const purchase = getPurchaseFor(m.key);
 
               return (
                 <div
@@ -329,11 +386,31 @@ export default function ModuleStore({
 
                   {/* Buton ve Durum */}
                   <div className="pt-4 border-t border-gray-100 dark:border-slate-700 space-y-3">
+                    {MODULE_PREVIEWS[m.key] && (
+                      <button
+                        onClick={() => setPreviewModuleKey(m.key)}
+                        className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-purple-200 dark:border-purple-900 text-purple-700 dark:text-purple-400 text-xs font-bold hover:bg-purple-50 dark:hover:bg-purple-950/30 transition"
+                      >
+                        <Eye size={14} /> Önizle — Nasıl Çalışır?
+                      </button>
+                    )}
                     {isActive ? (
                       <div className="space-y-2">
                         <div className="flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 py-2 rounded-xl border border-emerald-200 dark:border-emerald-900">
                           <CheckCircle size={14} /> Paketinizde Aktif
                         </div>
+                        {purchase && (
+                          <div className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold bg-gray-50 dark:bg-slate-900/50 rounded-lg p-2 space-y-0.5">
+                            <div className="flex justify-between">
+                              <span>Üye olunan tarih:</span>
+                              <span>{formatDate(purchase.purchased_at)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Bitiş tarihi:</span>
+                              <span className="text-purple-700 dark:text-purple-300">{formatDate(purchase.expires_at)}</span>
+                            </div>
+                          </div>
+                        )}
                         <button
                           onClick={() =>
                             setConfirmModal({
@@ -347,7 +424,7 @@ export default function ModuleStore({
                           }
                           className="w-full py-2.5 rounded-xl border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/30 transition"
                         >
-                          Modülü İptal Et / Çıkar
+                          Modülü Şimdi Kapat
                         </button>
                       </div>
                     ) : (
@@ -372,8 +449,84 @@ export default function ModuleStore({
               );
             })}
           </div>
+
+          {/* Satın Alma Geçmişi */}
+          {purchases.length > 0 && (
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 p-5 space-y-3">
+              <h3 className="text-sm font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                <ShoppingBag size={16} className="text-purple-600" /> Satın Alma Geçmişi
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-gray-400 dark:text-gray-500 uppercase text-[10px] font-bold border-b border-gray-100 dark:border-slate-700">
+                      <th className="py-2 pr-3">Modül</th>
+                      <th className="py-2 pr-3">Fiyat</th>
+                      <th className="py-2 pr-3">Satın Alma Tarihi</th>
+                      <th className="py-2 pr-3">Bitiş / İptal Tarihi</th>
+                      <th className="py-2 pr-3">Durum</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchases.map((p) => {
+                      const modInfo = SYSTEM_MODULES.find((m) => m.key === p.module_key);
+                      const statusLabel = p.status === 'active' ? 'Aktif' : p.status === 'expired' ? 'Süresi Doldu' : 'İptal Edildi';
+                      const statusClass =
+                        p.status === 'active'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400'
+                          : p.status === 'expired'
+                          ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400'
+                          : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-slate-900/40 dark:text-gray-400';
+                      return (
+                        <tr key={p.id} className="border-b border-gray-50 dark:border-slate-700/60 last:border-0">
+                          <td className="py-2 pr-3 font-bold text-gray-700 dark:text-gray-200">{modInfo?.name || p.module_key}</td>
+                          <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">₺{p.price}/Ay</td>
+                          <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">{formatDate(p.purchased_at)}</td>
+                          <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">
+                            {p.status === 'cancelled' ? formatDate(p.cancelled_at) : formatDate(p.expires_at)}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border ${statusClass}`}>
+                              {statusLabel}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
+
+      {/* MODÜL ÖNİZLEME (SATIN ALMADAN ÖNCE DENE) */}
+      {previewModuleKey && MODULE_PREVIEWS[previewModuleKey] && (() => {
+        const previewModule = SYSTEM_MODULES.find((m) => m.key === previewModuleKey);
+        const previewPrice = modulePrices[previewModuleKey]?.price || DEFAULT_EXTRA_MODULE_PRICING[previewModuleKey]?.price || 0;
+        const PreviewContent = MODULE_PREVIEWS[previewModuleKey];
+        return (
+          <ModulePreviewModal
+            moduleName={previewModule?.name || previewModuleKey}
+            price={previewPrice}
+            onClose={() => setPreviewModuleKey(null)}
+            onPurchase={() => {
+              setPreviewModuleKey(null);
+              setConfirmModal({
+                show: true,
+                type: 'add',
+                moduleKey: previewModuleKey,
+                moduleName: previewModule?.name || previewModuleKey,
+                price: previewPrice,
+                categoryKey: previewModule?.category || '',
+              });
+            }}
+          >
+            <PreviewContent />
+          </ModulePreviewModal>
+        );
+      })()}
 
       {/* MODÜL SATIN ALMA / İPTAL ONAY MODALİ */}
       {confirmModal.show && (
@@ -413,22 +566,26 @@ export default function ModuleStore({
                     <span className="text-purple-900 dark:text-purple-200 font-extrabold">₺{confirmModal.price} / Ay</span>
                   </div>
                   <div className="flex justify-between items-center text-xs font-bold text-gray-700 dark:text-gray-300 pt-2 border-t border-purple-100 dark:border-purple-900">
-                    <span>Aktivasyon Süresi:</span>
+                    <span>Aktivasyon:</span>
                     <span className="text-emerald-600 font-extrabold">⚡ Anında Aktif</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs font-bold text-gray-700 dark:text-gray-300">
+                    <span>Süre:</span>
+                    <span className="text-purple-900 dark:text-purple-200 font-extrabold">1 Ay</span>
                   </div>
                 </div>
 
                 <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl p-3 text-[11px] text-amber-800 dark:text-amber-300 font-medium leading-relaxed flex items-start gap-2">
                   <AlertCircle size={16} className="shrink-0 mt-0.5" />
                   <span>
-                    Onayladığınızda bu modül şirketiniz ve ekibiniz için anında kullanıma açılacaktır. Ekstra ₺{confirmModal.price}/Ay ücreti faturanıza eklenecektir.
+                    Onayladığınızda bu modül şirketiniz ve ekibiniz için anında 1 ay boyunca kullanıma açılacaktır. Ekstra ₺{confirmModal.price} ücreti faturanıza eklenecektir. Süre dolduğunda modül otomatik olarak pasifleşir; dilediğiniz zaman tekrar satın alabilirsiniz.
                   </span>
                 </div>
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-2xl p-4 text-xs text-red-800 dark:text-red-300 font-medium leading-relaxed">
-                  <strong>{confirmModal.moduleName}</strong> modülünü paketinizden çıkarmak istediğinize emin misiniz? Devam ederseniz bu modül ve alt sekmelerine erişiminiz sonlanacaktır.
+                  <strong>{confirmModal.moduleName}</strong> modülünü şimdi kapatmak istediğinize emin misiniz? Devam ederseniz bu modül ve alt sekmelerine erişiminiz hemen sonlanacaktır.
                 </div>
               </div>
             )}
@@ -452,11 +609,26 @@ export default function ModuleStore({
                 } disabled:opacity-50`}
               >
                 {saving && <Loader size={14} className="animate-spin" />}
-                {confirmModal.type === 'add' ? 'Satın Al ve Aktif Et' : 'Modülü İptal Et'}
+                {confirmModal.type === 'add' ? 'Ödemeye Geç' : 'Modülü İptal Et'}
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {checkoutInfo && currentUser && organizationId && (
+        <PaytrCheckoutModal
+          purpose="module_purchase"
+          purposePayload={{ moduleKey: checkoutInfo.moduleKey, categoryKey: checkoutInfo.categoryKey }}
+          amount={checkoutInfo.price}
+          itemLabel={checkoutInfo.moduleName}
+          organizationId={organizationId}
+          userId={currentUser.id}
+          userEmail={currentUser.email}
+          userFullName={currentUser.fullName}
+          userPhone={currentUser.phone}
+          onClose={() => setCheckoutInfo(null)}
+        />
       )}
     </div>
   );
