@@ -115,6 +115,7 @@ export default function FinanceManagementPreview() {
           <div className="p-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 text-xs font-bold text-gray-600 dark:text-gray-300">
             <Users size={14} className="text-indigo-600" /> Ağustos 2026 — İşletme Bazlı Tahsilat Durumu
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-gray-400 uppercase text-[10px] font-bold border-b border-gray-100 dark:border-slate-700">
@@ -142,6 +143,7 @@ export default function FinanceManagementPreview() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -154,6 +156,7 @@ export default function FinanceManagementPreview() {
             <Plus size={14} /> Yeni Gider Kaydı Oluştur
           </button>
           <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 overflow-hidden">
+            <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-gray-400 uppercase text-[10px] font-bold border-b border-gray-100 dark:border-slate-700">
@@ -178,6 +181,7 @@ export default function FinanceManagementPreview() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}

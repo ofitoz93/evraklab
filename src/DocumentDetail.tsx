@@ -361,6 +361,7 @@ export default function DocumentDetail() {
             <Archive className="text-gray-400" /> Arşivlenmiş Eski Sürümler
           </h3>
           <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+            <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-gray-50 border-b text-xs uppercase text-gray-500">
                 <tr>
@@ -396,6 +397,7 @@ export default function DocumentDetail() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}

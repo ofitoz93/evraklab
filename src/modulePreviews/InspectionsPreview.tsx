@@ -94,6 +94,7 @@ export default function InspectionsPreview() {
 
       {subTab === 'points' && (
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-gray-400 uppercase text-[10px] font-bold border-b border-gray-100 dark:border-slate-700">
@@ -149,6 +150,7 @@ export default function InspectionsPreview() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 

@@ -1068,6 +1068,7 @@ const getOrCreateDriveFolder = async (
             Belge bulunamadı.
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead className="bg-gray-50 border-b text-gray-500 text-xs uppercase">
               <tr>
@@ -1317,6 +1318,7 @@ const getOrCreateDriveFolder = async (
 
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
@@ -1333,6 +1335,7 @@ const getOrCreateDriveFolder = async (
               {archivedList.length === 0 ? (
                 <p className="text-center text-gray-400">Arşiv boş.</p>
               ) : (
+                <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm divide-y">
                   <thead>
                     <tr>
@@ -1448,6 +1451,7 @@ const getOrCreateDriveFolder = async (
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
           </div>
