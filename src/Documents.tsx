@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
+import { apiUrl } from './apiBase';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FileText,
@@ -150,26 +151,6 @@ const getOrCreateDriveFolder = async (
 
   const createData = await createRes.json();
   return createData.id;
-};
-
-// Drive'a yüklenen dosyalar varsayılan olarak sadece bağlanan Google hesabına
-// özeldir; şirketteki diğer personel farklı (veya hiç) Google hesabıyla
-// bağlantıyı açtığında "Bu sayfaya erişim izniniz yok" hatası alır. Bu yüzden
-// her yükleme sonrası dosyaya "bağlantıya sahip olan herkes görüntüleyebilir"
-// izni ekleniyor (best-effort; başarısız olursa yükleme geri alınmaz).
-const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) => {
-  try {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ role: 'reader', type: 'anyone' }),
-    });
-  } catch (err) {
-    console.error('Google Drive dosya izni ayarlanamadı:', err);
-  }
 };
 
   const fetchOnlyRequiredDocs = async () => {
@@ -568,7 +549,7 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
 
         if (selectedDocForRenew.organization_id && orgSettings && orgSettings.storage_preference === 'google_drive' && orgSettings.google_drive_refresh_token) {
           try {
-            const tokenRes = await fetch('/api/google-oauth', {
+            const tokenRes = await fetch(apiUrl('/api/google-oauth'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -615,8 +596,10 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
             }
 
             const uploadData = await uploadRes.json();
+            // Dosya kasıtlı olarak "bağlantıya sahip olan herkes görüntüleyebilir"
+            // yapılmıyor — erişim, firmanın Drive'daki klasör paylaşım/izin
+            // ayarlarından (kime paylaşıldıysa) geliyor.
             publicUrl = uploadData.webViewLink || `https://drive.google.com/file/d/${uploadData.id}/view`;
-            await makeDriveFileViewableByLink(accessToken, uploadData.id);
           } catch (err: any) {
             throw new Error('Google Drive depolama hatası: ' + err.message);
           }
@@ -1637,10 +1620,39 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
                   </button>
                 </div>
               </div>
+            ) : previewDoc?.file_url?.includes('drive.google.com') ? (
+              // Google Drive'ın gömülü (iframe) önizlemesi üçüncü taraf çerezlere
+              // dayanıyor; tarayıcı bunları engellediğinde (özellikle localhost gibi
+              // https olmayan origin'lerde, ama bazen production'da da) iframe
+              // kalıcı olarak boş/yükleniyor görünebiliyor. Google'ın döndürdüğü
+              // sayfa "başarısız" bir HTTP yanıtı değil (kendi hata/izin sayfasını
+              // normal 200 ile döndürüyor), bu yüzden JS'ten iframe'in gerçekten
+              // önizlemeyi mi yoksa bir hata ekranını mı gösterdiğini ayırt
+              // edemiyoruz (cross-origin) — o yüzden başarısızlığı algılayıp
+              // otomatik gizlemek yerine, her zaman görünen bir "Drive'da Aç"
+              // kaçış linki gösteriyoruz.
+              <div className="flex-1 flex flex-col bg-gray-100 rounded-xl overflow-hidden">
+                <div className="shrink-0 flex items-center justify-between gap-2 bg-amber-50 border-b border-amber-200 px-3 py-2 text-[11px] text-amber-800">
+                  <span>Önizleme yüklenmiyor mu? Tarayıcınız Google'ın güvenlik çerezlerini engelliyor olabilir.</span>
+                  <a
+                    href={previewDoc.file_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 flex items-center gap-1 font-bold text-blue-700 hover:underline"
+                  >
+                    <Maximize size={12} /> Drive'da Aç
+                  </a>
+                </div>
+                <iframe
+                  src={previewDoc.file_url.replace('/view', '/preview')}
+                  className="w-full flex-1"
+                  title="Önizleme"
+                ></iframe>
+              </div>
             ) : previewDoc?.file_url ? (
               <div className="flex-1 bg-gray-100 rounded-xl overflow-hidden">
                 <iframe
-                  src={previewDoc?.file_url?.includes('drive.google.com') ? previewDoc.file_url.replace('/view', '/preview') : previewDoc?.file_url}
+                  src={previewDoc.file_url}
                   className="w-full h-full"
                   title="Önizleme"
                 ></iframe>

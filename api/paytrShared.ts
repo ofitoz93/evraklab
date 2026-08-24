@@ -160,6 +160,12 @@ export async function activatePurchase(tx: {
     if (orgErr) throw orgErr;
 
     if (payload.storageProvider === 'google_drive') {
+      // Bu bildirim kullanıcının kendi sözleri DEĞİL, satın alma akışının
+      // otomatik açtığı bir sistem talebi — 'message' burada set edilmiyor
+      // (AdminPanel'deki "Kullanıcı (Başlangıç)" balonu koşullu olduğundan
+      // boş kalır) ve ticket_messages satırı sender_role: 'system' ile
+      // ekleniyor (bkz. src/AdminPanel.tsx ve src/Support.tsx'teki 'system'
+      // render dalları, ve src/Pricing.tsx'teki eşdeğer client-side akış).
       const { data: driveTicket } = await supabase
         .from('tickets')
         .insert([
@@ -167,17 +173,22 @@ export async function activatePurchase(tx: {
             user_id: tx.user_id,
             subject: `Google Drive Bağlantısı Talebi - ${payload.companyName}`,
             status: 'open',
-            message: `"${payload.companyName}" firması kurulum sırasında depolama sağlayıcısı olarak kendi Google Drive'ını seçti. Lütfen Admin Panel > Şirketler > Depolama Ayarları üzerinden bu firmanın Google Drive bağlantısını tamamlayın. Bağlantı tamamlanana kadar bu firma belge yükleyemez.`,
           },
         ])
         .select()
         .single();
       if (driveTicket) {
+        // Bu mesaj admin'e değil doğrudan kullanıcıya hitap eder. Bağlantı
+        // artık öncelikle kullanıcının kendi panelinden (Ayarlar > Depolama
+        // Ayarları) self-servis olarak tamamlanıyor — bkz.
+        // src/ConsultantPanel.tsx > 'storage_settings' tab. Bu talep, admin'e
+        // bilgi vermek ve kullanıcı takılırsa bir yedek kanal olması için
+        // açılıyor.
         await supabase.from('ticket_messages').insert([
           {
             ticket_id: driveTicket.id,
-            sender_role: 'user',
-            message: `"${payload.companyName}" firması kurulum sırasında depolama sağlayıcısı olarak kendi Google Drive'ını seçti. Lütfen Admin Panel > Şirketler > Depolama Ayarları üzerinden bu firmanın Google Drive bağlantısını tamamlayın. Bağlantı tamamlanana kadar bu firma belge yükleyemez.`,
+            sender_role: 'system',
+            message: `"${payload.companyName}" firması için depolama sağlayıcısı olarak Google Drive seçildi. Bağlantıyı Yönetici Panelinizde "Ayarlar > Depolama Ayarları" sekmesinden kendiniz tamamlayabilirsiniz — orada Google Client ID / Client Secret alanları ve adım adım rehber hazır bekliyor. Bağlantı tamamlanana kadar bu firma belge yükleyemez. Kendiniz tamamlayamazsanız bu talebe yanıt yazın, ekibimiz size yardımcı olsun.`,
           },
         ]);
       }

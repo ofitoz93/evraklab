@@ -1,4 +1,4 @@
-import { FileText, ClipboardList, UploadCloud, Share2, PenLine, Shield } from 'lucide-react';
+import { FileText, ClipboardList, UploadCloud, Share2, PenLine, Shield, ShoppingBag } from 'lucide-react';
 import type { TourId, TourMeta } from '../types';
 
 export const HELP_TOURS: Record<TourId, TourMeta> = {
@@ -38,10 +38,16 @@ export const HELP_TOURS: Record<TourId, TourMeta> = {
     icon: Shield,
     load: () => import('./consultantPanelTour'),
   },
+  moduleStore: {
+    title: 'Ekstra Modül Mağazası',
+    description: 'Ekstra modül satın alma, alt modüller, önizleme ve PayTR ile ödeme akışı.',
+    icon: ShoppingBag,
+    load: () => import('./moduleStoreTour'),
+  },
 };
 
 export const ROLE_TOUR_IDS: Record<'normal' | 'staff' | 'manager', TourId[]> = {
   normal: ['documents', 'addDocument', 'envReport', 'wetSignature'],
   staff: ['documents', 'envReport', 'addDocument', 'wetSignature', 'consultantPanel'],
-  manager: ['documents', 'envReport', 'addDocument', 'forwardDoc', 'wetSignature', 'consultantPanel'],
+  manager: ['documents', 'envReport', 'addDocument', 'forwardDoc', 'wetSignature', 'consultantPanel', 'moduleStore'],
 };

@@ -83,11 +83,13 @@ export default function Storage() {
     return calcStoragePackagePrice(pack, storagePricing) * storageQuantity;
   };
 
-  // Satın alma artık anlık aktive ETMEZ — PayTR checkout'una yönlendirilir;
-  // gerçek RPC çağrısı (add_storage_limit) sadece ödeme callback'i
-  // doğrulandıktan sonra api/paytrShared.ts > activatePurchase() içinde
-  // sunucu tarafında yapılır.
-  const prepareCheckout = () => {
+  // ÖDEME GEÇİCİ OLARAK KAPALI: normalde burada PayTR checkout'una
+  // yönlendirilir (setCheckoutInfo) ve add_storage_limit RPC'si sadece ödeme
+  // callback'i doğrulandıktan sonra api/paytrShared.ts > activatePurchase()
+  // içinde sunucu tarafında çağrılırdı. Şimdilik PayTR atlanıp RPC doğrudan
+  // burada çağrılıyor — eski akışı geri almak için bu fonksiyonun gövdesini
+  // setCheckoutInfo(...) çağrısına geri döndürün.
+  const prepareCheckout = async () => {
     const totalAmount = calculateTotal();
     if (totalAmount <= 0) {
       alert('Ödenecek tutar bulunamadı, lütfen tekrar deneyin.');
@@ -96,11 +98,30 @@ export default function Storage() {
     const pack = storagePricing.packages[selectedStorageIndex];
     const totalBytesToAdd = Math.round(pack.size_gb * 1024 * 1024 * 1024) * storageQuantity;
 
-    setCheckoutInfo({
-      amount: totalAmount,
-      itemLabel: `Ekstra Depolama (${formatBytes(totalBytesToAdd)}, Şahsi Kota)`,
-      bytesToAdd: totalBytesToAdd,
-    });
+    setProcessing(true);
+    try {
+      const { error } = await supabase.rpc('add_storage_limit', {
+        target_id: user.id,
+        is_corporate: false,
+        bytes_to_add: totalBytesToAdd,
+      });
+      if (error) throw error;
+
+      await supabase.from('subscription_payments').insert({
+        user_id: user.id,
+        organization_id: null,
+        plan_type: 'storage',
+        amount: totalAmount,
+        storage_bytes: totalBytesToAdd,
+      });
+
+      alert(`✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan (Şahsi Kota) tanımlandı.`);
+      window.location.reload();
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setProcessing(false);
+    }
   };
 
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;
@@ -231,7 +252,7 @@ export default function Storage() {
               'İşleniyor...'
             ) : (
               <>
-                <CreditCard size={18} /> <span className="hidden sm:inline">Ödemeye Geç</span><span className="sm:hidden">Öde</span> <ChevronRight size={18} />
+                <CreditCard size={18} /> <span className="hidden sm:inline">Satın Al</span><span className="sm:hidden">Satın Al</span> <ChevronRight size={18} />
               </>
             )}
           </button>

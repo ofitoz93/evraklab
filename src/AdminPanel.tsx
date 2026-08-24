@@ -43,7 +43,9 @@ import {
 } from 'lucide-react';
 import { extractTextFromPdf } from './localScanner';
 import { parseLegislationText } from './parserUtils';
-import { SYSTEM_MODULES, DEFAULT_MODULE_KEYS, SYSTEM_MODULE_CATEGORIES, DEFAULT_EXTRA_MODULE_PRICING } from './moduleRegistry';
+import { SYSTEM_MODULES, DEFAULT_MODULE_KEYS, SYSTEM_MODULE_CATEGORIES, DEFAULT_EXTRA_MODULE_PRICING, getSubModuleKeysOf } from './moduleRegistry';
+import type { ModuleParentMap } from './moduleRegistry';
+import { apiUrl } from './apiBase';
 
 import GOOGLE_SCRIPT_CODE from '../google_script_mail_template.js?raw';
 
@@ -307,6 +309,7 @@ export default function AdminPanel() {
 
   // --- Sistem Modül Ayarları State & Handler'ları ---
   const [sysDefaultModuleKeys, setSysDefaultModuleKeys] = useState<string[]>(DEFAULT_MODULE_KEYS);
+  const [sysModuleParents, setSysModuleParents] = useState<ModuleParentMap>({});
   const [fetchingModuleSettings, setFetchingModuleSettings] = useState(false);
   const [savingModuleSettings, setSavingModuleSettings] = useState(false);
   const [bulkApplyingModules, setBulkApplyingModules] = useState(false);
@@ -391,13 +394,17 @@ export default function AdminPanel() {
       const { data, error } = await supabase
         .from('pricing_settings')
         .select('*')
-        .eq('key', 'default_system_modules')
-        .maybeSingle();
+        .in('key', ['default_system_modules', 'module_sub_modules']);
 
       if (error) throw error;
-      if (data?.value && Array.isArray(data.value)) {
-        setSysDefaultModuleKeys(data.value);
-      }
+      data?.forEach((row: any) => {
+        if (row.key === 'default_system_modules' && Array.isArray(row.value)) {
+          setSysDefaultModuleKeys(row.value);
+        }
+        if (row.key === 'module_sub_modules' && row.value && typeof row.value === 'object') {
+          setSysModuleParents(row.value);
+        }
+      });
     } catch (err: any) {
       console.warn('Varsayılan sistem modülleri yüklenemedi:', err.message);
     } finally {
@@ -410,11 +417,10 @@ export default function AdminPanel() {
     try {
       const { error } = await supabase
         .from('pricing_settings')
-        .upsert({
-          key: 'default_system_modules',
-          value: sysDefaultModuleKeys,
-          updated_at: new Date().toISOString(),
-        });
+        .upsert([
+          { key: 'default_system_modules', value: sysDefaultModuleKeys, updated_at: new Date().toISOString() },
+          { key: 'module_sub_modules', value: sysModuleParents, updated_at: new Date().toISOString() },
+        ]);
       if (error) throw error;
       alert('Sistem varsayılan modül ayarları kaydedildi!');
     } catch (err: any) {
@@ -451,6 +457,7 @@ export default function AdminPanel() {
   const [compGoogleDriveRefreshToken, setCompGoogleDriveRefreshToken] = useState('');
   const [compGoogleDriveConnectedEmail, setCompGoogleDriveConnectedEmail] = useState('');
   const [connectingGoogleDrive, setConnectingGoogleDrive] = useState(false);
+  const [copiedRedirectUri, setCopiedRedirectUri] = useState(false);
 
   const [viewTeamOrg, setViewTeamOrg] = useState<any>(null);
   const [teamList, setTeamList] = useState<any[]>([]);
@@ -548,7 +555,7 @@ export default function AdminPanel() {
       reader.readAsDataURL(file);
       const fileData = await base64Promise;
 
-      const response = await fetch('/api/parse-pdf', {
+      const response = await fetch(apiUrl('/api/parse-pdf'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1989,7 +1996,7 @@ export default function AdminPanel() {
       }
 
       try {
-        const exchangeRes = await fetch('/api/google-oauth', {
+        const exchangeRes = await fetch(apiUrl('/api/google-oauth'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -4268,6 +4275,40 @@ export default function AdminPanel() {
                                       </span>
                                     </label>
                                   </div>
+
+                                  <div className="pt-2 border-t border-gray-100 dark:border-slate-700 space-y-1.5">
+                                    <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                                      Alt Modülü Olduğu Üst Modül
+                                    </label>
+                                    <select
+                                      value={sysModuleParents[m.key] || ''}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setSysModuleParents((prev) => {
+                                          const next = { ...prev };
+                                          if (val) next[m.key] = val;
+                                          else delete next[m.key];
+                                          return next;
+                                        });
+                                      }}
+                                      className="w-full text-[11px] p-1.5 rounded-lg border border-gray-200 dark:border-slate-700 dark:bg-slate-900 outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
+                                    >
+                                      <option value="">Yok (Bağımsız modül)</option>
+                                      {SYSTEM_MODULES.filter((opt) => opt.key !== m.key && sysModuleParents[opt.key] !== m.key).map((opt) => (
+                                        <option key={opt.key} value={opt.key}>{opt.name}</option>
+                                      ))}
+                                    </select>
+                                    {sysModuleParents[m.key] && (
+                                      <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium leading-relaxed">
+                                        🔗 "{SYSTEM_MODULES.find((x) => x.key === sysModuleParents[m.key])?.name}" satın alındığında/aktifken bu modül otomatik açılır ve mağazada ayrıca satın alma kalemi olarak gösterilmez.
+                                      </p>
+                                    )}
+                                    {getSubModuleKeysOf(m.key, sysModuleParents).length > 0 && (
+                                      <p className="text-[10px] text-purple-700 dark:text-purple-400 font-medium leading-relaxed">
+                                        📦 İçerdiği alt modüller: {getSubModuleKeysOf(m.key, sysModuleParents).map((k) => SYSTEM_MODULES.find((x) => x.key === k)?.name || k).join(', ')}
+                                      </p>
+                                    )}
+                                  </div>
                                 </div>
                               );
                             })}
@@ -4647,7 +4688,7 @@ export default function AdminPanel() {
                     <CheckSquare size={16} className="text-green-600" /> Ekstra Modül Fiyatlandırma
                   </h3>
                   <p className="text-xs text-gray-500 -mt-4">
-                    Danışman/şirket panellerindeki "Ekstra Modül Mağazası"nda gösterilen aylık modül fiyatları. Değişiklikler yeni satın almalarda geçerli olur.
+                    Danışman/şirket panellerindeki "Ekstra Modül Mağazası"nda gösterilen aylık modül fiyatları. Değişiklikler yeni satın almalarda geçerli olur. Alt modüller (üst modülü satın alınca otomatik açılanlar) ayrı fiyatlandırılmadığından bu listede gösterilmez.
                   </p>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm border-collapse">
@@ -4658,7 +4699,7 @@ export default function AdminPanel() {
                         </tr>
                       </thead>
                       <tbody>
-                        {SYSTEM_MODULES.filter((m) => !sysDefaultModuleKeys.includes(m.key)).map((m) => (
+                        {SYSTEM_MODULES.filter((m) => !sysDefaultModuleKeys.includes(m.key) && !sysModuleParents[m.key]).map((m) => (
                           <tr key={m.key} className="border-t">
                             <td className="py-2 pr-4 font-semibold text-gray-600">{m.name}</td>
                             <td className="py-2 pr-4">
@@ -4767,22 +4808,26 @@ export default function AdminPanel() {
                   </div>
 
                   <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-gray-50/30">
-                    <div className="flex justify-start">
-                      <div className="bg-white p-3 rounded-2xl rounded-tl-none border shadow-sm max-w-[85%]">
-                        <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">
-                          Kullanıcı (Başlangıç)
+                    {selectedTicket.message && (
+                      <div className="flex justify-start">
+                        <div className="bg-white p-3 rounded-2xl rounded-tl-none border shadow-sm max-w-[85%]">
+                          <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">
+                            Kullanıcı (Başlangıç)
+                          </div>
+                          <p className="text-sm whitespace-pre-wrap">
+                            {selectedTicket.message}
+                          </p>
                         </div>
-                        <p className="text-sm whitespace-pre-wrap">
-                          {selectedTicket.message}
-                        </p>
                       </div>
-                    </div>
+                    )}
                     {ticketMessages.map((m) => (
                       <div
                         key={m.id}
                         className={`flex ${
                           m.sender_role === 'admin'
                             ? 'justify-end'
+                            : m.sender_role === 'system'
+                            ? 'justify-center'
                             : 'justify-start'
                         }`}
                       >
@@ -4790,6 +4835,8 @@ export default function AdminPanel() {
                           className={`p-3 rounded-2xl shadow-sm max-w-[85%] text-sm ${
                             m.sender_role === 'admin'
                               ? 'bg-blue-600 text-white rounded-tr-none'
+                              : m.sender_role === 'system'
+                              ? 'bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl'
                               : 'bg-white border text-gray-800 rounded-tl-none'
                           }`}
                         >
@@ -4797,10 +4844,12 @@ export default function AdminPanel() {
                             className={`text-[10px] font-bold uppercase mb-1 ${
                               m.sender_role === 'admin'
                                 ? 'text-blue-200'
+                                : m.sender_role === 'system'
+                                ? 'text-amber-600'
                                 : 'text-gray-400'
                             }`}
                           >
-                            {m.sender_role === 'admin' ? 'Siz' : 'Kullanıcı'}
+                            {m.sender_role === 'admin' ? 'Siz' : m.sender_role === 'system' ? 'Otomatik Bildirim' : 'Kullanıcı'}
                           </div>
                           <p className="whitespace-pre-wrap">{m.message}</p>
                         </div>
@@ -5550,10 +5599,27 @@ export default function AdminPanel() {
                               ? 'Yeniden Bağla'
                               : "Google Drive'a Bağlan"}
                         </button>
-                        <p className="text-[9px] text-slate-400 leading-relaxed">
-                          Google Cloud Console'da bu OAuth istemcisinin "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına şunu ekleyin:{' '}
-                          <span className="font-mono select-all">{googleOauthRedirectUri}</span>
-                        </p>
+                        <div className="text-[9px] text-slate-400 leading-relaxed">
+                          Google Cloud Console'da bu OAuth istemcisinin "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına, aşağıdaki adresi <b>eksiksiz</b> (sondaki <span className="font-mono">/</span> dahil) ekleyin — tek karakter farkı bile "redirect_uri_mismatch" hatasına yol açar:
+                          <div className="mt-1 flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1.5">
+                            <span className="font-mono select-all flex-1 break-all text-slate-700">{googleOauthRedirectUri}</span>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(googleOauthRedirectUri);
+                                  setCopiedRedirectUri(true);
+                                  setTimeout(() => setCopiedRedirectUri(false), 2000);
+                                } catch {
+                                  // Panoya erişim engellenmişse sessizce yok say; kullanıcı metni seçip kopyalayabilir.
+                                }
+                              }}
+                              className="shrink-0 flex items-center gap-1 font-bold text-blue-600 hover:text-blue-700 px-1.5 py-1 rounded-md hover:bg-blue-100 transition"
+                            >
+                              {copiedRedirectUri ? <Check size={11} /> : <Copy size={11} />} {copiedRedirectUri ? 'Kopyalandı' : 'Kopyala'}
+                            </button>
+                          </div>
+                        </div>
                       </>
                     ) : (
                       <p className="text-[10px] text-slate-400 italic">

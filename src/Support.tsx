@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import {
   MessageCircle,
@@ -15,6 +16,9 @@ import {
   ChevronDown,
   ChevronUp,
   Check,
+  Bell,
+  HardDrive,
+  ArrowRight,
 } from 'lucide-react';
 
 export default function Support() {
@@ -290,9 +294,44 @@ export default function Support() {
                 </span>
               </div>
 
+              {activeTicket.subject?.startsWith('Google Drive Bağlantısı Talebi') && (
+                <Link
+                  to="/consultant?tab=storage_settings"
+                  className="flex items-center justify-between gap-2 bg-blue-50 border-b border-blue-100 px-4 py-2.5 text-xs font-bold text-blue-700 hover:bg-blue-100 transition"
+                >
+                  <span className="flex items-center gap-2">
+                    <HardDrive size={14} /> Bağlantıyı kendiniz tamamlamak için Depolama Ayarları sayfasına gidin.
+                  </span>
+                  <ArrowRight size={14} className="shrink-0" />
+                </Link>
+              )}
+
               <div className="flex-1 bg-gray-50 p-6 overflow-y-auto space-y-4">
                 {messages.map((msg) => {
                   const isAdmin = msg.sender_role === 'admin';
+                  const isSystem = msg.sender_role === 'system';
+
+                  if (isSystem) {
+                    return (
+                      <div key={msg.id} className="flex justify-center">
+                        <div className="max-w-[90%] p-4 rounded-2xl text-sm shadow-sm bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2">
+                          <Bell size={16} className="shrink-0 mt-0.5 text-amber-500" />
+                          <div>
+                            <div className="font-bold text-[10px] mb-1 opacity-70 uppercase tracking-wide">
+                              Otomatik Bildirim •{' '}
+                              {new Date(msg.created_at)
+                                .toLocaleTimeString()
+                                .slice(0, 5)}
+                            </div>
+                            <p className="whitespace-pre-wrap leading-relaxed">
+                              {msg.message}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={msg.id}
@@ -480,6 +519,22 @@ export default function Support() {
               )}
               {viewMessages.map((msg) => {
                 const isAdmin = msg.sender_role === 'admin';
+                const isSystem = msg.sender_role === 'system';
+                if (isSystem) {
+                  return (
+                    <div key={msg.id} className="flex justify-center">
+                      <div className="p-4 rounded-2xl text-sm max-w-[90%] bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2">
+                        <Bell size={14} className="shrink-0 mt-0.5 text-amber-500" />
+                        <div>
+                          <div className="font-bold text-[10px] mb-1 uppercase text-amber-600">
+                            Otomatik Bildirim • {new Date(msg.created_at).toLocaleDateString()}
+                          </div>
+                          <p className="whitespace-pre-wrap">{msg.message}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <div key={msg.id} className={`flex ${isAdmin ? 'justify-start' : 'justify-end'}`}>
                     <div className={`p-4 rounded-2xl text-sm max-w-[85%] ${isAdmin ? 'bg-green-50 border border-green-200 text-green-900 rounded-tl-none' : 'bg-gray-100 text-gray-700 rounded-tr-none'}`}>

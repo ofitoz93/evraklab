@@ -13,7 +13,8 @@ export type TourId =
   | 'addDocument'
   | 'forwardDoc'
   | 'wetSignature'
-  | 'consultantPanel';
+  | 'consultantPanel'
+  | 'moduleStore';
 
 export interface TourStageProps {
   roleLabel?: string;

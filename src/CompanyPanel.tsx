@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import {
@@ -50,7 +50,8 @@ import { MapPickerModal } from './MapPickerModal';
 import InspectionAnalytics from './InspectionAnalytics';
 import WasteManagement from './WasteManagement';
 import { extractTextFromPdf } from './localScanner';
-import { isModuleEnabled } from './moduleRegistry';
+import { isModuleEnabled, expandModulesWithSubModules } from './moduleRegistry';
+import type { ModuleParentMap } from './moduleRegistry';
 import {
   computeMsdsStatus,
   computeDaysRemaining,
@@ -80,6 +81,10 @@ function formatBytes(bytes: number, decimals = 1) {
 export default function CompanyPanel() {
   const [loading, setLoading] = useState(true);
   const [myOrg, setMyOrg] = useState<any>(null);
+  // Alt modül eşlemesi ({ altModülKey: üstModülKey }) — admin panelinde
+  // "Modül Ayarları"ndan yönetilir. Üst modül aktifse alt modül de otomatik
+  // aktif sayılır (bkz. orgModules türetmesi aşağıda).
+  const [subModuleParentMap, setSubModuleParentMap] = useState<ModuleParentMap>({});
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [invitations, setInvitations] = useState<any[]>([]);
   const [myProfile, setMyProfile] = useState<any>(null);
@@ -804,6 +809,19 @@ export default function CompanyPanel() {
           if (orgData) {
             setMyOrg(orgData);
             fetchExpiredModuleKeys(profile.organization_id);
+
+            // Admin panelinde tanımlanan alt modül eşlemesini (üst modülü satın
+            // alınca otomatik açılan modüller) çek.
+            supabase
+              .from('pricing_settings')
+              .select('value')
+              .eq('key', 'module_sub_modules')
+              .maybeSingle()
+              .then(({ data }) => {
+                if (data?.value && typeof data.value === 'object') {
+                  setSubModuleParentMap(data.value);
+                }
+              });
 
             // Kota: herkes toplam kullanımı görebilsin
             supabase
@@ -3419,7 +3437,10 @@ export default function CompanyPanel() {
     }
   };
 
-  const orgModules = myOrg?.enabled_modules;
+  const orgModules = useMemo(
+    () => expandModulesWithSubModules(myOrg?.enabled_modules, subModuleParentMap),
+    [myOrg?.enabled_modules, subModuleParentMap]
+  );
   const currentUserRole = myProfile?.role;
 
   // Nav sekmeleri "show" hesaplamasıyla (isModuleEnabled) gizlense de, içerik

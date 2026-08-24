@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import {
   Building,
@@ -59,10 +59,12 @@ import QRCode from 'qrcode';
 import ExcelJS from 'exceljs';
 import { MapPickerModal, calculatePolygonAreaM2, formatArea } from './MapPickerModal';
 import type { AreaPoint } from './MapPickerModal';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { apiUrl } from './apiBase';
 import InspectionAnalytics from './InspectionAnalytics';
 import { extractTextFromPdf } from './localScanner';
-import { isModuleEnabled } from './moduleRegistry';
+import { isModuleEnabled, expandModulesWithSubModules } from './moduleRegistry';
+import type { ModuleParentMap } from './moduleRegistry';
 import { parseLegislationText } from './parserUtils';
 import {
   computeMsdsStatus,
@@ -194,6 +196,17 @@ const getContractStatus = (startDateStr: string) => {
 export default function ConsultantPanel() {
   const [activeTab, setActiveTab] = useState<'clients' | 'terminated_clients' | 'reports' | 'settings' | 'storage_settings' | 'team' | 'org_chart' | 'definitions' | 'legislations' | 'requests' | 'actions' | 'inspections' | 'evaluations' | 'finance_summary' | 'finance_payments' | 'finance_expenses' | 'staff_expense_submission' | 'waste' | 'document_matrix' | 'opinions' | 'document_requests' | 'msds'>('clients');
   const [reportsSubView, setReportsSubView] = useState<'monthly' | 'yearly'>('monthly');
+
+  // Google Drive satın alma akışı gibi dış sayfalardan doğrudan bir sekmeye
+  // yönlendirebilmek için (örn. /consultant?tab=storage_settings) URL'deki
+  // "tab" parametresi, ilk render'da activeTab'i ayarlar. Sadece bir kez
+  // (mount'ta) uygulanır; sonraki nav tıklamaları normal şekilde çalışır.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam) setActiveTab(tabParam as typeof activeTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // --- SAHA QR DENETİM MODÜLÜ STATE'LERİ ---
   const [inspectionsSubTab, setInspectionsSubTab] = useState<'points' | 'forms' | 'analytics'>('points');
@@ -966,7 +979,17 @@ export default function ConsultantPanel() {
   const [userId, setUserId] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [orgId, setOrgId] = useState('');
-  const [orgEnabledModules, setOrgEnabledModules] = useState<string[] | null>(null);
+  const [orgEnabledModulesRaw, setOrgEnabledModulesRaw] = useState<string[] | null>(null);
+  // Alt modül eşlemesi ({ altModülKey: üstModülKey }) — admin panelinde
+  // "Modül Ayarları"ndan yönetilir. Üst modül aktifse alt modül de otomatik
+  // aktif sayılır; bu genişletme burada, isModuleEnabled'a giden dizinin
+  // kaynağında yapılır, böylece aşağıdaki tüm isModuleEnabled/.includes()
+  // kontrolleri değişmeden çalışır.
+  const [subModuleParentMap, setSubModuleParentMap] = useState<ModuleParentMap>({});
+  const orgEnabledModules = useMemo(
+    () => expandModulesWithSubModules(orgEnabledModulesRaw, subModuleParentMap),
+    [orgEnabledModulesRaw, subModuleParentMap]
+  );
   const [currentUserPerms, setCurrentUserPerms] = useState<any>({});
 
   // Nav sekmeleri "show" hesaplamasıyla (isModuleEnabled) gizlense de, içerik
@@ -1014,9 +1037,27 @@ export default function ConsultantPanel() {
       isModuleEnabled(mapping.moduleKey, orgEnabledModules, userRole, mapping.categoryKey) ||
       expiredModuleKeys.includes(mapping.moduleKey);
     if (!enabled) {
-      setActiveTab('settings' as any);
+      // 'settings' sekmesi sadece premium_corporate'a görünür (bkz. nav
+      // tanımı) — diğer rollerde erişilemeyen bir sekmeye yönlendirmiş
+      // oluyorduk. 'clients' herkesin varsayılan/erişebildiği sekme.
+      setActiveTab('clients' as any);
     }
   }, [loading, activeTab, orgEnabledModules, userRole, expiredModuleKeys]);
+
+  // Admin panelinde tanımlanan alt modül eşlemesini (üst modülü satın alınca
+  // otomatik açılan modüller) bir kere çek.
+  useEffect(() => {
+    supabase
+      .from('pricing_settings')
+      .select('value')
+      .eq('key', 'module_sub_modules')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.value && typeof data.value === 'object') {
+          setSubModuleParentMap(data.value);
+        }
+      });
+  }, []);
 
   // Finans & İK modülleri — firma sahibi her girişte parolasını doğrulamalı
   // (ekranı açık bırakıp başkasının maaş/finans verisini görmesini engellemek için).
@@ -1267,6 +1308,7 @@ export default function ConsultantPanel() {
   const [savingStorageSettings, setSavingStorageSettings] = useState(false);
   const [connectingGoogleDriveOwner, setConnectingGoogleDriveOwner] = useState(false);
   const [showGoogleDriveInfo, setShowGoogleDriveInfo] = useState(false);
+  const [copiedRedirectUriOwner, setCopiedRedirectUriOwner] = useState(false);
   const [currentAssignments, setCurrentAssignments] = useState<string[]>([]);
   const [allAssignments, setAllAssignments] = useState<any[]>([]);
   const [clientSubView, setClientSubView] = useState<'grid' | 'personnel' | 'requests'>('grid');
@@ -2609,7 +2651,7 @@ export default function ConsultantPanel() {
     }
     setLoadingGoogleDriveQuota(true);
     try {
-      const tokenRes = await fetch('/api/google-oauth', {
+      const tokenRes = await fetch(apiUrl('/api/google-oauth'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2713,7 +2755,7 @@ export default function ConsultantPanel() {
       }
 
       try {
-        const exchangeRes = await fetch('/api/google-oauth', {
+        const exchangeRes = await fetch(apiUrl('/api/google-oauth'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3006,7 +3048,7 @@ export default function ConsultantPanel() {
             .maybeSingle()
             .then(({ data: orgRes }) => {
               if (orgRes?.enabled_modules) {
-                setOrgEnabledModules(orgRes.enabled_modules);
+                setOrgEnabledModulesRaw(orgRes.enabled_modules);
               }
             });
         }
@@ -3279,7 +3321,7 @@ export default function ConsultantPanel() {
       reader.readAsDataURL(file);
       const fileData = await base64Promise;
 
-      const response = await fetch('/api/parse-pdf', {
+      const response = await fetch(apiUrl('/api/parse-pdf'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -6888,24 +6930,6 @@ export default function ConsultantPanel() {
           <p className="text-sm text-gray-500 mt-1">İşletmelerinizi ve raporları yönetin.</p>
         </div>
           <div className="flex items-center gap-2">
-          {activeTab === 'reports' && (
-            isPremiumActive ? (
-              <Link
-                to="/consultant/reports/add"
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition"
-              >
-                <FileText size={18} /> Rapor Oluştur
-              </Link>
-            ) : (
-              <Link
-                to="/pricing"
-                title="Rapor oluşturmak için premium paketinizi yenilemeniz gerekiyor"
-                className="flex items-center gap-2 bg-gray-300 dark:bg-slate-700 text-gray-600 dark:text-slate-300 px-4 py-2 rounded-lg cursor-pointer"
-              >
-                <Lock size={16} /> Rapor Oluştur (Premium Gerekli)
-              </Link>
-            )
-          )}
           {['premium_corporate', 'admin', 'system_admin'].includes(userRole) && (
             <button
               onClick={() => setShowModuleStoreModal(true)}
@@ -7770,31 +7794,49 @@ export default function ConsultantPanel() {
 
       {activeTab === 'reports' && (
         <div className="space-y-6">
-          {/* Yöneticiler için Alt Sekmeler */}
-          {isManager && (
-            <div className="flex border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-slate-700 gap-2 mb-4">
-              <button
-                onClick={() => setReportsSubView('monthly')}
-                className={`flex items-center gap-2 py-2 px-4 text-xs font-bold rounded-lg transition ${
-                  reportsSubView === 'monthly'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
-                }`}
+          {/* Alt Sekmeler + Rapor Oluştur */}
+          <div className="flex flex-wrap justify-between items-center border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-2 rounded-xl border border-gray-200 dark:border-slate-700 gap-2 mb-4">
+            {isManager ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setReportsSubView('monthly')}
+                  className={`flex items-center gap-2 py-2 px-4 text-xs font-bold rounded-lg transition ${
+                    reportsSubView === 'monthly'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+                  }`}
+                >
+                  Aylık Değerlendirme Raporları
+                </button>
+                <button
+                  onClick={() => setReportsSubView('yearly')}
+                  className={`flex items-center gap-2 py-2 px-4 text-xs font-bold rounded-lg transition ${
+                    reportsSubView === 'yearly'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+                  }`}
+                >
+                  Yıllık İç Tetkik Raporları
+                </button>
+              </div>
+            ) : <div />}
+            {isPremiumActive ? (
+              <Link
+                to="/consultant/reports/add"
+                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition"
               >
-                Aylık Değerlendirme Raporları
-              </button>
-              <button
-                onClick={() => setReportsSubView('yearly')}
-                className={`flex items-center gap-2 py-2 px-4 text-xs font-bold rounded-lg transition ${
-                  reportsSubView === 'yearly'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
-                }`}
+                <FileText size={16} /> Rapor Oluştur
+              </Link>
+            ) : (
+              <Link
+                to="/pricing"
+                title="Rapor oluşturmak için premium paketinizi yenilemeniz gerekiyor"
+                className="flex items-center gap-2 bg-gray-300 dark:bg-slate-700 text-gray-600 dark:text-slate-300 px-4 py-2 rounded-lg text-xs font-bold cursor-pointer"
               >
-                Yıllık İç Tetkik Raporları
-              </button>
-            </div>
-          )}
+                <Lock size={14} /> Rapor Oluştur (Premium Gerekli)
+              </Link>
+            )}
+          </div>
 
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
             <div className="overflow-x-auto">
@@ -8063,10 +8105,27 @@ export default function ConsultantPanel() {
                           : "Google Drive'a Bağlan"}
                     </button>
                   </div>
-                  <p className="text-[10px] text-slate-400 leading-relaxed">
-                    Google Cloud Console'da bu OAuth istemcisinin "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına şunu ekleyin:{' '}
-                    <span className="font-mono select-all">{googleOauthRedirectUriOwner}</span>
-                  </p>
+                  <div className="text-[10px] text-slate-400 leading-relaxed">
+                    Google Cloud Console'da bu OAuth istemcisinin "Yetkilendirilmiş yeniden yönlendirme URI'leri" alanına, aşağıdaki adresi <b>eksiksiz</b> (sondaki <span className="font-mono">/</span> dahil) ekleyin — tek karakter farkı bile "redirect_uri_mismatch" hatasına yol açar:
+                    <div className="mt-1.5 flex items-center gap-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2">
+                      <span className="font-mono select-all flex-1 break-all text-slate-700 dark:text-slate-300">{googleOauthRedirectUriOwner}</span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(googleOauthRedirectUriOwner);
+                            setCopiedRedirectUriOwner(true);
+                            setTimeout(() => setCopiedRedirectUriOwner(false), 2000);
+                          } catch {
+                            // Panoya erişim engellenmişse sessizce yok say; kullanıcı metni seçip kopyalayabilir.
+                          }
+                        }}
+                        className="shrink-0 flex items-center gap-1 font-bold text-blue-600 hover:text-blue-700 px-2 py-1 rounded-md hover:bg-blue-100 dark:hover:bg-blue-950/40 transition"
+                      >
+                        {copiedRedirectUriOwner ? <Check size={12} /> : <Copy size={12} />} {copiedRedirectUriOwner ? 'Kopyalandı' : 'Kopyala'}
+                      </button>
+                    </div>
+                  </div>
 
                   {/* Bilgi: adım adım nasıl bulunur */}
                   <div className="border border-blue-100 dark:border-blue-900 rounded-xl overflow-hidden">
@@ -16908,7 +16967,14 @@ export default function ConsultantPanel() {
               userRole={userRole}
               onModulesUpdated={async () => {
                 const { data: org } = await supabase.from('organizations').select('*').eq('id', orgId).single();
-                if (org) setOrgData(org);
+                if (org) {
+                  setOrgData(org);
+                  // orgData sadece firma ayarları (isim/logo/vb.) için kullanılır —
+                  // sekme erişim kontrolü orgEnabledModules'a bakıyor, satın
+                  // alma/iptal sonrası bunu da güncellemezsek eski (stale)
+                  // modül listesiyle sekmeler bir süre yanlış görünüyordu.
+                  setOrgEnabledModulesRaw(org.enabled_modules);
+                }
                 fetchExpiredModuleKeys(orgId);
               }}
               onClose={() => setShowModuleStoreModal(false)}

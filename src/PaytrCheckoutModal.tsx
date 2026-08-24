@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, CreditCard, Loader, AlertCircle } from 'lucide-react';
+import { apiUrl } from './apiBase';
 
 export type PaytrPurpose =
   | 'module_purchase'
@@ -54,7 +55,7 @@ export default function PaytrCheckoutModal({
     setError('');
     setLoading(true);
     try {
-      const res = await fetch('/api/paytr-init', {
+      const res = await fetch(apiUrl('/api/paytr-init'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">EvrakLab</string>
+    <string name="title_activity_main">EvrakLab</string>
+    <string name="package_name">com.evraklab.app</string>
+    <string name="custom_url_scheme">com.evraklab.app</string>
+</resources>

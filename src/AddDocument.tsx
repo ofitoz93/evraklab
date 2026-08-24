@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { analyzeDocumentLocally } from './aiService';
 import DocumentPreviewModal from './DocumentPreviewModal';
+import { apiUrl } from './apiBase';
 
 export default function AddDocument() {
   const navigate = useNavigate();
@@ -140,26 +141,6 @@ const getOrCreateDriveFolder = async (
 
   const createData = await createRes.json();
   return createData.id;
-};
-
-// Drive'a yüklenen dosyalar varsayılan olarak sadece bağlanan Google hesabına
-// özeldir; şirketteki diğer personel farklı (veya hiç) Google hesabıyla
-// bağlantıyı açtığında "Bu sayfaya erişim izniniz yok" hatası alır. Bu yüzden
-// her yükleme sonrası dosyaya "bağlantıya sahip olan herkes görüntüleyebilir"
-// izni ekleniyor (best-effort; başarısız olursa yükleme geri alınmaz).
-const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) => {
-  try {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ role: 'reader', type: 'anyone' }),
-    });
-  } catch (err) {
-    console.error('Google Drive dosya izni ayarlanamadı:', err);
-  }
 };
 
   const fetchCorporateClients = async (orgId: string, role: string, userId: string, perms?: any) => {
@@ -898,7 +879,7 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
 
           if (docScope === 'corporate' && orgSettings && orgSettings.storage_preference === 'google_drive' && orgSettings.google_drive_refresh_token) {
             try {
-              const tokenRes = await fetch('/api/google-oauth', {
+              const tokenRes = await fetch(apiUrl('/api/google-oauth'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -954,8 +935,11 @@ const makeDriveFileViewableByLink = async (accessToken: string, fileId: string) 
               }
 
               const uploadData = await uploadRes.json();
+              // Dosya kasıtlı olarak "bağlantıya sahip olan herkes görüntüleyebilir"
+              // yapılmıyor — erişim, firmanın Drive'daki klasör paylaşım/izin
+              // ayarlarından (kime paylaşıldıysa) geliyor. Klasöre erişimi olmayan
+              // biri linke sahip olsa bile dosyayı açamaz.
               publicUrl = uploadData.webViewLink || `https://drive.google.com/file/d/${uploadData.id}/view`;
-              await makeDriveFileViewableByLink(accessToken, uploadData.id);
             } catch (err: any) {
               throw new Error('Google Drive depolama hatası: ' + err.message);
             }

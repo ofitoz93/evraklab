@@ -124,6 +124,44 @@ export function isModuleEnabled(
   return false;
 }
 
+// Alt modül eşlemesi: { [altModülKey]: üstModülKey }. Admin panelinde
+// "Modül Ayarları" sayfasından yönetilir (pricing_settings.module_sub_modules).
+// Bir alt modül, üst modülü satın alınca/aktifken otomatik açılır; mağazada
+// (ModuleStore) ayrı bir satın alma kalemi olarak GÖSTERİLMEZ.
+export interface ModuleParentMap {
+  [subModuleKey: string]: string;
+}
+
+// enabledModules dizisini alt modül eşlemesine göre genişletir: üst modül
+// listede varsa ama alt modül yoksa, alt modülü de listeye ekler. isModuleEnabled/
+// isCategoryEnabled ve doğrudan .includes() kontrolleri değişmeden çalışmaya
+// devam eder — genişletme, entitlement dizisinin kaynağında (fetch sonrası) yapılır.
+export function expandModulesWithSubModules(
+  keys?: string[] | null,
+  subModuleParents?: ModuleParentMap | null
+): string[] {
+  const base = Array.isArray(keys) ? keys : [];
+  if (!subModuleParents || Object.keys(subModuleParents).length === 0) return base;
+
+  const expanded = new Set(base);
+  Object.entries(subModuleParents).forEach(([childKey, parentKey]) => {
+    if (expanded.has(parentKey) && !expanded.has(childKey)) {
+      expanded.add(childKey);
+    }
+  });
+  return Array.from(expanded);
+}
+
+export function getSubModuleKeysOf(
+  parentKey: string,
+  subModuleParents?: ModuleParentMap | null
+): string[] {
+  if (!subModuleParents) return [];
+  return Object.entries(subModuleParents)
+    .filter(([, p]) => p === parentKey)
+    .map(([childKey]) => childKey);
+}
+
 export interface ExtraModulePricing {
   [key: string]: {
     price: number;

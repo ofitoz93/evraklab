@@ -6,7 +6,9 @@ import {
   DEFAULT_EXTRA_MODULE_PRICING,
   DEFAULT_MODULE_KEYS,
   isModuleEnabled,
+  getSubModuleKeysOf,
 } from './moduleRegistry';
+import type { ModuleParentMap } from './moduleRegistry';
 import {
   Zap,
   CheckCircle,
@@ -55,6 +57,10 @@ export default function ModuleStore({
   // Ekstra yaptığında mağazada anında (kod değişikliği gerekmeden) satın
   // alınabilir olarak görünür.
   const [defaultModuleKeys, setDefaultModuleKeys] = useState<string[]>(DEFAULT_MODULE_KEYS);
+  // Alt modül eşlemesi ({ altModülKey: üstModülKey }) — admin panelinde
+  // "Modül Ayarları"ndan yönetilir. Alt modüller mağazada ayrı satın alma
+  // kalemi olarak gösterilmez; üst modülü satın alınca otomatik açılır.
+  const [subModuleParents, setSubModuleParents] = useState<ModuleParentMap>({});
   const [currentUser, setCurrentUser] = useState<{ id: string; email: string; fullName: string; phone: string } | null>(null);
   const [checkoutInfo, setCheckoutInfo] = useState<{ moduleKey: string; moduleName: string; price: number; categoryKey: string } | null>(null);
 
@@ -152,6 +158,22 @@ export default function ModuleStore({
         console.warn('Varsayılan modül listesi fetch fallback:', e);
       }
 
+      // 3b. Alt modül eşlemesini (üst modülü satın alınca otomatik açılan
+      // modüller) çek — bunlar mağazada ayrıca listelenmez.
+      try {
+        const { data: subModuleData } = await supabase
+          .from('pricing_settings')
+          .select('*')
+          .eq('key', 'module_sub_modules')
+          .maybeSingle();
+
+        if (subModuleData?.value && typeof subModuleData.value === 'object') {
+          setSubModuleParents(subModuleData.value);
+        }
+      } catch (e) {
+        console.warn('Alt modül eşlemesi fetch fallback:', e);
+      }
+
       // 4. PayTR ödeme checkout'unda kullanılacak fatura/iletişim bilgileri.
       try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -198,41 +220,54 @@ export default function ModuleStore({
     }
   };
 
-  // Sadece Ekstra / Opsiyonel Modüller
-  const extraModules = SYSTEM_MODULES.filter((m) => !defaultModuleKeys.includes(m.key));
+  // Sadece Ekstra / Opsiyonel Modüller — alt modüller (bir üst modülü satın
+  // alınca otomatik açılanlar) burada ayrı bir satın alma kalemi olarak
+  // gösterilmez.
+  const extraModules = SYSTEM_MODULES.filter((m) => !defaultModuleKeys.includes(m.key) && !subModuleParents[m.key]);
 
-  // Satın Alma İşlemini Onayla (İptal etmek ödeme gerektirmediği için doğrudan
-  // RPC ile devam eder; satın alma ise PayTR checkout'una yönlendirilir —
-  // modül gerçek ödeme onaylanana kadar aktif edilmez.)
+  // Satın Alma İşlemini Onayla.
+  // ÖDEME GEÇİCİ OLARAK KAPALI: normalde 'add' burada PayTR checkout'una
+  // yönlendirilir (setCheckoutInfo) ve modül yalnızca gerçek ödeme onaylanınca
+  // aktive edilir. Şimdilik PayTR atlanıp purchase_extra_module RPC'si
+  // doğrudan çağrılıyor — eski akışı geri almak için 'add' dalını
+  // setCheckoutInfo(...) çağrısına geri döndürün (bkz. alttaki yorum satırları).
   const handleConfirmAction = async () => {
     if (!organizationId || !confirmModal.moduleKey) return;
 
-    if (confirmModal.type === 'add') {
-      setCheckoutInfo({
-        moduleKey: confirmModal.moduleKey,
-        moduleName: confirmModal.moduleName,
-        price: confirmModal.price,
-        categoryKey: confirmModal.categoryKey,
-      });
-      setConfirmModal({ ...confirmModal, show: false });
-      return;
-    }
-
     setSaving(true);
     try {
-      const { error } = await supabase.rpc('cancel_extra_module', {
-        p_organization_id: organizationId,
-        p_module_key: confirmModal.moduleKey,
-      });
-      if (error) throw error;
+      if (confirmModal.type === 'add') {
+        // Eski (PayTR) akış: setCheckoutInfo({ moduleKey, moduleName, price, categoryKey }); return;
+        const { error } = await supabase.rpc('purchase_extra_module', {
+          p_organization_id: organizationId,
+          p_module_key: confirmModal.moduleKey,
+          p_category_key: confirmModal.categoryKey,
+          p_price: confirmModal.price,
+        });
+        if (error) throw error;
 
-      setConfirmModal({ ...confirmModal, show: false });
+        setConfirmModal({ ...confirmModal, show: false });
 
-      setNotification({
-        show: true,
-        message: `ℹ️ ${confirmModal.moduleName} modülü paketinizden çıkarıldı.`,
-        type: 'success',
-      });
+        setNotification({
+          show: true,
+          message: `✅ ${confirmModal.moduleName} modülü paketinize eklendi.`,
+          type: 'success',
+        });
+      } else {
+        const { error } = await supabase.rpc('cancel_extra_module', {
+          p_organization_id: organizationId,
+          p_module_key: confirmModal.moduleKey,
+        });
+        if (error) throw error;
+
+        setConfirmModal({ ...confirmModal, show: false });
+
+        setNotification({
+          show: true,
+          message: `ℹ️ ${confirmModal.moduleName} modülü paketinizden çıkarıldı.`,
+          type: 'success',
+        });
+      }
 
       await fetchStoreData();
       if (onModulesUpdated) onModulesUpdated();
@@ -381,6 +416,11 @@ export default function ModuleStore({
                       <p className="text-xs text-gray-500 dark:text-gray-400 font-medium leading-relaxed mt-2">
                         {m.description}
                       </p>
+                      {getSubModuleKeysOf(m.key, subModuleParents).length > 0 && (
+                        <p className="text-[10px] text-purple-700 dark:text-purple-400 font-bold mt-2 bg-purple-50 dark:bg-purple-950/30 rounded-lg px-2 py-1.5 leading-relaxed">
+                          📦 Dahil olan alt modüller: {getSubModuleKeysOf(m.key, subModuleParents).map((k) => SYSTEM_MODULES.find((x) => x.key === k)?.name || k).join(', ')}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -609,7 +649,7 @@ export default function ModuleStore({
                 } disabled:opacity-50`}
               >
                 {saving && <Loader size={14} className="animate-spin" />}
-                {confirmModal.type === 'add' ? 'Ödemeye Geç' : 'Modülü İptal Et'}
+                {confirmModal.type === 'add' ? 'Satın Al' : 'Modülü İptal Et'}
               </button>
             </div>
           </div>
