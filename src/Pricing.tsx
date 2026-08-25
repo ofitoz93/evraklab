@@ -18,7 +18,7 @@ import {
   Database, // Depolama İkonu
   HardDrive,
 } from 'lucide-react';
-import { formatBytes } from './utils'; // Utils dosyasını oluşturduysan import et, yoksa aşağıya fonksiyonu ekle
+import { formatBytes, notifyAdminsOfPayment } from './utils'; // Utils dosyasını oluşturduysan import et, yoksa aşağıya fonksiyonu ekle
 import PaytrCheckoutModal from './PaytrCheckoutModal';
 import type { PaytrPurpose } from './PaytrCheckoutModal';
 
@@ -109,6 +109,14 @@ export default function Pricing() {
   // kotasına mı yoksa kendi şahsi kotasına mı eklemek istediğini seçebilir.
   const [storageTarget, setStorageTarget] = useState<'company' | 'personal'>('company');
 
+  // Abonelik satın alırken (bireysel veya kurumsal) opsiyonel olarak paketin
+  // varsayılan kotasının üstüne ek depolama eklenebilir — seçilince toplam
+  // tutara anında yansır (bkz. calculateTotal) ve satın alma tamamlanınca
+  // add_storage_limit RPC'siyle gerçekten uygulanır (bkz. prepareCheckout).
+  // Google Drive'a bağlı kurumsal firmalarda anlamsız olduğu için gizlenir.
+  const [addExtraStorage, setAddExtraStorage] = useState(false);
+  const [extraStorageIndex, setExtraStorageIndex] = useState(0);
+
   // Modallar
   const [showLeaveWarning, setShowLeaveWarning] = useState(false);
   const [showIndToCorpWarning, setShowIndToCorpWarning] = useState(false);
@@ -196,6 +204,24 @@ export default function Pricing() {
     return subscriptionPlans.individual_standard;
   };
 
+  // Google Drive'a bağlı kurumsal firmalarda belgeler bizim sistemimizde
+  // tutulmadığından ek depolama satışı anlamsız — bu durumda seçenek gizlenir.
+  // Yeni şirket akışında (selection) henüz seçilmekte olan corpStorageProvider'a,
+  // yenileme/dashboard akışında ise firmanın ZATEN kayıtlı storage_preference'ına
+  // bakılır (corpStorageProvider dashboard modunda hiç set edilmiyor).
+  const canAddExtraStorage = () => {
+    if (selectedPlan !== 'corporate') return true;
+    const effectiveProvider =
+      viewMode === 'selection' ? corpStorageProvider : profile?.organization?.storage_preference;
+    return effectiveProvider !== 'google_drive';
+  };
+
+  const extraStorageAmount = () => {
+    if (!addExtraStorage || !canAddExtraStorage()) return 0;
+    const pack = storagePricing.packages[extraStorageIndex];
+    return pack ? calcStoragePackagePrice(pack, storagePricing) : 0;
+  };
+
   const calculateTotal = () => {
     // Depolama Modu
     if (purchaseType === 'storage') {
@@ -213,6 +239,7 @@ export default function Pricing() {
     if (selectedPlan === 'corporate') {
       total = total * targetSeats;
     }
+    total += extraStorageAmount();
 
     let credits = 0;
     if (viewMode === 'dashboard') credits = profile?.organization?.credits || 0;
@@ -296,6 +323,11 @@ export default function Pricing() {
           storage_bytes: totalBytesToAdd,
         });
 
+        await notifyAdminsOfPayment(
+          'Yeni Depolama Satın Alındı',
+          `${profile?.full_name || user.email} ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında ${formatBytes(totalBytesToAdd)} ek depolama satın aldı.`
+        );
+
         alert(
           `✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı${
             useOwnPersonalQuota ? ' (Şahsi Kotanız)' : isCorporate ? ' (Şirket Ortak Kotası)' : ''
@@ -304,6 +336,10 @@ export default function Pricing() {
       } else {
         const now = new Date();
         const finalDate = new Date(now.setMonth(now.getMonth() + addDuration)).toISOString();
+
+        const wantsExtraStorage = addExtraStorage && canAddExtraStorage();
+        const extraStoragePack = wantsExtraStorage ? storagePricing.packages[extraStorageIndex] : null;
+        const extraBytesToAdd = extraStoragePack ? Math.round(extraStoragePack.size_gb * 1024 * 1024 * 1024) : 0;
 
         if (selectedPlan === 'corporate') {
           if (viewMode === 'selection') {
@@ -316,7 +352,7 @@ export default function Pricing() {
                   name: companyName,
                   member_limit: targetSeats,
                   subscription_end_date: finalDate,
-                  storage_limit: 1073741824,
+                  storage_limit: 1073741824 + extraBytesToAdd,
                   is_environmental_consultant: false,
                   storage_preference: corpStorageProvider || 'supabase',
                 },
@@ -375,12 +411,18 @@ export default function Pricing() {
               amount: totalAmount,
               duration_months: addDuration,
               seats: targetSeats,
+              storage_bytes: extraBytesToAdd || null,
             });
+
+            await notifyAdminsOfPayment(
+              'Yeni Kurumsal Üyelik Satın Alındı',
+              `"${companyName}" firması ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında yeni kurumsal üyelik satın aldı (${addDuration} ay, ${targetSeats} kişi).`
+            );
 
             alert(
               corpStorageProvider === 'google_drive'
                 ? `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.\n\n⚠️ Google Drive bağlantınız henüz tamamlanmadı. Sizi "Depolama Ayarları" sayfasına yönlendiriyoruz; orada Google Client ID/Secret bilgilerinizi girip bağlantıyı kendiniz tamamlayabilirsiniz. Bağlantı tamamlanana kadar belge yükleyemezsiniz.`
-                : `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.`
+                : `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.${extraBytesToAdd > 0 ? `\n+${formatBytes(extraBytesToAdd)} ek depolama da şirketinize tanımlandı.` : ''}`
             );
 
             // Google Drive seçildiyse kullanıcıyı doğrudan kendi panelindeki
@@ -406,6 +448,14 @@ export default function Pricing() {
 
             await supabase.rpc('restore_org_roles', { org_id: profile.organization_id });
 
+            if (extraBytesToAdd > 0) {
+              await supabase.rpc('add_storage_limit', {
+                target_id: profile.organization_id,
+                is_corporate: true,
+                bytes_to_add: extraBytesToAdd,
+              });
+            }
+
             await supabase.from('subscription_payments').insert({
               user_id: user.id,
               organization_id: profile.organization_id,
@@ -413,9 +463,15 @@ export default function Pricing() {
               amount: totalAmount,
               duration_months: addDuration,
               seats: targetSeats,
+              storage_bytes: extraBytesToAdd || null,
             });
 
-            alert(`✅ Kurumsal Aboneliğiniz Başarıyla Güncellendi!\nŞirket personel limitiniz ${targetSeats} kişiye yükseltildi ve abonelik süreniz ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar uzatıldı.`);
+            await notifyAdminsOfPayment(
+              'Kurumsal Üyelik Yenilendi',
+              `"${profile?.organization?.name || companyName}" firması ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında üyeliğini yeniledi (${addDuration} ay, ${targetSeats} kişi).`
+            );
+
+            alert(`✅ Kurumsal Aboneliğiniz Başarıyla Güncellendi!\nŞirket personel limitiniz ${targetSeats} kişiye yükseltildi ve abonelik süreniz ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar uzatıldı.${extraBytesToAdd > 0 ? `\n+${formatBytes(extraBytesToAdd)} ek depolama da şirketinize tanımlandı.` : ''}`);
           }
         } else {
           let personalOrgId: string | null = profile?.organization_id || null;
@@ -450,15 +506,29 @@ export default function Pricing() {
             if (personalLocDefErr) throw personalLocDefErr;
           }
 
+          if (extraBytesToAdd > 0) {
+            await supabase.rpc('add_storage_limit', {
+              target_id: user.id,
+              is_corporate: false,
+              bytes_to_add: extraBytesToAdd,
+            });
+          }
+
           await supabase.from('subscription_payments').insert({
             user_id: user.id,
             organization_id: personalOrgId,
             plan_type: 'individual',
             amount: totalAmount,
             duration_months: addDuration,
+            storage_bytes: extraBytesToAdd || null,
           });
 
-          alert(`✅ Bireysel Premium Aboneliğiniz Başarıyla Aktifleştirildi!\nTüm premium özellikler ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar hesabınıza tanımlandı.`);
+          await notifyAdminsOfPayment(
+            'Yeni Bireysel Üyelik Satın Alındı',
+            `${profile?.full_name || user.email} ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında bireysel premium üyelik satın aldı (${addDuration} ay).`
+          );
+
+          alert(`✅ Bireysel Premium Aboneliğiniz Başarıyla Aktifleştirildi!\nTüm premium özellikler ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar hesabınıza tanımlandı.${extraBytesToAdd > 0 ? `\n+${formatBytes(extraBytesToAdd)} ek depolama da hesabınıza tanımlandı.` : ''}`);
         }
       }
 
@@ -639,6 +709,44 @@ export default function Pricing() {
               </p>
 
               <DurationSelector />
+
+              {/* Opsiyonel Ek Depolama — seçilince toplam tutara anında yansır */}
+              {canAddExtraStorage() && (
+                <div className="max-w-xl mx-auto bg-blue-50 p-5 rounded-2xl border border-blue-100 mb-6 text-left">
+                  <label className="flex items-center gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={addExtraStorage}
+                      onChange={(e) => setAddExtraStorage(e.target.checked)}
+                      className="w-5 h-5 accent-blue-600"
+                    />
+                    <span className="font-bold text-sm text-blue-900">
+                      Ek Depolama Alanı Eklemek İster misiniz?
+                    </span>
+                  </label>
+                  {addExtraStorage && (
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {storagePricing.packages.map((pack: any, index: number) => (
+                        <button
+                          type="button"
+                          key={index}
+                          onClick={() => setExtraStorageIndex(index)}
+                          className={`text-left p-3 rounded-xl border-2 transition ${
+                            extraStorageIndex === index
+                              ? 'border-blue-600 bg-white shadow-md'
+                              : 'border-blue-100 bg-white/60 hover:border-blue-300'
+                          }`}
+                        >
+                          <div className="font-bold text-sm text-gray-800">{pack.label}</div>
+                          <div className="text-xs text-blue-600 font-bold">
+                            +{calcStoragePackagePrice(pack, storagePricing).toLocaleString('tr-TR')} TL
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Kurumsal Ayarlar (Sadece Selection Modunda ve Corporate seçiliyse) */}
               {viewMode === 'selection' && selectedPlan === 'corporate' && (
@@ -857,6 +965,11 @@ export default function Pricing() {
                 ? '(Tüm Ekip Dahil)'
                 : '(Tek Seferlik Ödeme)'}
             </div>
+            {purchaseType === 'subscription' && extraStorageAmount() > 0 && (
+              <div className="text-[11px] text-blue-600 font-bold">
+                (+{extraStorageAmount().toLocaleString('tr-TR')} TL ek depolama dahil)
+              </div>
+            )}
           </div>
           <button
             onClick={initiatePurchase}

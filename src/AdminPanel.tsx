@@ -776,6 +776,7 @@ export default function AdminPanel() {
       fetchPermitCategories();
     } else if (activeTab === 'payments') {
       fetchPayments();
+      markPaymentNotificationsRead();
     } else if (activeTab === 'gift_codes') {
       fetchGiftCodes();
     } else if (activeTab === 'module_settings') {
@@ -1262,12 +1263,53 @@ export default function AdminPanel() {
     setLoadingPayments(false);
   };
 
+  // --- YENİ ÖDEME BİLDİRİMLERİ (Ödemeler sekmesindeki rozet) ---
+  // Yeni üyelik/ekstra modül satın alındığında api/paytrShared.ts >
+  // notifyAdmins() bu admin'in profiles.id'sine type: 'payment' ile bir
+  // notifications satırı düşer. Üst navbardaki genel bildirim ziline ek
+  // olarak burada sadece bu tipe özel, okunmamış sayısını gösteriyoruz.
+  const [unreadPaymentNotifCount, setUnreadPaymentNotifCount] = useState(0);
+  const [unreadPaymentNotifs, setUnreadPaymentNotifs] = useState<any[]>([]);
+
+  const fetchUnreadPaymentNotifCount = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (!uid) return;
+    const { data, count } = await supabase
+      .from('notifications')
+      .select('*', { count: 'exact' })
+      .eq('user_id', uid)
+      .eq('type', 'payment')
+      .eq('is_read', false)
+      .order('created_at', { ascending: false });
+    setUnreadPaymentNotifCount(count || 0);
+    setUnreadPaymentNotifs(data || []);
+  };
+
+  const markPaymentNotificationsRead = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (!uid) return;
+    await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('user_id', uid)
+      .eq('type', 'payment')
+      .eq('is_read', false);
+    setUnreadPaymentNotifCount(0);
+  };
+
+  useEffect(() => {
+    fetchUnreadPaymentNotifCount();
+  }, []);
+
   const planTypeLabel = (type: string) => {
     switch (type) {
       case 'individual': return 'Bireysel Premium';
       case 'corporate_new': return 'Kurumsal (Yeni Şirket)';
       case 'corporate_renewal': return 'Kurumsal Yenileme';
       case 'storage': return 'Ekstra Depolama';
+      case 'extra_module': return 'Ekstra Modül';
       default: return type;
     }
   };
@@ -2252,14 +2294,21 @@ export default function AdminPanel() {
             <nav className="space-y-1">
               <button
                 onClick={() => setActiveTab('payments')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-bold transition ${
                   activeTab === 'payments'
                     ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'
                     : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
                 }`}
               >
-                <CreditCard size={18} />
-                <span>Ödemeler & Faturalar</span>
+                <div className="flex items-center gap-3">
+                  <CreditCard size={18} />
+                  <span>Ödemeler & Faturalar</span>
+                </div>
+                {unreadPaymentNotifCount > 0 && (
+                  <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
+                    {unreadPaymentNotifCount}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setActiveTab('gift_codes')}
@@ -2780,6 +2829,28 @@ export default function AdminPanel() {
         {/* ÖDEMELER & FATURALAR TAB */}
         {activeTab === 'payments' && (
           <div className="animate-fadeIn space-y-4">
+            {unreadPaymentNotifs.length > 0 && (
+              <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-xl p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-bold">
+                    <Bell size={16} /> Yeni Satın Alma Bildirimleri ({unreadPaymentNotifs.length})
+                  </div>
+                  <button
+                    onClick={() => setUnreadPaymentNotifs([])}
+                    className="text-xs text-green-700 dark:text-green-400 font-bold hover:underline"
+                  >
+                    Kapat
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {unreadPaymentNotifs.map((n) => (
+                    <div key={n.id} className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 border border-green-100 dark:border-green-900/50">
+                      <span className="font-bold">{n.title}:</span> {n.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
                 <div className="flex items-center gap-2 text-gray-500 text-xs font-bold uppercase mb-1">
@@ -2821,6 +2892,7 @@ export default function AdminPanel() {
                   <option value="corporate_new">Kurumsal (Yeni Şirket)</option>
                   <option value="corporate_renewal">Kurumsal Yenileme</option>
                   <option value="storage">Ekstra Depolama</option>
+                  <option value="extra_module">Ekstra Modül</option>
                 </select>
               </div>
 

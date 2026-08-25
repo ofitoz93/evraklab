@@ -32,7 +32,7 @@ export const SYSTEM_MODULES: SystemModule[] = [
   // 2. Yasal Uyum & Takip (category: 'compliance')
   { key: 'legislations', name: 'Mevzuat Takip', category: 'compliance', categoryName: 'Yasal Uyum & Takip', isDefault: true, description: 'Yasal mevzuat ve standart takibi' },
   { key: 'requests', name: 'Mevzuat Talepleri', category: 'compliance', categoryName: 'Yasal Uyum & Takip', isDefault: true, description: 'Şirketler arası mevzuat talepleri' },
-  { key: 'actions', name: 'Aksiyon Takip', category: 'compliance', categoryName: 'Yasal Uyum & Takip', isDefault: true, description: 'Mevzuat ve denetim aksiyon yönetimi' },
+  { key: 'actions', name: 'Aksiyon Takip', category: 'compliance', categoryName: 'Yasal Uyum & Takip', isDefault: false, description: 'Mevzuat ve denetim aksiyon yönetimi (Ekstra Modül)' },
   { key: 'opinions', name: 'Görüşler', category: 'compliance', categoryName: 'Yasal Uyum & Takip', isDefault: false, description: 'Firma görüş taslakları ve resmi yazışmalar (Ekstra Modül)' },
 
   // 3. Dokümantasyon (category: 'documents')
@@ -176,4 +176,5 @@ export const DEFAULT_EXTRA_MODULE_PRICING: ExtraModulePricing = {
   opinions: { price: 100, period: 'monthly' },
   finance_management: { price: 200, period: 'monthly' },
   evaluations: { price: 75, period: 'monthly' },
+  actions: { price: 100, period: 'monthly' },
 };

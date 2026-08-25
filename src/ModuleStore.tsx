@@ -9,6 +9,7 @@ import {
   getSubModuleKeysOf,
 } from './moduleRegistry';
 import type { ModuleParentMap } from './moduleRegistry';
+import { notifyAdminsOfPayment } from './utils';
 import {
   Zap,
   CheckCircle,
@@ -247,6 +248,11 @@ export default function ModuleStore({
         if (error) throw error;
 
         setConfirmModal({ ...confirmModal, show: false });
+
+        await notifyAdminsOfPayment(
+          'Yeni Ekstra Modül Satın Alındı',
+          `"${orgData?.name || organizationId}" firması "${confirmModal.moduleName}" ekstra modülünü ${Number(confirmModal.price).toLocaleString('tr-TR')} ₺ karşılığında satın aldı.`
+        );
 
         setNotification({
           show: true,

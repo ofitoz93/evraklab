@@ -78,6 +78,14 @@ const getContractStatus = (startDateStr: string) => {
 // müşteriyi dışarıda bırakmamak için).
 const ACCESS_GRACE_DAYS = 30;
 
+// Bu belge türleri müşteri tarafından değil, danışman tarafından hazırlanır
+// (Aylık Faaliyet Raporu / Yıllık İç Tetkik Raporu) — bu yüzden süresi
+// geçtiğinde ensureAutoDocumentRequests otomatik "Evrak Talebi" AÇMAZ (MSDS'te
+// olduğu gibi). Danışman bu belgelerden birini elden isterse, ConsultantPanel
+// üzerinden kendisi manuel bir talep açabilir; o akış bu hariç tutmadan
+// etkilenmez.
+const AUTO_REQUEST_EXCLUDED_DOC_TYPES = new Set(['Aylık Faaliyet Raporu', 'Yıllık İç Tetkik Raporu']);
+
 type ServiceStatus = { expiryDate: Date; daysLeft: number; isExpired: boolean; isWarning: boolean; startDate: Date; isTerminated: boolean };
 
 // Sözleşme durumu artık sabit "service_start_date + 1 yıl" yerine, en güncel
@@ -935,7 +943,11 @@ export default function ClientPanel() {
       const msdsDocIds = new Set(msdsRows.map((m) => m.document_id).filter(Boolean));
       const today = new Date();
       const expiredNonMsds = allDocs.filter(
-        (d) => d.expiry_date && new Date(d.expiry_date) < today && !msdsDocIds.has(d.id)
+        (d) =>
+          d.expiry_date &&
+          new Date(d.expiry_date) < today &&
+          !msdsDocIds.has(d.id) &&
+          !AUTO_REQUEST_EXCLUDED_DOC_TYPES.has(d.type_def?.label)
       );
       if (expiredNonMsds.length === 0) return;
 

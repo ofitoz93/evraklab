@@ -13,6 +13,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { DEFAULT_MODULE_KEYS, SYSTEM_MODULES } from '../src/moduleRegistry';
 
 export const PAYTR_TOKEN_URL = 'https://www.paytr.com/odeme/api/get-token';
 
@@ -90,6 +91,22 @@ export function buildCallbackHash(params: {
   return crypto.createHmac('sha256', params.merchantKey).update(hashStr).digest('base64');
 }
 
+// Ödeme onaylanınca (yeni üyelik veya ekstra modül satın alımı) admin/
+// system_admin rolündeki tüm kullanıcılara bildirim düşer — AdminPanel'in
+// Ödemeler sayfasındaki rozet ve üst navbardaki bildirim zili bu satırları
+// (notifications tablosu, type: 'payment') okuyup gösterir.
+async function notifyAdmins(supabase: ReturnType<typeof createServiceClient>, title: string, message: string) {
+  const { data: admins } = await supabase
+    .from('profiles')
+    .select('id')
+    .in('role', ['admin', 'system_admin']);
+  if (!admins || admins.length === 0) return;
+
+  await supabase.from('notifications').insert(
+    admins.map((a: { id: string }) => ({ user_id: a.id, title, message, type: 'payment' }))
+  );
+}
+
 export type PaytrPurpose =
   | 'module_purchase'
   | 'subscription_individual'
@@ -121,6 +138,14 @@ export async function activatePurchase(tx: {
       p_user_id: tx.user_id,
     });
     if (error) throw error;
+
+    const moduleName = SYSTEM_MODULES.find((m) => m.key === payload.moduleKey)?.name || payload.moduleKey;
+    const { data: org } = await supabase.from('organizations').select('name').eq('id', tx.organization_id).single();
+    await notifyAdmins(
+      supabase,
+      'Yeni Ekstra Modül Satın Alındı',
+      `"${org?.name || tx.organization_id}" firması "${moduleName}" ekstra modülünü ${Number(tx.amount).toLocaleString('tr-TR')} ₺ karşılığında satın aldı.`
+    );
     return;
   }
 
@@ -139,6 +164,12 @@ export async function activatePurchase(tx: {
       amount: tx.amount,
       storage_bytes: payload.bytesToAdd,
     });
+
+    await notifyAdmins(
+      supabase,
+      'Yeni Depolama Satın Alındı',
+      `Bir kullanıcı ${Number(tx.amount).toLocaleString('tr-TR')} ₺ karşılığında ek depolama satın aldı.`
+    );
     return;
   }
 
@@ -153,6 +184,7 @@ export async function activatePurchase(tx: {
           storage_limit: 1073741824,
           is_environmental_consultant: false,
           storage_preference: payload.storageProvider || 'supabase',
+          enabled_modules: DEFAULT_MODULE_KEYS,
         },
       ])
       .select()
@@ -208,6 +240,12 @@ export async function activatePurchase(tx: {
       duration_months: payload.durationMonths,
       seats: payload.targetSeats,
     });
+
+    await notifyAdmins(
+      supabase,
+      'Yeni Kurumsal Üyelik Satın Alındı',
+      `"${payload.companyName}" firması ${Number(tx.amount).toLocaleString('tr-TR')} ₺ karşılığında yeni kurumsal üyelik satın aldı (${payload.durationMonths} ay, ${payload.targetSeats} kişi).`
+    );
     return;
   }
 
@@ -228,6 +266,13 @@ export async function activatePurchase(tx: {
       duration_months: payload.durationMonths,
       seats: payload.targetSeats,
     });
+
+    const { data: org } = await supabase.from('organizations').select('name').eq('id', tx.organization_id).single();
+    await notifyAdmins(
+      supabase,
+      'Kurumsal Üyelik Yenilendi',
+      `"${org?.name || tx.organization_id}" firması ${Number(tx.amount).toLocaleString('tr-TR')} ₺ karşılığında üyeliğini yeniledi (${payload.durationMonths} ay, ${payload.targetSeats} kişi).`
+    );
     return;
   }
 
@@ -238,7 +283,7 @@ export async function activatePurchase(tx: {
     if (isFirstPersonalOrg) {
       const { data: newPersonalOrg, error: personalOrgErr } = await supabase
         .from('organizations')
-        .insert([{ name: payload.personalName, member_limit: 1, is_environmental_consultant: false, is_personal: true }])
+        .insert([{ name: payload.personalName, member_limit: 1, is_environmental_consultant: false, is_personal: true, enabled_modules: DEFAULT_MODULE_KEYS }])
         .select()
         .single();
       if (personalOrgErr) throw personalOrgErr;
@@ -270,6 +315,13 @@ export async function activatePurchase(tx: {
       amount: tx.amount,
       duration_months: payload.durationMonths,
     });
+
+    const { data: buyer } = await supabase.from('profiles').select('full_name, email').eq('id', tx.user_id).single();
+    await notifyAdmins(
+      supabase,
+      'Yeni Bireysel Üyelik Satın Alındı',
+      `${buyer?.full_name || buyer?.email || 'Bir kullanıcı'} ${Number(tx.amount).toLocaleString('tr-TR')} ₺ karşılığında bireysel premium üyelik satın aldı (${payload.durationMonths} ay).`
+    );
     return;
   }
 

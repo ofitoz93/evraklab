@@ -8,7 +8,7 @@ import {
   ChevronRight,
   Database,
 } from 'lucide-react';
-import { formatBytes } from './utils';
+import { formatBytes, notifyAdminsOfPayment } from './utils';
 import PaytrCheckoutModal from './PaytrCheckoutModal';
 
 // Depolama fiyatı = Supabase maliyeti (USD/GB/Ay) × Dolar Kuru × (1 + Kar Marjı).
@@ -114,6 +114,11 @@ export default function Storage() {
         amount: totalAmount,
         storage_bytes: totalBytesToAdd,
       });
+
+      await notifyAdminsOfPayment(
+        'Yeni Depolama Satın Alındı',
+        `${user.email} ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında ${formatBytes(totalBytesToAdd)} ek depolama satın aldı (Şahsi Kota).`
+      );
 
       alert(`✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan (Şahsi Kota) tanımlandı.`);
       window.location.reload();

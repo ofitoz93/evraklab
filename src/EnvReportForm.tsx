@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FileText,
   Save,
@@ -184,6 +184,17 @@ function FieldImageBlock({
 
 export default function EnvReportForm() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // Evraklar sayfasındaki "Yenile" butonundan ?renewFrom=<env_report_id> ile
+  // gelindiyse, önceki raporun işletmesi/türü/doldurulmuş verileri otomatik
+  // çekilip forma basılır (bkz. clients yüklendikten sonra çalışan useEffect
+  // aşağıda). Kaydet her zaman YENİ bir env_reports satırı INSERT eder (bu
+  // bileşende hiç UPDATE yolu yok), bu yüzden eski rapor asla üzerine
+  // yazılmaz — sadece handleSave içindeki "Önceki aktif raporları arşivle"
+  // bloğu devreye girip eski belgeyi arşive taşır, yeni belge ıslak imzasız
+  // olarak en güncel olur.
+  const renewFromReportId = searchParams.get('renewFrom');
+  const [renewFromApplied, setRenewFromApplied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
   const [userProfile, setUserProfile] = useState<any>(null);
@@ -228,6 +239,32 @@ export default function EnvReportForm() {
       if (data) setCedCategories(data);
     });
   }, []);
+
+  // clients listesi gelene kadar bekleyip (aksi halde <select> içinde
+  // clientId eşleşecek bir <option> henüz yok) kaynak raporu tek seferlik
+  // uygular.
+  useEffect(() => {
+    if (!renewFromReportId || renewFromApplied || userMode !== 'consultant' || clients.length === 0) return;
+    setRenewFromApplied(true);
+    (async () => {
+      const { data: source, error } = await supabase
+        .from('env_reports')
+        .select('client_id, report_type, is_manual_upload, form_data')
+        .eq('id', renewFromReportId)
+        .single();
+      if (error || !source) {
+        console.error('Yenilenecek rapor bulunamadı:', error?.message);
+        return;
+      }
+      setClientId(source.client_id || '');
+      setReportType(source.report_type === 'yearly' ? 'yearly' : 'monthly');
+      setIsManualUpload(!!source.is_manual_upload);
+      if (source.form_data) {
+        setFormData(source.form_data);
+        if (source.form_data.attachment_urls) setAttachmentUrls(source.form_data.attachment_urls);
+      }
+    })();
+  }, [renewFromReportId, renewFromApplied, userMode, clients]);
 
   // Seçilen işletme değiştiğinde, bu işletme için daha önce girilmiş "İşletme
   // Yetkilisi" adı var mı diye en son rapora bakar (alan boşsa doldurur, kullanıcı
@@ -1349,11 +1386,17 @@ export default function EnvReportForm() {
                 <select
                   value={reportType}
                   onChange={(e) => setReportType(e.target.value as 'monthly'|'yearly')}
-                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  disabled={!!renewFromReportId}
+                  className="w-full p-2.5 rounded-xl border border-gray-200 bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-blue-500 text-sm font-semibold text-gray-700 dark:text-gray-300 disabled:bg-gray-100 dark:disabled:bg-slate-800 disabled:cursor-not-allowed disabled:text-gray-500"
                 >
                   <option value="monthly">Aylık Değerlendirme Raporu</option>
                   <option value="yearly">Yıllık İç Tetkik Raporu</option>
                 </select>
+                {renewFromReportId && (
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Yenilenen raporun türü değiştirilemez.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
@@ -1621,10 +1664,16 @@ export default function EnvReportForm() {
         </button>
         <div>
           <h1 className="text-xl font-bold">
-            {userMode === 'personal' ? 'Şahsi Rapor Oluştur' : 'Yeni Rapor Oluştur'}
+            {renewFromReportId
+              ? 'Raporu Yenile'
+              : userMode === 'personal' ? 'Şahsi Rapor Oluştur' : 'Yeni Rapor Oluştur'}
           </h1>
           <p className="text-xs text-gray-500">
-            {previewMode ? 'Önizleme' : `Adım ${currentStep} / ${getMaxSteps()}`}
+            {previewMode
+              ? 'Önizleme'
+              : renewFromReportId
+                ? `Önceki raporun verileri yüklendi, güncelleyip kaydedin · Adım ${currentStep} / ${getMaxSteps()}`
+                : `Adım ${currentStep} / ${getMaxSteps()}`}
           </p>
         </div>
 

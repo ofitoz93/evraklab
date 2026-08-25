@@ -1282,7 +1282,22 @@ const getOrCreateDriveFolder = async (
                         >
                           <Eye size={16} />
                         </button>
-                        {canEdit && (
+                        {canEdit && doc.env_report_id ? (
+                          // Aylık Faaliyet Raporu / Yıllık İç Tetkik Raporu gibi
+                          // env_reports'tan gelen belgeler: tarih/dosya güncelleyen
+                          // genel Yenile modalı yerine, önceki raporun doldurulmuş
+                          // verileriyle önceden doldurulmuş rapor formuna götürür
+                          // (bkz. EnvReportForm.tsx > renewFromReportId). Kaydedince
+                          // orada zaten bu belge otomatik arşivlenip yerine ıslak
+                          // imzasız yeni bir belge geçiyor.
+                          <Link
+                            to={`/consultant/reports/add?renewFrom=${doc.env_report_id}`}
+                            className="p-2 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 rounded transition"
+                            title="Raporu Yenile"
+                          >
+                            <RefreshCw size={16} />
+                          </Link>
+                        ) : canEdit && (
                           <button
                             onClick={() => handleOpenRenew(doc)}
                             className="p-2 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 rounded transition"
