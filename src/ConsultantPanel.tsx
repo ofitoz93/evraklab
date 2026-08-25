@@ -11,6 +11,7 @@ import {
   Upload,
   Download,
   AlertCircle,
+  AlertTriangle,
   CheckCircle,
   Clock,
   Eye,
@@ -1066,6 +1067,43 @@ export default function ConsultantPanel() {
   const [reAuthError, setReAuthError] = useState('');
   const [reAuthLoading, setReAuthLoading] = useState(false);
 
+  // Firma sahibinin kendi panelinden firmasını kapatabilmesi (Ayarlar sekmesi
+  // "Tehlikeli Bölge") — admin panelindeki eşdeğeriyle (AdminPanel.tsx >
+  // handleCloseCompany) aynı, geri açılabilir mekanizmayı kullanır: veri
+  // SİLİNMEZ, sadece subscription_end_date bugüne çekilip
+  // check_and_downgrade_subscriptions() ile tüm ekibin rolü anında 'normal'e
+  // düşürülür. Kaza sonucu tıklamayı önlemek için hesap parolasının tekrar
+  // girilmesi isteniyor (finans/İK re-auth'la aynı signInWithPassword deseni).
+  const [showCloseCompanyModal, setShowCloseCompanyModal] = useState(false);
+  const [closeCompanyPassword, setCloseCompanyPassword] = useState('');
+  const [closeCompanyError, setCloseCompanyError] = useState('');
+  const [closingCompanySelf, setClosingCompanySelf] = useState(false);
+
+  const handleCloseCompanySelf = async () => {
+    if (!closeCompanyPassword) return;
+    setClosingCompanySelf(true);
+    setCloseCompanyError('');
+    try {
+      const { error: authErr } = await supabase.auth.signInWithPassword({ email: userEmail, password: closeCompanyPassword });
+      if (authErr) {
+        setCloseCompanyError('Parola hatalı. Lütfen tekrar deneyin.');
+        return;
+      }
+      const { error } = await supabase
+        .from('organizations')
+        .update({ subscription_end_date: new Date().toISOString() })
+        .eq('id', orgId);
+      if (error) throw error;
+      await supabase.rpc('check_and_downgrade_subscriptions');
+      alert('Firmanız kapatıldı. Premium erişiminiz sona erdi.');
+      window.location.href = '/';
+    } catch (err: any) {
+      setCloseCompanyError('İşlem sırasında hata oluştu: ' + err.message);
+    } finally {
+      setClosingCompanySelf(false);
+    }
+  };
+
   // Görüşler Tab State'leri
   const [opinionLetters, setOpinionLetters] = useState<any[]>([]);
   const [loadingOpinions, setLoadingOpinions] = useState(false);
@@ -1362,8 +1400,62 @@ export default function ConsultantPanel() {
 
   // Ekip Yönetimi (Yönetici Paneli) State'leri
   const [invitations, setInvitations] = useState<any[]>([]);
-  const [inviteEmail, setInviteEmail] = useState('');
+  // E-posta ile davet artık etiket/chip girişi: yazılıp boşluk/virgül/Enter
+  // basılınca inviteEmails listesine bir etiket eklenir; inviteEmailDraft o
+  // an kutuda yazılmakta olan (henüz etiketlenmemiş) metni tutar.
+  const [inviteEmails, setInviteEmails] = useState<string[]>([]);
+  const [inviteEmailDraft, setInviteEmailDraft] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
+
+  const isValidInviteEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+
+  const addInviteEmailTag = (raw: string) => {
+    const value = raw.trim();
+    if (!value) return;
+    if (!isValidInviteEmail(value)) {
+      alert(`"${value}" geçerli bir e-posta adresi değil.`);
+      return;
+    }
+    setInviteEmails((prev) => (prev.includes(value) ? prev : [...prev, value]));
+  };
+
+  const removeInviteEmailTag = (email: string) => {
+    setInviteEmails((prev) => prev.filter((e) => e !== email));
+  };
+
+  // Yazarken bir boşluk/virgül gelirse (veya panodan birden fazla adres
+  // yapıştırılırsa) tamamlanmış adresleri etikete çevirir, en sondaki
+  // (henüz ayraç almamış) parçayı kutuda bırakır.
+  const handleInviteDraftChange = (raw: string) => {
+    if (!/[\s,]/.test(raw)) {
+      setInviteEmailDraft(raw);
+      return;
+    }
+    const endsWithSeparator = /[\s,]$/.test(raw);
+    const parts = raw.split(/[\s,]+/).filter(Boolean);
+    const remainder = endsWithSeparator ? '' : parts.pop() || '';
+    parts.forEach(addInviteEmailTag);
+    setInviteEmailDraft(remainder);
+  };
+
+  const handleInviteDraftKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (inviteEmailDraft.trim()) {
+        addInviteEmailTag(inviteEmailDraft);
+        setInviteEmailDraft('');
+      }
+    } else if (e.key === 'Backspace' && !inviteEmailDraft && inviteEmails.length > 0) {
+      setInviteEmails((prev) => prev.slice(0, -1));
+    }
+  };
+
+  const handleInviteDraftBlur = () => {
+    if (inviteEmailDraft.trim()) {
+      addInviteEmailTag(inviteEmailDraft);
+      setInviteEmailDraft('');
+    }
+  };
 
   const roleLabels: any = {
     premium_corporate: 'Çevre Danışmanlık Firma Sahibi',
@@ -2333,80 +2425,116 @@ export default function ConsultantPanel() {
     }
   };
 
+  // Firmanın satın aldığı koltuk kotası (organizations.member_limit) —
+  // hem mevcut ekip üyeleri hem de henüz kabul edilmemiş (is_used:false)
+  // bekleyen davetler bu kotadan sayılır, çünkü her bekleyen davet de
+  // kabul edilirse bir koltuk dolduracaktır. member_limit tanımsızsa,
+  // sayfanın başındaki "Kota: X/Y" özetiyle aynı varsayılanı (5) kullanır.
+  const getRemainingSeatQuota = () => {
+    const limit = orgData?.member_limit || 5;
+    const used = teamMembers.length + invitations.length;
+    return Math.max(0, limit - used);
+  };
+
   const handleSendEmailInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (userRole !== 'premium_corporate') {
       alert('Bu işlem için yetkiniz bulunmamaktadır.');
       return;
     }
-    if (!inviteEmail.includes('@')) return alert('Geçerli bir e-posta adresi giriniz.');
+
+    // Kutucukta yazılıp henüz etikete dönüşmemiş (boşluk/virgül/Enter
+    // basılmamış) son adresi de listeye dahil et.
+    const pendingDraft = inviteEmailDraft.trim();
+    const allEmails = Array.from(new Set([...inviteEmails, ...(pendingDraft ? [pendingDraft] : [])]));
+    if (allEmails.length === 0) return alert('En az bir e-posta adresi giriniz.');
+    const invalid = allEmails.filter((em) => !isValidInviteEmail(em));
+    if (invalid.length > 0) return alert(`Geçersiz e-posta adresi: ${invalid.join(', ')}`);
+
+    const remainingQuota = getRemainingSeatQuota();
+    if (allEmails.length > remainingQuota) {
+      alert(
+        `⚠️ Koltuk kotanız yetersiz. Firmanızın kotası: ${orgData?.member_limit || 5} kişi, şu an dolu/bekleyen: ${teamMembers.length + invitations.length}, kalan boş koltuk: ${remainingQuota}.\n\n${allEmails.length} kişi davet etmeye çalışıyorsunuz. Lütfen davet sayısını azaltın, bekleyen bir daveti iptal edin veya paketinizi yükseltin.`
+      );
+      return;
+    }
 
     setSendingEmail(true);
+    const results = { sent: 0, alreadyInvited: [] as string[], alreadyInOrg: [] as string[], failed: [] as string[] };
     try {
-      const { data: existingInvite } = await supabase
-        .from('invitations')
-        .select('id')
-        .eq('organization_id', orgId)
-        .eq('email', inviteEmail)
-        .eq('is_used', false)
-        .maybeSingle();
+      for (const email of allEmails) {
+        try {
+          const { data: existingInvite } = await supabase
+            .from('invitations')
+            .select('id')
+            .eq('organization_id', orgId)
+            .eq('email', email)
+            .eq('is_used', false)
+            .maybeSingle();
 
-      if (existingInvite) {
-        alert('⚠️ Bu kullanıcıya zaten bekleyen bir davet var.');
-        setSendingEmail(false);
-        return;
+          if (existingInvite) {
+            results.alreadyInvited.push(email);
+            continue;
+          }
+
+          // Kullanıcıyı Bul (sistemde kayıtlı mı, değil mi?)
+          const { data: targetUser } = await supabase
+            .from('profiles')
+            .select('id, full_name, organization_id')
+            .eq('email', email)
+            .maybeSingle();
+
+          if (targetUser?.organization_id) {
+            results.alreadyInOrg.push(email);
+            continue;
+          }
+
+          const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+          const { error: inviteError } = await supabase
+            .from('invitations')
+            .insert([{ code, organization_id: orgId, email }]);
+
+          if (inviteError) throw inviteError;
+
+          const orgNameForMail = orgData?.name || 'Danışmanlık Firması';
+
+          if (targetUser) {
+            // Sisteme kayıtlı kullanıcı: uygulama içi bildirim + bilgilendirme e-postası
+            await supabase.from('notifications').insert([
+              {
+                user_id: targetUser.id,
+                title: 'Danışmanlık Firması Daveti',
+                message: `${orgNameForMail} sizi ekibine katılmaya davet etti.`,
+                type: 'invite',
+                metadata: {
+                  org_id: orgId,
+                  org_name: orgData?.name,
+                  invite_code: code,
+                },
+              },
+            ]);
+            await sendTeamInviteEmail(email, orgNameForMail, `${window.location.origin}/notifications`, false);
+          } else {
+            // Sistemde kayıtlı olmayan kullanıcı: kayıt olunca otomatik katılacağı bağlantı
+            const registerLink = `${window.location.origin}/register?invite_org=${orgId}&invite_code=${code}&invite_email=${encodeURIComponent(email)}`;
+            await sendTeamInviteEmail(email, orgNameForMail, registerLink, true);
+          }
+          results.sent++;
+        } catch {
+          results.failed.push(email);
+        }
       }
 
-      // Kullanıcıyı Bul (sistemde kayıtlı mı, değil mi?)
-      const { data: targetUser } = await supabase
-        .from('profiles')
-        .select('id, full_name, organization_id')
-        .eq('email', inviteEmail)
-        .maybeSingle();
+      const summary: string[] = [];
+      if (results.sent > 0) summary.push(`✅ ${results.sent} davet başarıyla gönderildi.`);
+      if (results.alreadyInvited.length > 0) summary.push(`⚠️ Zaten bekleyen daveti var: ${results.alreadyInvited.join(', ')}`);
+      if (results.alreadyInOrg.length > 0) summary.push(`⚠️ Zaten bir şirkete/firmaya bağlı: ${results.alreadyInOrg.join(', ')}`);
+      if (results.failed.length > 0) summary.push(`❌ Gönderilemedi: ${results.failed.join(', ')}`);
+      alert(summary.join('\n'));
 
-      if (targetUser?.organization_id) {
-        alert('⚠️ Bu kullanıcı zaten bir şirkete/firmaya bağlı.');
-        setSendingEmail(false);
-        return;
-      }
-
-      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const { error: inviteError } = await supabase
-        .from('invitations')
-        .insert([{ code, organization_id: orgId, email: inviteEmail }]);
-
-      if (inviteError) throw inviteError;
-
-      const orgNameForMail = orgData?.name || 'Danışmanlık Firması';
-
-      if (targetUser) {
-        // Sisteme kayıtlı kullanıcı: uygulama içi bildirim + bilgilendirme e-postası
-        await supabase.from('notifications').insert([
-          {
-            user_id: targetUser.id,
-            title: 'Danışmanlık Firması Daveti',
-            message: `${orgNameForMail} sizi ekibine katılmaya davet etti.`,
-            type: 'invite',
-            metadata: {
-              org_id: orgId,
-              org_name: orgData?.name,
-              invite_code: code,
-            },
-          },
-        ]);
-        await sendTeamInviteEmail(inviteEmail, orgNameForMail, `${window.location.origin}/notifications`, false);
-        alert('✅ Davet başarıyla gönderildi! Kullanıcıya uygulama içi bildirim ve e-posta iletildi.');
-      } else {
-        // Sistemde kayıtlı olmayan kullanıcı: kayıt olunca otomatik katılacağı bağlantı
-        const registerLink = `${window.location.origin}/register?invite_org=${orgId}&invite_code=${code}&invite_email=${encodeURIComponent(inviteEmail)}`;
-        await sendTeamInviteEmail(inviteEmail, orgNameForMail, registerLink, true);
-        alert('✅ Davet başarıyla gönderildi! Bu e-posta sistemde kayıtlı olmadığı için kayıt bağlantısı içeren bir davet e-postası gönderildi. Kayıt olduğunda otomatik olarak firmaya katılacak.');
-      }
-
-      setInviteEmail('');
+      setInviteEmails([]);
+      setInviteEmailDraft('');
       fetchInvitations();
-    } catch (error: any) {
-      alert('Hata: ' + error.message);
     } finally {
       setSendingEmail(false);
     }
@@ -2415,6 +2543,10 @@ export default function ConsultantPanel() {
   const handleCreateCode = async () => {
     if (userRole !== 'premium_corporate') {
       alert('Bu işlem için yetkiniz bulunmamaktadır.');
+      return;
+    }
+    if (getRemainingSeatQuota() <= 0) {
+      alert(`⚠️ Koltuk kotanız dolu (${teamMembers.length + invitations.length}/${orgData?.member_limit || 5}). Yeni davet kodu oluşturmak için bekleyen bir daveti iptal edin veya paketinizi yükseltin.`);
       return;
     }
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -8010,6 +8142,69 @@ export default function ConsultantPanel() {
               </button>
             </div>
           </div>
+
+          {userRole === 'premium_corporate' && (
+            <div className="bg-red-50 dark:bg-red-950/10 p-8 rounded-xl border border-red-200 dark:border-red-900">
+              <h2 className="text-xl font-bold mb-2 flex items-center gap-2 text-red-700 dark:text-red-400">
+                <AlertTriangle size={20} /> Tehlikeli Bölge
+              </h2>
+              <p className="text-sm text-red-600 dark:text-red-400 mb-5 leading-relaxed">
+                Firmanızı kapatırsanız aboneliğiniz hemen sona erer ve siz dahil tüm ekibinizin premium erişimi anında durur — yeni belge, rapor veya görüş oluşturamazsınız. Firma ve mevcut verileriniz silinmez; abonelik yenilemesi yaparak firmayı tekrar aktif hale getirebilirsiniz.
+              </p>
+              <button
+                type="button"
+                onClick={() => { setCloseCompanyPassword(''); setCloseCompanyError(''); setShowCloseCompanyModal(true); }}
+                className="border border-red-300 text-red-700 hover:bg-red-100 dark:hover:bg-red-950/30 px-5 py-2.5 rounded-xl font-bold text-sm transition"
+              >
+                Firmayı Kapat
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showCloseCompanyModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="bg-red-100 dark:bg-red-950/30 text-red-600 p-2.5 rounded-xl">
+                <AlertTriangle size={22} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200">Firmayı Kapat</h3>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-5 leading-relaxed">
+              "{orgData?.name}" firmasını kapatmak üzeresiniz. Bu işlemden sonra siz dahil tüm ekibinizin premium erişimi hemen sona erecek. Devam etmek için hesap parolanızı girin.
+            </p>
+            <form onSubmit={(e) => { e.preventDefault(); handleCloseCompanySelf(); }} className="space-y-3">
+              <input
+                type="password"
+                autoFocus
+                required
+                placeholder="Hesap parolanız"
+                value={closeCompanyPassword}
+                onChange={(e) => { setCloseCompanyPassword(e.target.value); setCloseCompanyError(''); }}
+                className="w-full p-3 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 outline-none focus:ring-1 focus:ring-red-500 font-bold text-sm text-slate-700 dark:text-slate-300 border-slate-200"
+              />
+              {closeCompanyError && <p className="text-xs font-bold text-rose-600">{closeCompanyError}</p>}
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="submit"
+                  disabled={closingCompanySelf || !closeCompanyPassword}
+                  className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-xl text-sm font-bold transition flex items-center justify-center gap-2"
+                >
+                  {closingCompanySelf ? <Loader className="animate-spin" size={14} /> : <Lock size={14} />}
+                  {closingCompanySelf ? 'Kapatılıyor...' : 'Doğrula ve Firmayı Kapat'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCloseCompanyModal(false)}
+                  className="flex-1 border border-slate-200 dark:border-slate-700 py-3 rounded-xl font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 transition"
+                >
+                  Vazgeç
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -8475,20 +8670,62 @@ export default function ConsultantPanel() {
                     <Mail size={18} /> E-Posta ile Davet
                   </h3>
                   <form onSubmit={handleSendEmailInvite} className="space-y-2">
-                    <input
-                      type="email"
-                      required
-                      placeholder="personel@sirket.com"
-                      className="w-full border p-2 rounded-lg text-sm outline-none focus:border-blue-500 dark:bg-slate-900 dark:border-slate-700"
-                      value={inviteEmail}
-                      onChange={(e) => setInviteEmail(e.target.value)}
-                    />
-                    <button
-                      disabled={sendingEmail}
-                      className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-blue-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                    <div
+                      onClick={() => document.getElementById('invite-email-draft-input')?.focus()}
+                      className="w-full border rounded-lg text-sm dark:bg-slate-900 dark:border-slate-700 focus-within:border-blue-500 p-1.5 flex flex-wrap gap-1.5 cursor-text"
                     >
-                      {sendingEmail ? 'Gönderiliyor...' : 'Davet Gönder'}
-                    </button>
+                      {inviteEmails.map((email) => (
+                        <span
+                          key={email}
+                          className="inline-flex items-center gap-1 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 text-xs font-bold pl-2 pr-1 py-1 rounded-md"
+                        >
+                          {email}
+                          <button
+                            type="button"
+                            onClick={() => removeInviteEmailTag(email)}
+                            className="p-0.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900 hover:text-red-600 transition"
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))}
+                      <input
+                        id="invite-email-draft-input"
+                        type="text"
+                        placeholder={inviteEmails.length === 0 ? 'personel@sirket.com' : 'Ekle...'}
+                        className="flex-1 min-w-[140px] outline-none bg-transparent text-sm py-0.5 dark:text-gray-200"
+                        value={inviteEmailDraft}
+                        onChange={(e) => handleInviteDraftChange(e.target.value)}
+                        onKeyDown={handleInviteDraftKeyDown}
+                        onBlur={handleInviteDraftBlur}
+                      />
+                    </div>
+                    <p className="text-[10px] text-gray-400">
+                      Birden fazla kişiyi aynı anda davet edebilirsiniz — her e-postadan sonra boşluk, virgül veya Enter'a basın.
+                    </p>
+                    {(() => {
+                      const remainingQuota = getRemainingSeatQuota();
+                      const requestedCount = inviteEmails.length + (inviteEmailDraft.trim() ? 1 : 0);
+                      const overQuota = requestedCount > remainingQuota;
+                      return (
+                        <>
+                          <p className={`text-[10px] font-bold ${remainingQuota === 0 ? 'text-red-500' : overQuota ? 'text-orange-500' : 'text-gray-400'}`}>
+                            Kalan boş koltuk: {remainingQuota} / {orgData?.member_limit || 5}
+                            {overQuota && ' — bu kadarını davet edemezsiniz'}
+                          </p>
+                          <button
+                            disabled={sendingEmail || requestedCount === 0 || overQuota}
+                            className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-blue-700 flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            {sendingEmail
+                              ? 'Gönderiliyor...'
+                              : requestedCount > 1
+                                ? `${requestedCount} Davet Gönder`
+                                : 'Davet Gönder'}
+                          </button>
+                        </>
+                      );
+                    })()}
                   </form>
                 </div>
 
@@ -8502,9 +8739,10 @@ export default function ConsultantPanel() {
                   </p>
                   <button
                     onClick={handleCreateCode}
-                    className="w-full bg-purple-600 text-white py-2.5 rounded-lg font-bold text-sm hover:bg-purple-700 transition"
+                    disabled={getRemainingSeatQuota() === 0}
+                    className="w-full bg-purple-600 text-white py-2.5 rounded-lg font-bold text-sm hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Kod Oluştur
+                    {getRemainingSeatQuota() === 0 ? 'Koltuk Kotası Dolu' : 'Kod Oluştur'}
                   </button>
                 </div>
               </div>

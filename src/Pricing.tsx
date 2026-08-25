@@ -174,14 +174,30 @@ export default function Pricing() {
           setViewMode('dashboard');
           setSelectedPlan('individual');
         } else if (orgData) {
-          setViewMode('dashboard');
-          setTargetSeats(orgData.member_limit);
-          const { count } = await supabase
-            .from('profiles')
-            .select('*', { count: 'exact', head: true })
-            .eq('organization_id', profileData.organization_id);
-          setActiveMembersCount(count || 1);
-          setSelectedPlan('corporate');
+          // Firma kapatılmış (ConsultantPanel > "Firmayı Kapat" veya doğal
+          // süre dolumu — her ikisi de subscription_end_date'i geçmişe çekip
+          // check_and_downgrade_subscriptions() ile rolü 'normal'e düşürüyor)
+          // ama profiles.organization_id hâlâ o (artık pasif) firmaya işaret
+          // ediyorsa, kullanıcıyı sonsuza dek "sadece bu firmayı yenile"
+          // moduna kilitlemiyoruz — tam seçim ekranını (bireysel / yeni
+          // kurumsal firma, istediği isimle) açıyoruz. Aktif bir kurumsal
+          // sahip/personel için davranış aynen korunuyor.
+          const orgClosed =
+            (!orgData.subscription_end_date || new Date(orgData.subscription_end_date) <= new Date()) &&
+            profileData.role === 'normal';
+
+          if (orgClosed) {
+            setViewMode('selection');
+          } else {
+            setViewMode('dashboard');
+            setTargetSeats(orgData.member_limit);
+            const { count } = await supabase
+              .from('profiles')
+              .select('*', { count: 'exact', head: true })
+              .eq('organization_id', profileData.organization_id);
+            setActiveMembersCount(count || 1);
+            setSelectedPlan('corporate');
+          }
         } else {
           setViewMode('selection');
         }
@@ -298,6 +314,13 @@ export default function Pricing() {
       return;
     }
 
+    // Satın alma tamamlanınca aynı sekmede ana sayfaya gidilir; Dashboard.tsx
+    // ?purchase= parametresini görünce tam sayfa kaplayan bir karşılama
+    // ekranı gösterir (bkz. Dashboard.tsx > purchaseWelcome).
+    const goToWelcomePage = (purchaseKey: string) => {
+      window.location.href = `/?purchase=${purchaseKey}`;
+    };
+
     setProcessing(true);
     try {
       if (purchaseType === 'storage') {
@@ -328,11 +351,8 @@ export default function Pricing() {
           `${profile?.full_name || user.email} ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında ${formatBytes(totalBytesToAdd)} ek depolama satın aldı.`
         );
 
-        alert(
-          `✅ Depolama Alanı Başarıyla Satın Alındı!\nSisteminize ${formatBytes(totalBytesToAdd)} ekstra alan tanımlandı${
-            useOwnPersonalQuota ? ' (Şahsi Kotanız)' : isCorporate ? ' (Şirket Ortak Kotası)' : ''
-          }.`
-        );
+        goToWelcomePage('storage');
+        return;
       } else {
         const now = new Date();
         const finalDate = new Date(now.setMonth(now.getMonth() + addDuration)).toISOString();
@@ -419,12 +439,6 @@ export default function Pricing() {
               `"${companyName}" firması ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında yeni kurumsal üyelik satın aldı (${addDuration} ay, ${targetSeats} kişi).`
             );
 
-            alert(
-              corpStorageProvider === 'google_drive'
-                ? `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.\n\n⚠️ Google Drive bağlantınız henüz tamamlanmadı. Sizi "Depolama Ayarları" sayfasına yönlendiriyoruz; orada Google Client ID/Secret bilgilerinizi girip bağlantıyı kendiniz tamamlayabilirsiniz. Bağlantı tamamlanana kadar belge yükleyemezsiniz.`
-                : `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.${extraBytesToAdd > 0 ? `\n+${formatBytes(extraBytesToAdd)} ek depolama da şirketinize tanımlandı.` : ''}`
-            );
-
             // Google Drive seçildiyse kullanıcıyı doğrudan kendi panelindeki
             // self-servis "Depolama Ayarları" sekmesine yönlendiriyoruz (tam
             // sayfa yenilemesiyle — App.tsx'in premium_corporate rolünü/org'u
@@ -432,11 +446,18 @@ export default function Pricing() {
             // okuyup ilgili sekmeyi otomatik açıyor). Bağlantıyı kendisi
             // tamamlayamazsa storage_settings sekmesindeki "Destek Modülünden
             // Adminden Yardım İsteyin" linkiyle az önce açılan ticket'a ulaşır.
-            // Diğer satın alma türlerinde alttaki genel reload yeterli.
+            // Bu yüzden bu durumda genel "hoş geldiniz" banner'ı yerine burada
+            // hâlâ ayrıntılı bir alert kullanılıyor.
             if (corpStorageProvider === 'google_drive') {
+              alert(
+                `✅ Kurumsal Premium Aboneliğiniz Başarıyla Aktifleştirildi!\n"${companyName}" isimli şirketiniz oluşturuldu ve yönetici rolünüz tanımlandı.\n\n⚠️ Google Drive bağlantınız henüz tamamlanmadı. Sizi "Depolama Ayarları" sayfasına yönlendiriyoruz; orada Google Client ID/Secret bilgilerinizi girip bağlantıyı kendiniz tamamlayabilirsiniz. Bağlantı tamamlanana kadar belge yükleyemezsiniz.`
+              );
               window.location.href = '/consultant?tab=storage_settings';
               return;
             }
+
+            goToWelcomePage('corporate_new');
+            return;
           } else {
             if (!profile?.organization_id) throw new Error('Şirketiniz bulunamadı.');
 
@@ -471,10 +492,18 @@ export default function Pricing() {
               `"${profile?.organization?.name || companyName}" firması ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında üyeliğini yeniledi (${addDuration} ay, ${targetSeats} kişi).`
             );
 
-            alert(`✅ Kurumsal Aboneliğiniz Başarıyla Güncellendi!\nŞirket personel limitiniz ${targetSeats} kişiye yükseltildi ve abonelik süreniz ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar uzatıldı.${extraBytesToAdd > 0 ? `\n+${formatBytes(extraBytesToAdd)} ek depolama da şirketinize tanımlandı.` : ''}`);
+            goToWelcomePage('corporate_renewal');
+            return;
           }
         } else {
-          let personalOrgId: string | null = profile?.organization_id || null;
+          // profile.organization_id kapatılmış/eski bir KURUMSAL firmaya
+          // işaret ediyor olabilir (bkz. yukarıdaki orgClosed mantığı) — bu
+          // durumda onu "kişisel org" gibi yeniden kullanmak, bireysel
+          // premium hesabı yanlışlıkla o eski kurumsal firmanın (çok kişilik,
+          // is_personal:false) satırına bağlardı. Sadece GERÇEKTEN kişisel
+          // (is_personal:true) bir org varsa onu yeniden kullanıyoruz;
+          // aksi halde sıfırdan yeni bir kişisel org oluşturuluyor.
+          let personalOrgId: string | null = profile?.organization?.is_personal ? profile.organization_id : null;
           const personalName = profile?.full_name?.trim() || user.email;
           const isFirstPersonalOrg = !personalOrgId;
 
@@ -528,11 +557,10 @@ export default function Pricing() {
             `${profile?.full_name || user.email} ${totalAmount.toLocaleString('tr-TR')} ₺ karşılığında bireysel premium üyelik satın aldı (${addDuration} ay).`
           );
 
-          alert(`✅ Bireysel Premium Aboneliğiniz Başarıyla Aktifleştirildi!\nTüm premium özellikler ${new Date(finalDate).toLocaleDateString('tr-TR')} tarihine kadar hesabınıza tanımlandı.${extraBytesToAdd > 0 ? `\n+${formatBytes(extraBytesToAdd)} ek depolama da hesabınıza tanımlandı.` : ''}`);
+          goToWelcomePage('individual');
+          return;
         }
       }
-
-      window.location.reload();
     } catch (err: any) {
       alert('Hata: ' + err.message);
     } finally {

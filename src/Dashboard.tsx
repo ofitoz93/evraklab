@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   FileText,
   Clock,
@@ -18,6 +18,8 @@ import {
   Building,
   AlertCircle,
   File,
+  PartyPopper,
+  X,
 } from 'lucide-react';
 
 // Boyut formatlama (Byte -> MB/GB)
@@ -30,7 +32,64 @@ function formatBytes(bytes: number, decimals = 2) {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
+const PURCHASE_WELCOME_MESSAGES: Record<
+  string,
+  { title: string; body: string; links: { label: string; to: string }[] }
+> = {
+  individual: {
+    title: 'Hoş Geldiniz!',
+    body: 'Bireysel Premium üyeliğiniz aktif edildi. Tüm premium özellikler artık kullanımınıza açık. Ödeme dökümünüzü dilediğiniz zaman "Ödemeler" sayfanızdan görüntüleyebilirsiniz.',
+    links: [
+      { label: 'İlk Belgemi Ekle', to: '/documents/add' },
+      { label: 'Belgelerim', to: '/documents' },
+      { label: 'Yardım Rehberi', to: '/help' },
+    ],
+  },
+  corporate_new: {
+    title: 'Hoş Geldiniz!',
+    body: 'Şirketiniz oluşturuldu ve kurumsal premium üyeliğiniz aktif edildi. Ekibinizi davet ederek hemen çalışmaya başlayabilirsiniz.',
+    links: [
+      { label: 'Ekibimi Davet Et', to: '/consultant?tab=team' },
+      { label: 'Belgelerim', to: '/documents' },
+      { label: 'Yardım Rehberi', to: '/help' },
+    ],
+  },
+  corporate_renewal: {
+    title: 'Aboneliğiniz Yenilendi!',
+    body: 'Kurumsal üyeliğiniz başarıyla uzatıldı, ekibiniz kesintisiz kullanmaya devam edebilir.',
+    links: [
+      { label: 'Belgelerim', to: '/documents' },
+      { label: 'Ekibim', to: '/consultant?tab=team' },
+      { label: 'Yardım Rehberi', to: '/help' },
+    ],
+  },
+  storage: {
+    title: 'Depolama Alanınız Güncellendi!',
+    body: 'Satın aldığınız ek depolama alanı hesabınıza kalıcı olarak tanımlandı.',
+    links: [
+      { label: 'Belgelerim', to: '/documents' },
+      { label: 'Yardım Rehberi', to: '/help' },
+    ],
+  },
+};
+
 export default function Dashboard() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [purchaseWelcome] = useState(() => {
+    const key = searchParams.get('purchase');
+    return key ? PURCHASE_WELCOME_MESSAGES[key] || null : null;
+  });
+  const [showPurchaseWelcome, setShowPurchaseWelcome] = useState(!!purchaseWelcome);
+
+  useEffect(() => {
+    if (purchaseWelcome) {
+      // Bildirimi gösterdikten sonra ?purchase= parametresini adres
+      // çubuğundan temizle ki sayfa yenilenince tekrar çıkmasın.
+      setSearchParams({}, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [loading, setLoading] = useState(true);
   const [userName, setUserName] = useState('');
   const [canAccessConsultant, setCanAccessConsultant] = useState(false);
@@ -286,6 +345,43 @@ export default function Dashboard() {
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 pb-24">
+      {showPurchaseWelcome && purchaseWelcome && (
+        <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-md flex items-center justify-center p-6 overflow-y-auto animate-fadeIn">
+          <div className="relative max-w-lg w-full text-center text-white bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 rounded-3xl shadow-2xl p-8 sm:p-10">
+            <button
+              onClick={() => setShowPurchaseWelcome(false)}
+              className="absolute top-4 right-4 p-2 rounded-full text-white/80 hover:bg-white/15 hover:text-white transition"
+              title="Kapat"
+            >
+              <X size={20} />
+            </button>
+            <div className="w-16 h-16 mx-auto mb-5 bg-white/15 rounded-2xl flex items-center justify-center">
+              <PartyPopper size={32} />
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-black mb-3">{purchaseWelcome.title}</h1>
+            <p className="text-sm text-blue-50 leading-relaxed mb-7">{purchaseWelcome.body}</p>
+            <div className="flex flex-wrap justify-center gap-2 mb-7">
+              {purchaseWelcome.links.map((link) => (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  onClick={() => setShowPurchaseWelcome(false)}
+                  className="bg-white/15 hover:bg-white/25 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition flex items-center gap-1.5"
+                >
+                  {link.label} <ArrowRight size={12} />
+                </Link>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowPurchaseWelcome(false)}
+              className="bg-white text-blue-700 hover:bg-blue-50 px-6 py-3 rounded-xl font-bold text-sm shadow-lg transition"
+            >
+              Panele Git
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* BAŞLIK */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>

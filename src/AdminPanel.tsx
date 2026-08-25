@@ -776,7 +776,7 @@ export default function AdminPanel() {
       fetchPermitCategories();
     } else if (activeTab === 'payments') {
       fetchPayments();
-      markPaymentNotificationsRead();
+      markPaymentsSeen();
     } else if (activeTab === 'gift_codes') {
       fetchGiftCodes();
     } else if (activeTab === 'module_settings') {
@@ -1263,44 +1263,40 @@ export default function AdminPanel() {
     setLoadingPayments(false);
   };
 
-  // --- YENİ ÖDEME BİLDİRİMLERİ (Ödemeler sekmesindeki rozet) ---
-  // Yeni üyelik/ekstra modül satın alındığında api/paytrShared.ts >
-  // notifyAdmins() bu admin'in profiles.id'sine type: 'payment' ile bir
-  // notifications satırı düşer. Üst navbardaki genel bildirim ziline ek
-  // olarak burada sadece bu tipe özel, okunmamış sayısını gösteriyoruz.
-  const [unreadPaymentNotifCount, setUnreadPaymentNotifCount] = useState(0);
-  const [unreadPaymentNotifs, setUnreadPaymentNotifs] = useState<any[]>([]);
+  // --- YENİ ÖDEMELER (Ödeme Geçmişi tablosunda "Yeni" etiketi) ---
+  // Ayrı bir "bildirim" kutusu yerine, admin'in bu taraycıda Ödemeler
+  // sekmesini en son ne zaman açtığını localStorage'da tutup, o tarihten
+  // sonra oluşmuş subscription_payments satırlarını doğrudan tabloda "Yeni"
+  // rozetiyle işaretliyoruz. Sekme her açıldığında eşik, o anki localStorage
+  // değerinden DONDURULUP (paymentsSeenBefore) localStorage hemen "şimdi"ye
+  // güncellenir — böylece rozetler o oturum boyunca görünür kalır, bir
+  // sonraki ziyarette ise yalnızca o ziyaretten sonraki ödemeler yeni sayılır.
+  const PAYMENTS_LAST_SEEN_KEY = 'evraklab_admin_payments_last_seen';
+  const [paymentsSeenBefore, setPaymentsSeenBefore] = useState<string | null>(null);
 
-  const fetchUnreadPaymentNotifCount = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const uid = session?.user?.id;
-    if (!uid) return;
-    const { data, count } = await supabase
-      .from('notifications')
-      .select('*', { count: 'exact' })
-      .eq('user_id', uid)
-      .eq('type', 'payment')
-      .eq('is_read', false)
-      .order('created_at', { ascending: false });
-    setUnreadPaymentNotifCount(count || 0);
-    setUnreadPaymentNotifs(data || []);
+  const markPaymentsSeen = () => {
+    const stored = localStorage.getItem(PAYMENTS_LAST_SEEN_KEY);
+    setPaymentsSeenBefore(stored);
+    localStorage.setItem(PAYMENTS_LAST_SEEN_KEY, new Date().toISOString());
+    setNewPaymentsCount(0);
   };
 
-  const markPaymentNotificationsRead = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const uid = session?.user?.id;
-    if (!uid) return;
-    await supabase
-      .from('notifications')
-      .update({ is_read: true })
-      .eq('user_id', uid)
-      .eq('type', 'payment')
-      .eq('is_read', false);
-    setUnreadPaymentNotifCount(0);
-  };
+  const isPaymentNew = (p: any) =>
+    !!paymentsSeenBefore && !!p.created_at && new Date(p.created_at) > new Date(paymentsSeenBefore);
 
+  // Sekme hiç açılmadan önce de sidebar rozetinde kaç yeni ödeme olduğunu
+  // gösterebilmek için mount'ta hafif bir count sorgusu atılır. İlk kez
+  // kullanılıyorsa (localStorage boşsa) tüm geçmişi "yeni" gibi göstermemek
+  // için sayaç 0 bırakılır — tıpkı markPaymentsSeen'deki mantıkla tutarlı.
+  const [newPaymentsCount, setNewPaymentsCount] = useState(0);
   useEffect(() => {
-    fetchUnreadPaymentNotifCount();
+    const stored = localStorage.getItem(PAYMENTS_LAST_SEEN_KEY);
+    if (!stored) return;
+    supabase
+      .from('subscription_payments')
+      .select('*', { count: 'exact', head: true })
+      .gt('created_at', stored)
+      .then(({ count }) => setNewPaymentsCount(count || 0));
   }, []);
 
   const planTypeLabel = (type: string) => {
@@ -2123,6 +2119,40 @@ export default function AdminPanel() {
     }
   };
 
+  // Firmayı kalıcı olarak SİLMEZ (bkz. handleDeleteCompany) — abonelik bitiş
+  // tarihini bugüne çeker ve check_and_downgrade_subscriptions() RPC'sini
+  // hemen tetikleyerek tüm çalışanların rolünü 'normal'e düşürür (aynı RPC
+  // normalde her oturum açılışında App.tsx'te opportunistic çalışıyor —
+  // burada beklemeden anında uygulanması için elle çağrılıyor). Firma ve
+  // verileri kalır; abonelik tarihi yeniden uzatılıp Pricing.tsx'teki
+  // restore_org_roles ile roller geri yüklenerek yeniden açılabilir.
+  const [closingCompany, setClosingCompany] = useState(false);
+  const handleCloseCompany = async () => {
+    if (!editingCompany || editingCompany.id === 'new') return;
+    if (
+      !window.confirm(
+        `"${editingCompany.name}" firmasını kapatmak istediğinize emin misiniz?\n\nAbonelik bitiş tarihi bugüne çekilecek ve tüm çalışanların premium erişimi hemen sona erecek. Firma ve verileri silinmez.`
+      )
+    )
+      return;
+    setClosingCompany(true);
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({ subscription_end_date: new Date().toISOString() })
+        .eq('id', editingCompany.id);
+      if (error) throw error;
+      await supabase.rpc('check_and_downgrade_subscriptions');
+      alert('Firma kapatıldı. Çalışanların premium erişimi sona erdi.');
+      setEditingCompany(null);
+      fetchCompanies();
+    } catch (err: any) {
+      alert('Hata: ' + err.message);
+    } finally {
+      setClosingCompany(false);
+    }
+  };
+
   const handleDeleteCompany = async (orgId: string, orgName: string) => {
     if (
       !window.confirm(
@@ -2304,9 +2334,9 @@ export default function AdminPanel() {
                   <CreditCard size={18} />
                   <span>Ödemeler & Faturalar</span>
                 </div>
-                {unreadPaymentNotifCount > 0 && (
+                {newPaymentsCount > 0 && (
                   <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
-                    {unreadPaymentNotifCount}
+                    {newPaymentsCount}
                   </span>
                 )}
               </button>
@@ -2829,28 +2859,6 @@ export default function AdminPanel() {
         {/* ÖDEMELER & FATURALAR TAB */}
         {activeTab === 'payments' && (
           <div className="animate-fadeIn space-y-4">
-            {unreadPaymentNotifs.length > 0 && (
-              <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-xl p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-bold">
-                    <Bell size={16} /> Yeni Satın Alma Bildirimleri ({unreadPaymentNotifs.length})
-                  </div>
-                  <button
-                    onClick={() => setUnreadPaymentNotifs([])}
-                    className="text-xs text-green-700 dark:text-green-400 font-bold hover:underline"
-                  >
-                    Kapat
-                  </button>
-                </div>
-                <div className="space-y-1.5">
-                  {unreadPaymentNotifs.map((n) => (
-                    <div key={n.id} className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-slate-800 rounded-lg px-3 py-2 border border-green-100 dark:border-green-900/50">
-                      <span className="font-bold">{n.title}:</span> {n.message}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm">
                 <div className="flex items-center gap-2 text-gray-500 text-xs font-bold uppercase mb-1">
@@ -2915,9 +2923,16 @@ export default function AdminPanel() {
                       {payments
                         .filter((p) => !paymentsPlanFilter || p.plan_type === paymentsPlanFilter)
                         .map((p) => (
-                          <tr key={p.id}>
+                          <tr key={p.id} className={isPaymentNew(p) ? 'bg-green-50/60 dark:bg-green-950/10' : ''}>
                             <td className="py-2.5 pr-3 text-xs text-gray-500">
-                              {new Date(p.created_at).toLocaleDateString('tr-TR')}
+                              <div className="flex items-center gap-1.5">
+                                {new Date(p.created_at).toLocaleDateString('tr-TR')}
+                                {isPaymentNew(p) && (
+                                  <span className="bg-green-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-wide">
+                                    Yeni
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-2.5 pr-3">
                               <div className="font-bold text-gray-800 dark:text-gray-200">
@@ -5705,6 +5720,23 @@ export default function AdminPanel() {
               {editingCompany.id !== 'new' && (
                 <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-[10px] font-medium leading-relaxed">
                   ⚠️ Şirket bilgileri veya abonelik süresi güncellendiğinde, bu şirkete bağlı tüm çalışanların paket aktiflik süreleri bu durumdan etkilenecektir.
+                </div>
+              )}
+
+              {editingCompany.id !== 'new' && (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-xl">
+                  <div className="text-xs font-bold text-red-700 uppercase tracking-wide mb-1">Tehlikeli Bölge</div>
+                  <p className="text-[11px] text-red-600 mb-3 leading-relaxed">
+                    Firmayı kapatmak abonelik bitiş tarihini bugüne çeker ve tüm çalışanların premium erişimini hemen sonlandırır. Firma ve verileri silinmez — abonelik tarihini yeniden uzatarak firmayı tekrar açabilirsiniz.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleCloseCompany}
+                    disabled={closingCompany}
+                    className="w-full border border-red-300 text-red-700 hover:bg-red-100 py-2.5 rounded-xl font-bold text-sm transition disabled:opacity-50"
+                  >
+                    {closingCompany ? 'Kapatılıyor...' : 'Firmayı Kapat'}
+                  </button>
                 </div>
               )}
 
