@@ -1,5 +1,5 @@
 import { useRef, type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, Play, Pause } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Play, Pause, Volume2, VolumeX } from 'lucide-react';
 import type { TourStep } from './types';
 import { useTourEngine } from './useTourEngine';
 import './helpTour.css';
@@ -11,10 +11,8 @@ interface TourEngineProps {
 
 export default function TourEngine({ steps, children }: TourEngineProps) {
   const stageRef = useRef<HTMLDivElement>(null);
-  const { index, step, total, targetRect, playing, hasStarted, next, prev, jumpTo, togglePlay } = useTourEngine(
-    steps,
-    stageRef
-  );
+  const { index, step, total, targetRect, playing, hasStarted, muted, next, prev, jumpTo, togglePlay, toggleMuted } =
+    useTourEngine(steps, stageRef);
 
   const placeBelow = !!targetRect && targetRect.top < 140;
 
@@ -101,13 +99,6 @@ export default function TourEngine({ steps, children }: TourEngineProps) {
                 : undefined
             }
           />
-          {hasStarted && targetRect && (
-            <span
-              key={index}
-              className="ht-cursor-dot is-visible is-ping"
-              style={{ left: targetRect.left + targetRect.width / 2, top: targetRect.top + targetRect.height / 2 }}
-            />
-          )}
           {hasStarted && targetRect && step && (
             <div
               role="status"
@@ -194,6 +185,15 @@ export default function TourEngine({ steps, children }: TourEngineProps) {
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 disabled:opacity-40 disabled:cursor-not-allowed hover:border-blue-400"
             >
               Sonraki <ChevronRight size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={toggleMuted}
+              aria-label={muted ? 'Sesli anlatımı aç' : 'Sesli anlatımı kapat'}
+              aria-pressed={!muted}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 hover:border-blue-400"
+            >
+              {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
             </button>
           </div>
           <span className="font-mono text-xs text-gray-500 dark:text-gray-400">

@@ -749,8 +749,6 @@ export default function ConsultantPanel() {
   const [parsingPdf, setParsingPdf] = useState(false);
   const [parsingTextMode, setParsingTextMode] = useState(false);
   const [savingLegislation, setSavingLegislation] = useState(false);
-  const [pendingCompanyLegislations, setPendingCompanyLegislations] = useState<any[]>([]);
-  const [reviewingLegId, setReviewingLegId] = useState<string | null>(null);
 
   // Mevcut Durum (Current Status Notes) states
   const [editingNotesArtId, setEditingNotesArtId] = useState<string | null>(null);
@@ -1538,6 +1536,8 @@ export default function ConsultantPanel() {
     const createdMs = a.created_at ? new Date(a.created_at).getTime() : 0;
     return createdMs > actionsLastSeen;
   }).length;
+
+  const pendingRegulationRequestsCount = staffRequests.filter((r: any) => r.status === 'pending').length;
 
   useEffect(() => {
     if (activeTab === 'legislations' && legSubTab === 'calendar' && orgId) {
@@ -3236,9 +3236,7 @@ export default function ConsultantPanel() {
 
       if (err1) throw err1;
       const approvedCompLegs = (compLegs || []).filter((cl: any) => !cl.status || cl.status === 'approved');
-      const pendingCompLegs = (compLegs || []).filter((cl: any) => cl.status === 'pending_approval');
       setAssignedGlobalLegislations(approvedCompLegs.map((cl: any) => cl.regulation).filter(Boolean));
-      setPendingCompanyLegislations(pendingCompLegs);
 
       // Sadece gerçek sistem (admin) mevzuatları - company_id NULL olanlar.
       // Önceden filtre yoktu ve TÜM firmaların özel mevzuatları burada
@@ -3640,37 +3638,6 @@ export default function ConsultantPanel() {
       alert('Kaydedilirken hata oluştu: ' + err.message);
     } finally {
       setSavingLegislation(false);
-    }
-  };
-
-  // Personel tarafından eklenen ve onay bekleyen özel mevzuatı yönetici onaylar/reddeder
-  const handleReviewPendingLegislation = async (companyRegId: string, approve: boolean, regulationId: string) => {
-    if (!window.confirm(approve ? 'Bu mevzuatı onaylayıp firma havuzuna almak istiyor musunuz?' : 'Bu mevzuatı reddetmek istiyor musunuz? Reddedilen mevzuat havuzdan silinecektir.')) return;
-    setReviewingLegId(companyRegId);
-    try {
-      if (approve) {
-        const { error } = await supabase
-          .from('company_pdf_regulations')
-          .update({ status: 'approved', reviewed_by: userId, reviewed_at: new Date().toISOString() })
-          .eq('id', companyRegId);
-        if (error) throw error;
-        alert('Mevzuat onaylandı ve firma havuzuna eklendi.');
-      } else {
-        const { error } = await supabase
-          .from('company_pdf_regulations')
-          .delete()
-          .eq('id', companyRegId);
-        if (error) throw error;
-        // Reddedilen özel mevzuatı ve maddelerini de temizle (başka bir yerde kullanılmıyorsa)
-        await supabase.from('pdf_articles').delete().eq('regulation_id', regulationId);
-        await supabase.from('pdf_regulations').delete().eq('id', regulationId);
-        alert('Mevzuat reddedildi ve kaldırıldı.');
-      }
-      await fetchConsultantLegislations();
-    } catch (err: any) {
-      alert('İşlem sırasında hata: ' + err.message);
-    } finally {
-      setReviewingLegId(null);
     }
   };
 
@@ -6719,45 +6686,24 @@ export default function ConsultantPanel() {
   };
 
   const selectModule = (moduleName: 'operations' | 'compliance' | 'actions' | 'documents' | 'finance' | 'hr' | 'settings') => {
+    const mod = modules.find((m) => m.id === moduleName);
     // Bu kategoride daha önce ziyaret edilmiş ve hâlâ görünür (satın alınmış/
     // süresi dolmamış) bir alt sekme varsa, sabit varsayılan yerine oraya dön.
     const remembered = lastTabByModule[moduleName];
-    if (remembered) {
-      const mod = modules.find((m) => m.id === moduleName);
-      if (mod?.tabs.some((t: any) => t.id === remembered && t.show)) {
-        setActiveTab(remembered as any);
-        return;
-      }
+    if (remembered && mod?.tabs.some((t: any) => t.id === remembered && t.show)) {
+      setActiveTab(remembered as any);
+      return;
     }
-    if (moduleName === 'operations') {
-      if (canViewClients) {
-        setActiveTab('clients');
-      } else {
-        setActiveTab('inspections');
-      }
-    } else if (moduleName === 'compliance') {
-      setActiveTab('legislations');
-    } else if (moduleName === 'actions') {
-      setActiveTab('actions');
-    } else if (moduleName === 'documents') {
-      setActiveTab('reports');
-    } else if (moduleName === 'finance') {
-      // Personel/şef Finansal Özet/Müşteri Ödemeleri/Gider Yönetimi'ni göremez
-      // (canViewFinanceTabs=false) - o sekmelere zorlarsak içerik alanı boş
-      // kalır. Onlar için tek görebildikleri "Gider Ekle" sekmesine gidilir.
-      if (canViewFinanceTabs) {
-        setActiveTab('finance_summary');
-      } else {
-        setActiveTab('staff_expense_submission');
-      }
-    } else if (moduleName === 'hr') {
-      if (canViewTeam) {
-        setActiveTab('team');
-      } else {
-        setActiveTab('evaluations');
-      }
-    } else if (moduleName === 'settings') {
-      setActiveTab('settings');
+    // Modülün varsayılan sekmesini sabit kodlamak yerine, o an gerçekten
+    // görünür (isModuleEnabled/rol koşulu sağlanmış) ilk sekmeye gidilir.
+    // Sabit kodlanmış bir sekme (örn. her zaman 'legislations') org'un
+    // enabled_modules'inde o anahtar eksikse gizli/kapalı çıkabiliyordu; bu
+    // durumda aşağıdaki güvenlik efekti kullanıcıyı sessizce 'clients'e
+    // (ilk modülün ilk sekmesi) fırlatıyor, tıklama işe yaramıyormuş gibi
+    // görünüyordu.
+    const firstVisibleTab = mod?.tabs.find((t: any) => t.show);
+    if (firstVisibleTab) {
+      setActiveTab(firstVisibleTab.id as any);
     }
   };
 
@@ -7098,6 +7044,12 @@ export default function ConsultantPanel() {
                     {newActionsCount > 99 ? '99+' : newActionsCount}
                   </span>
                 )}
+                {mod.id === 'compliance' && pendingRegulationRequestsCount > 0 &&
+                  (userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && (
+                  <span className="absolute -top-1.5 -right-1.5 bg-red-600 text-white text-[9px] font-black min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 border-white dark:border-slate-900 animate-pulse">
+                    {pendingRegulationRequestsCount > 99 ? '99+' : pendingRegulationRequestsCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -7130,6 +7082,11 @@ export default function ConsultantPanel() {
                 >
                   {tab.icon}
                   {tab.label}
+                  {tab.id === 'requests' && pendingRegulationRequestsCount > 0 && (
+                    <span className="bg-red-600 text-white text-[9px] font-black min-w-[16px] h-[16px] px-1 rounded-full flex items-center justify-center">
+                      {pendingRegulationRequestsCount > 99 ? '99+' : pendingRegulationRequestsCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -9949,6 +9906,11 @@ export default function ConsultantPanel() {
                                   {leg.category}
                                 </span>
                                 <span className="font-bold text-sm text-gray-800 dark:text-gray-250">{leg.title}</span>
+                                {!isImported && (
+                                  <span className="bg-green-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-wide">
+                                    Yeni
+                                  </span>
+                                )}
                               </div>
                               <div className="text-[10px] text-gray-400 mt-1">
                                 {leg.rg_no && <span className="mr-2">RG No: <b>{leg.rg_no}</b></span>}
@@ -10004,39 +9966,6 @@ export default function ConsultantPanel() {
                       {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') ? 'Özel Mevzuat Ekle' : 'Mevzuat Talebi Oluştur (Yeni Mevzuat)'}
                     </button>
                   </div>
-
-                  {/* Yönetici/şef için onay bekleyen (personel tarafından eklenen) özel mevzuatlar */}
-                  {(userRole === 'premium_corporate' || userRole === 'corporate_chief' || userRole === 'premium_individual') && pendingCompanyLegislations.length > 0 && (
-                    <div className="bg-amber-50 dark:bg-amber-950/10 border border-amber-200 dark:border-amber-900/40 rounded-xl p-3 space-y-2">
-                      <h4 className="text-[11px] font-black text-amber-700 dark:text-amber-400 uppercase tracking-wide">
-                        ⚠️ Onay Bekleyen Özel Mevzuatlar ({pendingCompanyLegislations.length})
-                      </h4>
-                      {pendingCompanyLegislations.map((cl: any) => (
-                        <div key={cl.id} className="flex justify-between items-center gap-2 bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-amber-100 dark:border-amber-900/30">
-                          <div>
-                            <div className="font-bold text-xs text-slate-800 dark:text-slate-200">{cl.regulation?.title}</div>
-                            <div className="text-[10px] text-gray-400">Ekleyen: <b>{cl.submitter?.full_name || 'Personel'}</b></div>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <button
-                              disabled={reviewingLegId === cl.id}
-                              onClick={() => handleReviewPendingLegislation(cl.id, true, cl.regulation_id)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition disabled:opacity-50"
-                            >
-                              Onayla
-                            </button>
-                            <button
-                              disabled={reviewingLegId === cl.id}
-                              onClick={() => handleReviewPendingLegislation(cl.id, false, cl.regulation_id)}
-                              className="bg-red-50 hover:bg-red-100 text-red-600 text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition border border-red-200 disabled:opacity-50"
-                            >
-                              Reddet
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
 
                   <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-[500px] overflow-y-auto pr-1">
                     {assignedGlobalLegislations.length === 0 ? (

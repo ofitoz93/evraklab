@@ -4,6 +4,7 @@ import { parsePdfLogic } from './api/parse-pdf'
 import { googleOauthLogic } from './api/google-oauth'
 import { paytrInitLogic } from './api/paytr-init'
 import { paytrCallbackLogic } from './api/paytr-callback'
+import { fetchResmiGazeteLogic } from './api/fetch-resmi-gazete'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -121,6 +122,36 @@ export default defineConfig(({ mode }) => {
                   res.end(JSON.stringify({ success: true, data }));
                 } catch (err: any) {
                   console.error('[Vite Middleware Error] PayTR init failed:', err);
+                  res.statusCode = 500;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({ success: false, error: err.message || 'Internal Server Error' }));
+                }
+              });
+              return;
+            }
+
+            if (req.url?.startsWith('/api/fetch-resmi-gazete')) {
+              if (req.method !== 'POST') {
+                res.statusCode = 405;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: false, error: 'Method Not Allowed' }));
+                return;
+              }
+
+              let body = '';
+              req.on('data', (chunk) => {
+                body += chunk;
+              });
+
+              req.on('end', async () => {
+                try {
+                  const parsedBody = body ? JSON.parse(body) : {};
+                  const result = await fetchResmiGazeteLogic(parsedBody.date || undefined);
+                  res.statusCode = 200;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({ success: true, ...result }));
+                } catch (err: any) {
+                  console.error('[Vite Middleware Error] Resmi Gazete fetch failed:', err);
                   res.statusCode = 500;
                   res.setHeader('Content-Type', 'application/json');
                   res.end(JSON.stringify({ success: false, error: err.message || 'Internal Server Error' }));

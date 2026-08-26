@@ -9,9 +9,12 @@ export interface TourRect {
   height: number;
 }
 
+const NARRATION_MUTED_KEY = 'evraklab_tour_narration_muted';
+
 export function useTourEngine(steps: TourStep[], stageRef: RefObject<HTMLDivElement | null>) {
   const [index, setIndexState] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(() => localStorage.getItem(NARRATION_MUTED_KEY) === 'true');
   // Rehber açılır açılmaz spot ışığı efekti (hemen ekranı karartan) devreye
   // giriyordu — kullanıcı "Oynat"a hiç basmadan sahne kararıyor, oynatmanın
   // başlayıp başlamadığı belli olmuyordu. `hasStarted`, kullanıcı gerçekten
@@ -94,6 +97,79 @@ export function useTourEngine(steps: TourStep[], stageRef: RefObject<HTMLDivElem
     return () => ro.disconnect();
   }, [measure, stageRef]);
 
+  const toggleMuted = useCallback(() => {
+    setMuted((m) => {
+      const next = !m;
+      localStorage.setItem(NARRATION_MUTED_KEY, String(next));
+      if (next && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+      return next;
+    });
+  }, []);
+
+  // Otomatik oynatma sırasında bir sonraki adıma geçişin, o an okunan sesli
+  // anlatım bitmeden tetiklenmemesi için `playing`in en güncel değerini
+  // konuşma bitince (onend/onerror) okuyabilmek amacıyla ref'te tutulur —
+  // narrationEffect'in bağımlılık dizisine `playing`i eklersek her oynat/
+  // duraklat tıklamasında mevcut cümle baştan okunurdu, istenmiyor.
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
+  const autoAdvanceTimeoutRef = useRef<number | null>(null);
+
+  const narrationActive = hasStarted && !muted && typeof window !== 'undefined' && 'speechSynthesis' in window;
+
+  // Adım değiştikçe o adımın açıklamasını Türkçe TTS ile okur. cancel() hem
+  // efekt başında hem cleanup'ta çağrılır — kullanıcı hızlıca "Sonraki"ye
+  // basarsa önceki adımın sesi kuyruğa girip sırayla çalmak yerine hemen
+  // kesilir. Otomatik oynatmadaysa (playingRef), sonraki adıma geçiş artık
+  // sabit bir süre sonra değil, konuşma gerçekten BİTİNCE (utterance.onend)
+  // tetiklenir — önceden 4.5sn'lik sabit zamanlayıcı, anlatım metni uzun
+  // olduğunda cümleyi yarıda kesip bir sonraki adıma atlıyordu.
+  useEffect(() => {
+    if (autoAdvanceTimeoutRef.current) {
+      window.clearTimeout(autoAdvanceTimeoutRef.current);
+      autoAdvanceTimeoutRef.current = null;
+    }
+    if (!narrationActive) return;
+    const step = steps[index];
+    if (!step) return;
+    window.speechSynthesis.cancel();
+
+    const scheduleAdvance = () => {
+      if (!playingRef.current) return;
+      autoAdvanceTimeoutRef.current = window.setTimeout(() => {
+        setIndexState((i) => {
+          if (i >= steps.length - 1) {
+            stop();
+            return i;
+          }
+          return i + 1;
+        });
+      }, 900);
+    };
+
+    const utterance = new SpeechSynthesisUtterance(`${step.title}. ${step.body}`);
+    utterance.lang = 'tr-TR';
+    utterance.onend = scheduleAdvance;
+    // 'canceled'/'interrupted' bizim kendi cancel() çağrılarımızdan gelir
+    // (adım/mute değişimi) — bunlarda ilerleme tetiklenmemeli. Başka bir
+    // sentezleme hatasında ise turun kilitli kalmaması için yine de ilerlenir.
+    utterance.onerror = (e) => {
+      if (e.error !== 'canceled' && e.error !== 'interrupted') scheduleAdvance();
+    };
+    window.speechSynthesis.speak(utterance);
+
+    return () => {
+      window.speechSynthesis.cancel();
+      if (autoAdvanceTimeoutRef.current) {
+        window.clearTimeout(autoAdvanceTimeoutRef.current);
+        autoAdvanceTimeoutRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, narrationActive, steps]);
+
   const goTo = useCallback(
     (i: number) => setIndexState(Math.max(0, Math.min(steps.length - 1, i))),
     [steps.length]
@@ -115,8 +191,12 @@ export function useTourEngine(steps: TourStep[], stageRef: RefObject<HTMLDivElem
     }
   }, [playing, stop]);
 
+  // Sesli anlatım aktifken (narrationActive) adım geçişi yukarıdaki
+  // narration efektindeki utterance.onend'e bırakılır — burada sabit
+  // zamanlayıcı kurulmaz, aksi halde ikisi çakışıp anlatım bitmeden veya
+  // çift ilerlemeyle sonraki adıma geçebilirdi.
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || narrationActive) return;
     intervalRef.current = window.setInterval(() => {
       setIndexState((i) => {
         if (i >= steps.length - 1) {
@@ -133,7 +213,7 @@ export function useTourEngine(steps: TourStep[], stageRef: RefObject<HTMLDivElem
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, steps.length]);
+  }, [playing, steps.length, narrationActive]);
 
   const next = useCallback(() => {
     stop();
@@ -173,9 +253,11 @@ export function useTourEngine(steps: TourStep[], stageRef: RefObject<HTMLDivElem
     playing,
     hasStarted,
     reducedMotion,
+    muted,
     next,
     prev,
     jumpTo,
     togglePlay,
+    toggleMuted,
   };
 }

@@ -55,7 +55,7 @@ export default function AdminPanel() {
   >('tickets');
 
   const [emailSubTab, setEmailSubTab] = useState<'general' | 'client_script'>('general');
-  const [legSubTab, setLegSubTab] = useState<'pool' | 'requests'>('pool');
+  const [legSubTab, setLegSubTab] = useState<'pool' | 'requests' | 'scraped'>('pool');
 
   // --- MEVZUAT HAVUZU (LEGISLATIONS) STATE'LERİ ---
   const [legislations, setLegislations] = useState<any[]>([]);
@@ -82,6 +82,14 @@ export default function AdminPanel() {
 
   const [replyingRequest, setReplyingRequest] = useState<any>(null);
   const [requestAdminNotes, setRequestAdminNotes] = useState('');
+
+  // --- OTOMATİK TARANAN MEVZUATLAR (Faz 2: Resmi Gazete) STATE'LERİ ---
+  const [scrapedCandidates, setScrapedCandidates] = useState<any[]>([]);
+  const [reviewingCandidate, setReviewingCandidate] = useState<any>(null);
+  const [reviewingCandidateNote, setReviewingCandidateNote] = useState('');
+  const [savingCandidateReview, setSavingCandidateReview] = useState(false);
+  const [manualScanDate, setManualScanDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [scanningResmiGazete, setScanningResmiGazete] = useState(false);
 
 
   // --- E-Posta Hatırlatma Ayarları State'leri ---
@@ -529,6 +537,134 @@ export default function AdminPanel() {
     }
   };
 
+  const fetchScrapedCandidates = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('scraped_regulation_candidates')
+        .select('*')
+        .order('fetched_at', { ascending: false });
+      if (error) throw error;
+      setScrapedCandidates(data || []);
+    } catch (err: any) {
+      console.error('Taranan mevzuat adayları çekilirken hata:', err.message);
+    }
+  };
+
+  // Admin, cron'un günlük otomatik taramasını beklemeden, istediği belirli bir
+  // tarihi (örn. test için geçmiş bir gün) elle taratabilir — api/fetch-resmi-gazete.ts
+  // hem cron'dan (GET, tarihsiz = bugün) hem buradan (POST, { date }) çağrılabiliyor.
+  const handleManualResmiGazeteScan = async () => {
+    if (!manualScanDate) return alert('Lütfen taranacak bir tarih seçin.');
+    setScanningResmiGazete(true);
+    try {
+      const response = await fetch(apiUrl('/api/fetch-resmi-gazete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: manualScanDate }),
+      });
+      const resJson = await response.json();
+      if (!resJson.success) throw new Error(resJson.error || 'Tarama başarısız oldu.');
+
+      const { totalLinksFound, relevantLinksFound, inserted, skipped, errors } = resJson;
+      if (relevantLinksFound === 0) {
+        alert(`${manualScanDate} tarihli bültende (${totalLinksFound} kayıt içinden) çevre/İSG ile ilgili bir yönetmelik/tebliğ bulunamadı.`);
+      } else {
+        alert(
+          `Tarama tamamlandı: ${relevantLinksFound} ilgili kayıt bulundu, ${inserted} yeni aday eklendi, ${skipped} zaten daha önce taranmıştı.` +
+          (errors?.length ? `\n${errors.length} kayıt işlenirken hata oluştu (detay için konsolu kontrol edin).` : '')
+        );
+        if (errors?.length) console.warn('Resmi Gazete tarama hataları:', errors);
+      }
+      fetchScrapedCandidates();
+    } catch (err: any) {
+      alert('Tarama sırasında hata oluştu: ' + err.message);
+    } finally {
+      setScanningResmiGazete(false);
+    }
+  };
+
+  // Adayı onaylar: pdf_regulations + pdf_articles'a (admin'in global havuzu,
+  // company_id null) gerçek bir kayıt olarak yazar — tıpkı handleSaveLegislation'ın
+  // yaptığı gibi — sonra aday satırını 'approved' işaretler (silmez, aynı
+  // source_url tekrar taranırsa UNIQUE kısıtı sayesinde yeniden düşmesin diye).
+  const handleApproveScrapedCandidate = async (candidate: any) => {
+    if (!window.confirm(`"${candidate.title}" mevzuatını onaylayıp global havuza eklemek istiyor musunuz?`)) return;
+    setSavingCandidateReview(true);
+    try {
+      const { data: newReg, error: regErr } = await supabase
+        .from('pdf_regulations')
+        .insert({
+          title: candidate.title,
+          category: candidate.category || 'Yönetmelik',
+          publication_date: candidate.publication_date || null,
+          effective_date: candidate.effective_date || null,
+          rg_no: candidate.rg_no || null,
+          rg_date: candidate.rg_date || null,
+        })
+        .select()
+        .single();
+      if (regErr) throw regErr;
+
+      const articles = Array.isArray(candidate.articles) ? candidate.articles : [];
+      if (articles.length > 0) {
+        const articlesToInsert = articles.map((art: any, index: number) => ({
+          regulation_id: newReg.id,
+          article_no: art.article_no || `Madde ${index + 1}`,
+          title: art.title || `Madde ${index + 1}`,
+          content: art.content || '',
+          order_index: index + 1,
+        }));
+        const { error: artErr } = await supabase.from('pdf_articles').insert(articlesToInsert);
+        if (artErr) throw artErr;
+      }
+
+      const adminId = (await supabase.auth.getSession()).data.session?.user.id;
+      await supabase
+        .from('scraped_regulation_candidates')
+        .update({
+          status: 'approved',
+          reviewed_by: adminId,
+          reviewed_at: new Date().toISOString(),
+          review_note: reviewingCandidateNote.trim() || null,
+        })
+        .eq('id', candidate.id);
+
+      alert('Mevzuat onaylandı ve global havuza eklendi.');
+      setReviewingCandidate(null);
+      setReviewingCandidateNote('');
+      fetchScrapedCandidates();
+      fetchGlobalLegislations();
+    } catch (err: any) {
+      alert('Onaylanırken hata oluştu: ' + err.message);
+    } finally {
+      setSavingCandidateReview(false);
+    }
+  };
+
+  const handleRejectScrapedCandidate = async (candidate: any) => {
+    setSavingCandidateReview(true);
+    try {
+      const adminId = (await supabase.auth.getSession()).data.session?.user.id;
+      const { error } = await supabase
+        .from('scraped_regulation_candidates')
+        .update({
+          status: 'rejected',
+          reviewed_by: adminId,
+          reviewed_at: new Date().toISOString(),
+          review_note: reviewingCandidateNote.trim() || null,
+        })
+        .eq('id', candidate.id);
+      if (error) throw error;
+      setReviewingCandidate(null);
+      setReviewingCandidateNote('');
+      fetchScrapedCandidates();
+    } catch (err: any) {
+      alert('Reddedilirken hata oluştu: ' + err.message);
+    } finally {
+      setSavingCandidateReview(false);
+    }
+  };
+
   const handleParseText = () => {
     if (!pasteText.trim()) return;
     const parsed = parseLegislationText(pasteText);
@@ -767,6 +903,7 @@ export default function AdminPanel() {
     } else if (activeTab === 'legislations') {
       fetchGlobalLegislations();
       fetchLegislationRequests();
+      fetchScrapedCandidates();
       fetchCompanies();
     } else if (activeTab === 'ced_categories') {
       fetchCedCategories();
@@ -3546,6 +3683,22 @@ export default function AdminPanel() {
                   </span>
                 )}
               </button>
+              <button
+                type="button"
+                onClick={() => setLegSubTab('scraped')}
+                className={`flex items-center gap-2 py-2.5 px-5 text-xs font-bold rounded-lg transition relative ${
+                  legSubTab === 'scraped'
+                    ? 'bg-teal-600 text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-50 dark:bg-slate-900/50'
+                }`}
+              >
+                <RefreshCw size={14} /> Otomatik Taranan Mevzuatlar
+                {scrapedCandidates.filter(c => c.status === 'pending').length > 0 && (
+                  <span className="bg-orange-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-bold ml-1">
+                    {scrapedCandidates.filter(c => c.status === 'pending').length}
+                  </span>
+                )}
+              </button>
             </div>
 
             {legSubTab === 'pool' && (
@@ -3754,6 +3907,82 @@ export default function AdminPanel() {
                             className="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1 rounded font-bold text-[10px] transition"
                           >
                             Değerlendir
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {legSubTab === 'scraped' && (
+          <div className="animate-fadeIn space-y-6">
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 flex flex-col gap-3">
+              <span className="text-sm text-gray-500 font-medium flex items-center gap-2 flex-wrap">
+                <RefreshCw size={16} className="text-teal-500" />
+                Resmi Gazete günlük bülteninden otomatik taranan mevzuat adaylarını inceleyip onaylayın.
+                <span className="bg-orange-500 text-white px-2.5 py-0.5 rounded-full text-xs font-bold">
+                  {scrapedCandidates.filter(c => c.status === 'pending').length} Bekleyen
+                </span>
+              </span>
+              <div className="flex items-center gap-2 flex-wrap border-t border-gray-200 pt-3">
+                <span className="text-xs text-gray-500 font-bold">Belirli bir tarihi elle tara (test için):</span>
+                <input
+                  type="date"
+                  value={manualScanDate}
+                  onChange={(e) => setManualScanDate(e.target.value)}
+                  className="border rounded-lg p-2 text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleManualResmiGazeteScan}
+                  disabled={scanningResmiGazete}
+                  className="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-bold px-3 py-2 rounded-lg flex items-center gap-1.5 transition"
+                >
+                  <RefreshCw size={13} className={scanningResmiGazete ? 'animate-spin' : ''} />
+                  {scanningResmiGazete ? 'Taranıyor...' : 'Bu Tarihi Tara'}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-100 p-4 space-y-4">
+              <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+                {scrapedCandidates.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400 text-sm">
+                    Henüz otomatik taranmış bir mevzuat adayı bulunmuyor.
+                  </div>
+                ) : (
+                  scrapedCandidates.map((cand) => (
+                    <div key={cand.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100 space-y-2 text-xs">
+                      <div className="flex justify-between items-center">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                          cand.status === 'pending' ? 'bg-orange-50 text-orange-700 border border-orange-100' :
+                          cand.status === 'approved' ? 'bg-green-50 text-green-700 border border-green-100' :
+                          'bg-red-50 text-red-700 border border-red-100'
+                        }`}>
+                          {cand.status === 'pending' ? 'Bekliyor' : cand.status === 'approved' ? 'Onaylandı' : 'Reddedildi'}
+                        </span>
+                        <span className="text-slate-400">{new Date(cand.fetched_at).toLocaleDateString()}</span>
+                      </div>
+                      <div className="font-bold text-slate-800 text-sm">{cand.title}</div>
+                      <div className="text-[10px] text-slate-500 flex items-center gap-3">
+                        <span>{cand.category}</span>
+                        <span>{Array.isArray(cand.articles) ? cand.articles.length : 0} madde</span>
+                        <a href={cand.source_url} target="_blank" rel="noreferrer" className="text-teal-600 underline">Kaynağı Gör</a>
+                      </div>
+                      {cand.status === 'pending' && (
+                        <div className="flex gap-2 pt-1 border-t">
+                          <button
+                            onClick={() => {
+                              setReviewingCandidate(cand);
+                              setReviewingCandidateNote('');
+                            }}
+                            className="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1 rounded font-bold text-[10px] transition"
+                          >
+                            İncele
                           </button>
                         </div>
                       )}
@@ -6134,6 +6363,88 @@ export default function AdminPanel() {
                   Kapat
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reviewingCandidate && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl p-6 border border-slate-100 animate-fadeIn flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-4 border-b pb-3">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 text-lg">
+                <RefreshCw size={18} className="text-teal-600" />
+                Taranan Mevzuat Adayını İncele
+              </h3>
+              <button
+                onClick={() => { setReviewingCandidate(null); setReviewingCandidateNote(''); }}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto space-y-4 pr-2 flex-1">
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-150 space-y-1.5 text-xs">
+                <div className="font-bold text-sm text-slate-850">{reviewingCandidate.title}</div>
+                <div className="text-gray-500">
+                  Kaynak: <a href={reviewingCandidate.source_url} target="_blank" rel="noreferrer" className="text-teal-600 underline">{reviewingCandidate.source_url}</a>
+                </div>
+                <div className="text-gray-500">Tarandığı Tarih: <b>{new Date(reviewingCandidate.fetched_at).toLocaleDateString()}</b></div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs bg-teal-50/50 border border-teal-100 rounded-xl p-3">
+                <div><span className="text-[9px] font-bold text-teal-700 uppercase block">Kategori</span>{reviewingCandidate.category || '—'}</div>
+                <div><span className="text-[9px] font-bold text-teal-700 uppercase block">Yayın Tarihi</span>{reviewingCandidate.publication_date ? new Date(reviewingCandidate.publication_date).toLocaleDateString() : '—'}</div>
+                <div><span className="text-[9px] font-bold text-teal-700 uppercase block">RG No</span>{reviewingCandidate.rg_no || '—'}</div>
+                <div><span className="text-[9px] font-bold text-teal-700 uppercase block">RG Tarihi</span>{reviewingCandidate.rg_date ? new Date(reviewingCandidate.rg_date).toLocaleDateString() : '—'}</div>
+              </div>
+
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">
+                  Mevzuat Maddeleri ({Array.isArray(reviewingCandidate.articles) ? reviewingCandidate.articles.length : 0} Adet) — Onaylamadan önce içeriği kontrol edin
+                </div>
+                <div className="border border-slate-150 rounded-xl divide-y max-h-72 overflow-y-auto bg-slate-50/30 p-2 space-y-2">
+                  {(reviewingCandidate.articles || []).map((art: any, idx: number) => (
+                    <div key={idx} className="p-3 bg-white rounded-lg border border-slate-100 text-xs space-y-1">
+                      <div className="font-bold text-slate-800">
+                        {art.article_no} {art.title ? `- ${art.title}` : ''}
+                      </div>
+                      <p className="text-slate-600 whitespace-pre-wrap leading-relaxed">{art.content}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 uppercase">Onay/Red Notu (Opsiyonel)</label>
+                <textarea
+                  rows={3}
+                  placeholder="İç kayıt için not (kullanıcıya gösterilmez)..."
+                  className="w-full p-2.5 rounded-xl border border-slate-200 outline-none focus:ring-1 focus:ring-teal-500 text-xs text-slate-700 font-medium resize-none"
+                  value={reviewingCandidateNote}
+                  onChange={(e) => setReviewingCandidateNote(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-4 mt-2 border-t">
+              <button
+                type="button"
+                disabled={savingCandidateReview}
+                onClick={() => handleApproveScrapedCandidate(reviewingCandidate)}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2"
+              >
+                <Check size={16} /> {savingCandidateReview ? 'İşleniyor...' : 'Onayla ve Havuza Ekle'}
+              </button>
+              <button
+                type="button"
+                disabled={savingCandidateReview}
+                onClick={() => handleRejectScrapedCandidate(reviewingCandidate)}
+                className="flex-1 border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 py-2.5 rounded-xl font-bold transition flex items-center justify-center gap-2"
+              >
+                <XCircle size={16} /> Reddet
+              </button>
             </div>
           </div>
         </div>

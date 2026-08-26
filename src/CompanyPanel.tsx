@@ -3411,29 +3411,24 @@ export default function CompanyPanel() {
   const activeModule = getModuleForTab(activeTab);
 
   const selectModule = (moduleName: 'compliance' | 'actions' | 'operations' | 'hr') => {
+    const mod = modules.find((m) => m.id === moduleName);
     // Bu kategoride daha önce ziyaret edilmiş ve hâlâ görünür (satın alınmış/
     // süresi dolmamış) bir alt sekme varsa, sabit varsayılan yerine oraya dön.
     const remembered = lastTabByModule[moduleName];
-    if (remembered) {
-      const mod = modules.find((m) => m.id === moduleName);
-      if (mod?.tabs.some((t: any) => t.id === remembered && t.show)) {
-        setActiveTab(remembered as any);
-        setSearchParams({ tab: remembered });
-        return;
-      }
+    if (remembered && mod?.tabs.some((t: any) => t.id === remembered && t.show)) {
+      setActiveTab(remembered as any);
+      setSearchParams({ tab: remembered });
+      return;
     }
-    if (moduleName === 'compliance') {
-      setActiveTab('compliance');
-      setSearchParams({ tab: 'compliance' });
-    } else if (moduleName === 'actions') {
-      setActiveTab('actions');
-      setSearchParams({ tab: 'actions' });
-    } else if (moduleName === 'operations') {
-      setActiveTab('waste');
-      setSearchParams({ tab: 'waste' });
-    } else if (moduleName === 'hr') {
-      setActiveTab('team');
-      setSearchParams({ tab: 'team' });
+    // Modülün varsayılan sekmesini sabit kodlamak yerine ('compliance' ->
+    // her zaman 'compliance' sekmesi gibi), o an gerçekten görünür ilk
+    // sekmeye gidilir. Sabit sekme org'un enabled_modules'inde eksikse
+    // isModuleEnabled false dönüyor ve aşağıdaki güvenlik efekti kullanıcıyı
+    // sessizce 'team'e fırlatıyordu — tıklama işe yaramıyormuş gibi görünüyordu.
+    const firstVisibleTab = mod?.tabs.find((t: any) => t.show);
+    if (firstVisibleTab) {
+      setActiveTab(firstVisibleTab.id as any);
+      setSearchParams({ tab: firstVisibleTab.id });
     }
   };
 
