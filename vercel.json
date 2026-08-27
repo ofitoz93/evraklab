@@ -4,5 +4,8 @@
   ],
   "crons": [
     { "path": "/api/fetch-resmi-gazete", "schedule": "0 6 * * *" }
-  ]
+  ],
+  "functions": {
+    "api/fetch-resmi-gazete.ts": { "maxDuration": 60 }
+  }
 }
