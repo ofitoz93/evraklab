@@ -128,6 +128,16 @@ export default function AdminPanel() {
   const [systemLogoUrl, setSystemLogoUrl] = useState('');
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
+  // --- YENİ: Herkese Açık İletişim Bilgileri (public /iletisim sayfası) ---
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactAddress, setContactAddress] = useState('');
+  const [savingContact, setSavingContact] = useState(false);
+
+  // --- YENİ: Gelen İletişim Mesajları ---
+  const [contactMessages, setContactMessages] = useState<any[]>([]);
+  const [fetchingContactMessages, setFetchingContactMessages] = useState(false);
+
   // --- YENİ: Fiyatlandırma Ayarları State'leri ---
   const DEFAULT_SUBSCRIPTION_PLANS = {
     individual_standard: {
@@ -897,6 +907,8 @@ export default function AdminPanel() {
       fetchEmailLogs();
     } else if (activeTab === 'system_settings') {
       fetchSystemLogoSettings();
+    } else if (activeTab === 'contact_messages') {
+      fetchContactMessages();
     } else if (activeTab === 'pricing') {
       fetchPricingSettings();
       fetchSystemModuleDefaults();
@@ -990,14 +1002,16 @@ export default function AdminPanel() {
       const { data, error } = await supabase
         .from('email_settings')
         .select('*')
-        .eq('key', 'system_logo_url')
-        .maybeSingle();
+        .in('key', ['system_logo_url', 'contact_email', 'contact_phone', 'contact_address']);
       if (error) throw error;
-      if (data) {
-        setSystemLogoUrl(data.value);
-      }
+      (data || []).forEach((row: any) => {
+        if (row.key === 'system_logo_url') setSystemLogoUrl(row.value || '');
+        if (row.key === 'contact_email') setContactEmail(row.value || '');
+        if (row.key === 'contact_phone') setContactPhone(row.value || '');
+        if (row.key === 'contact_address') setContactAddress(row.value || '');
+      });
     } catch (err: any) {
-      console.error('Sistem logosunu çekme hatası:', err.message);
+      console.error('Sistem ayarlarını çekme hatası:', err.message);
     } finally {
       setFetchingSettings(false);
     }
@@ -1019,6 +1033,47 @@ export default function AdminPanel() {
     } finally {
       setSavingLogo(false);
     }
+  };
+
+  const handleSaveContactSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingContact(true);
+    try {
+      const { error } = await supabase.from('email_settings').upsert([
+        { key: 'contact_email', value: contactEmail },
+        { key: 'contact_phone', value: contactPhone },
+        { key: 'contact_address', value: contactAddress },
+      ]);
+      if (error) throw error;
+      alert('İletişim bilgileri başarıyla kaydedildi!');
+    } catch (err: any) {
+      console.error('İletişim bilgileri kaydedilirken hata:', err.message);
+      alert('İletişim bilgileri kaydedilemedi: ' + err.message);
+    } finally {
+      setSavingContact(false);
+    }
+  };
+
+  const fetchContactMessages = async () => {
+    setFetchingContactMessages(true);
+    try {
+      const { data, error } = await supabase
+        .from('contact_messages')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setContactMessages(data || []);
+    } catch (err: any) {
+      console.error('İletişim mesajları çekilemedi:', err.message);
+    } finally {
+      setFetchingContactMessages(false);
+    }
+  };
+
+  const markContactMessageRead = async (id: string) => {
+    setContactMessages((prev) => prev.map((m) => (m.id === id ? { ...m, is_read: true } : m)));
+    const { error } = await supabase.from('contact_messages').update({ is_read: true }).eq('id', id);
+    if (error) console.error('Mesaj okundu işaretlenemedi:', error.message);
   };
 
   const handleSaveEmailSettings = async (e: React.FormEvent) => {
@@ -2537,6 +2592,22 @@ export default function AdminPanel() {
               >
                 <Settings size={18} />
                 <span>Sistem Ayarları</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('contact_messages')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition ${
+                  activeTab === 'contact_messages'
+                    ? 'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/30 dark:text-cyan-400'
+                    : 'text-gray-650 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-slate-900/50'
+                }`}
+              >
+                <MessageSquare size={18} />
+                <span>Gelen Mesajlar</span>
+                {contactMessages.filter((m) => !m.is_read).length > 0 && (
+                  <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                    {contactMessages.filter((m) => !m.is_read).length}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setActiveTab('module_settings')}
@@ -4402,6 +4473,127 @@ export default function AdminPanel() {
                     {savingLogo ? 'Kaydediliyor...' : 'Sistem Logosunu Kaydet'}
                   </button>
                 </form>
+              )}
+            </div>
+
+            <div className="max-w-xl mx-auto bg-white rounded-2xl border border-gray-100 shadow-sm p-8 space-y-6">
+              <h3 className="font-bold text-gray-800 text-base border-b pb-3 flex items-center gap-2">
+                <Mail size={16} className="text-slate-500" />
+                İletişim Bilgileri (Herkese Açık — /iletisim sayfası)
+              </h3>
+              <p className="text-xs text-gray-500 -mt-3">
+                Burada girdiğiniz bilgiler, oturum açmamış ziyaretçilerin gördüğü genel İletişim sayfasında görünür.
+              </p>
+
+              {fetchingSettings ? (
+                <div className="flex items-center justify-center p-8 text-gray-500 gap-2">
+                  <Loader className="animate-spin" size={18} />
+                  Yükleniyor...
+                </div>
+              ) : (
+                <form onSubmit={handleSaveContactSettings} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                      E-Posta
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="info@evraklab.com"
+                      className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-slate-500/20 focus:border-slate-500 transition text-sm font-medium"
+                      value={contactEmail}
+                      onChange={(e) => setContactEmail(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                      Telefon
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="0212 000 00 00"
+                      className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-slate-500/20 focus:border-slate-500 transition text-sm font-medium"
+                      value={contactPhone}
+                      onChange={(e) => setContactPhone(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                      Adres
+                    </label>
+                    <textarea
+                      rows={2}
+                      placeholder="Ofis adresiniz (opsiyonel)"
+                      className="w-full p-2.5 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-slate-500/20 focus:border-slate-500 transition text-sm font-medium resize-none"
+                      value={contactAddress}
+                      onChange={(e) => setContactAddress(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={savingContact}
+                    className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition shadow-lg disabled:opacity-50"
+                  >
+                    {savingContact ? <Loader className="animate-spin" size={16} /> : <Mail size={16} />}
+                    {savingContact ? 'Kaydediliyor...' : 'İletişim Bilgilerini Kaydet'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* --- GELEN MESAJLAR TAB --- */}
+        {activeTab === 'contact_messages' && (
+          <div className="animate-fadeIn space-y-6">
+            <div className="bg-gradient-to-r from-cyan-800 to-cyan-700 p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-lg">
+              <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2 mb-1">
+                  <MessageSquare className="text-cyan-200" size={22} /> Gelen Mesajlar
+                </h2>
+                <p className="text-cyan-100 text-sm">
+                  Genel İletişim sayfasındaki formdan gönderilen mesajlar.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-150 p-6">
+              {fetchingContactMessages ? (
+                <div className="flex items-center justify-center p-8 text-gray-500 gap-2">
+                  <Loader className="animate-spin" size={18} />
+                  Yükleniyor...
+                </div>
+              ) : contactMessages.length === 0 ? (
+                <div className="p-8 text-center text-gray-400">Henüz mesaj yok.</div>
+              ) : (
+                <div className="divide-y">
+                  {contactMessages.map((msg) => (
+                    <div key={msg.id} className={`py-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3 ${!msg.is_read ? 'bg-cyan-50/50 -mx-6 px-6' : ''}`}>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-bold text-gray-800 text-sm">{msg.name}</span>
+                          {!msg.is_read && (
+                            <span className="bg-cyan-100 text-cyan-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">YENİ</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 mb-2 font-mono">
+                          {msg.email}{msg.phone ? ` · ${msg.phone}` : ''}
+                        </div>
+                        <p className="text-sm text-gray-700 whitespace-pre-wrap">{msg.message}</p>
+                        <div className="text-[10px] text-gray-400 mt-2">
+                          {new Date(msg.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      {!msg.is_read && (
+                        <button
+                          onClick={() => markContactMessageRead(msg.id)}
+                          className="text-xs font-semibold text-cyan-700 hover:text-cyan-800 shrink-0 border border-cyan-200 rounded-lg px-3 py-1.5 hover:bg-cyan-50"
+                        >
+                          Okundu İşaretle
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>

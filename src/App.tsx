@@ -35,6 +35,10 @@ import {
 // Sayfa Importları
 import Login from './Login';
 import Register from './Register';
+import Landing from './landing/Landing';
+import About from './landing/About';
+import PublicPricing from './landing/PublicPricing';
+import Contact from './landing/Contact';
 import Documents from './Documents';
 import AddDocument from './AddDocument';
 import DocumentDetail from './DocumentDetail';
@@ -680,9 +684,12 @@ function NavBarContent({
 // panelini de görüntüleyebilmesi durumunda (/client-panel rotası), o sayfayı
 // normal uygulama navbar'ı ve dolgu (padding) olmadan, kendi tam ekran koyu
 // temasıyla göstermek için sarmalayıcı bileşen.
+const MARKETING_PATHS = ['/', '/hakkimizda', '/fiyatlandirma', '/iletisim'];
+
 function AppShell({ children, navBarProps }: { children: React.ReactNode; navBarProps: any }) {
   const location = useLocation();
   const isClientPanelRoute = location.pathname === '/client-panel';
+  const isMarketingRoute = !navBarProps.session && MARKETING_PATHS.includes(location.pathname);
 
   if (isClientPanelRoute) {
     return (
@@ -690,6 +697,10 @@ function AppShell({ children, navBarProps }: { children: React.ReactNode; navBar
         {children}
       </div>
     );
+  }
+
+  if (isMarketingRoute) {
+    return <div className="min-h-screen">{children}</div>;
   }
 
   return (
@@ -986,7 +997,10 @@ function AppContent() {
             <Routes>
             {!session ? (
               <>
-                <Route path="/" element={<Login />} />
+                <Route path="/" element={<Landing />} />
+                <Route path="/hakkimizda" element={<About />} />
+                <Route path="/fiyatlandirma" element={<PublicPricing />} />
+                <Route path="/iletisim" element={<Contact />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/consultant/reports/:id" element={<EnvReportView />} />
