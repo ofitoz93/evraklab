@@ -1,5 +1,5 @@
 // api/paytr-init.ts
-import { getPaytrCredentials, createServiceClient, generateMerchantOid, buildInitHash, PAYTR_TOKEN_URL, PaytrPurpose } from './paytrShared';
+import { getPaytrCredentials, createServiceClient, generateMerchantOid, buildInitHash, PAYTR_TOKEN_URL, PaytrPurpose } from './_shared/paytrShared';
 
 interface PaytrInitInput {
   organizationId: string | null;

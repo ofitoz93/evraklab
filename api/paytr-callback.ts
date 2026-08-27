@@ -4,7 +4,7 @@
 // application/x-www-form-urlencoded'dır, JSON DEĞİLDİR; ve başarıyla
 // işlendiğinde yanıt olarak düz metin "OK" dönülmelidir — dönülmezse PayTR
 // bildirimi periyodik olarak tekrar göndermeye devam eder.
-import { getPaytrCredentials, createServiceClient, buildCallbackHash, activatePurchase } from './paytrShared';
+import { getPaytrCredentials, createServiceClient, buildCallbackHash, activatePurchase } from './_shared/paytrShared';
 
 export async function paytrCallbackLogic(formBody: URLSearchParams): Promise<string> {
   const { merchantKey, merchantSalt, configured } = getPaytrCredentials();

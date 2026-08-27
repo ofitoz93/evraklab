@@ -24,8 +24,8 @@
 import * as cheerio from 'cheerio';
 import { Agent, fetch as undiciFetch } from 'undici';
 import iconv from 'iconv-lite';
-import { createServiceClient } from './paytrShared';
-import { parsePdfLogic } from './parse-pdf';
+import { createServiceClient } from './_shared/paytrShared';
+import { parsePdfLogic } from './_shared/parsePdfLogic';
 import { parseLegislationText } from '../src/parserUtils';
 
 const RESMI_GAZETE_BASE = 'https://www.resmigazete.gov.tr';

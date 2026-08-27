@@ -1,9 +1,14 @@
-// api/paytrShared.ts
+// api/_shared/paytrShared.ts
 // PayTR iFrame API için paylaşılan yardımcılar: hash üretimi, servis-rol
 // Supabase istemcisi, ve satın alma "purpose"larına göre asıl aktivasyon
-// mantığı. Bu dosyanın default export'u YOK — Vercel bunu bir route olarak
-// algılamaz, sadece api/paytr-init.ts ve api/paytr-callback.ts tarafından
-// import edilir.
+// mantığı. `_shared/` altında olduğu için Vercel bunu bir route/fonksiyon
+// olarak algılamaz (alt çizgiyle başlayan klasörler route'lardan hariç
+// tutulur) — api/paytr-init.ts, api/paytr-callback.ts ve
+// api/fetch-resmi-gazete.ts tarafından import edilir. Önceden doğrudan
+// api/paytrShared.ts olarak /api'nin en üst seviyesinde duruyordu; bu da
+// Vercel'in onu KENDİ ayrı fonksiyonu sanıp izole deploy etmesine ve diğer
+// fonksiyonların çalışma anında "Cannot find module '/var/task/api/
+// paytrShared'" hatasıyla çökmesine yol açıyordu.
 //
 // PayTR merchant bilgileri (PAYTR_MERCHANT_ID/KEY/SALT) henüz alınmadığı
 // için bu dosya, kimlik bilgileri boşken de uygulamayı çökertmeyecek şekilde
@@ -13,7 +18,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
-import { DEFAULT_MODULE_KEYS, SYSTEM_MODULES } from '../src/moduleRegistry';
+import { DEFAULT_MODULE_KEYS, SYSTEM_MODULES } from '../../src/moduleRegistry';
 
 export const PAYTR_TOKEN_URL = 'https://www.paytr.com/odeme/api/get-token';
 
