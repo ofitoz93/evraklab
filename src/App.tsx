@@ -36,6 +36,7 @@ import {
 import Login from './Login';
 import Register from './Register';
 import Landing from './landing/Landing';
+import Features from './landing/Features';
 import About from './landing/About';
 import PublicPricing from './landing/PublicPricing';
 import Contact from './landing/Contact';
@@ -684,7 +685,7 @@ function NavBarContent({
 // panelini de görüntüleyebilmesi durumunda (/client-panel rotası), o sayfayı
 // normal uygulama navbar'ı ve dolgu (padding) olmadan, kendi tam ekran koyu
 // temasıyla göstermek için sarmalayıcı bileşen.
-const MARKETING_PATHS = ['/', '/hakkimizda', '/fiyatlandirma', '/iletisim'];
+const MARKETING_PATHS = ['/', '/ozellikler', '/hakkimizda', '/fiyatlandirma', '/iletisim'];
 
 function AppShell({ children, navBarProps }: { children: React.ReactNode; navBarProps: any }) {
   const location = useLocation();
@@ -998,6 +999,7 @@ function AppContent() {
             {!session ? (
               <>
                 <Route path="/" element={<Landing />} />
+                <Route path="/ozellikler" element={<Features />} />
                 <Route path="/hakkimizda" element={<About />} />
                 <Route path="/fiyatlandirma" element={<PublicPricing />} />
                 <Route path="/iletisim" element={<Contact />} />

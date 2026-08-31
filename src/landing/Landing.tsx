@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import LandingLayout from './LandingLayout';
 
-const FEATURES: { icon: React.ElementType; title: string; desc: string }[] = [
+export const FEATURES: { icon: React.ElementType; title: string; desc: string }[] = [
   { icon: FileText, title: 'Evrak Takibi ve Arşivleme', desc: 'Tüm belgelerinizi tek yerde saklayın, son kullanma tarihlerini kaçırmayın.' },
   { icon: Gavel, title: 'Mevzuat Takibi', desc: 'Resmi Gazete otomatik taranır, ilgili yönetmelik değişiklikleri size otomatik yansır.' },
   { icon: Trash2, title: 'Atık Yönetimi', desc: 'Atık kodlarını ve süreçlerini uçtan uca izleyin.' },

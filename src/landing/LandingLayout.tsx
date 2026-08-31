@@ -5,7 +5,7 @@ import { supabase } from '../supabaseClient';
 
 const NAV_LINKS: { to: string; label: string }[] = [
   { to: '/', label: 'Ana Sayfa' },
-  { to: '/#ozellikler', label: 'Özellikler' },
+  { to: '/ozellikler', label: 'Özellikler' },
   { to: '/hakkimizda', label: 'Hakkımızda' },
   { to: '/fiyatlandirma', label: 'Fiyatlandırma' },
   { to: '/iletisim', label: 'İletişim' },
@@ -177,7 +177,7 @@ function LandingFooter() {
         <div>
           <h4 className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">Ürün</h4>
           <ul className="space-y-2 text-sm">
-            <li><Link to="/#ozellikler" className="text-gray-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400">Özellikler</Link></li>
+            <li><Link to="/ozellikler" className="text-gray-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400">Özellikler</Link></li>
             <li><Link to="/fiyatlandirma" className="text-gray-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400">Fiyatlandırma</Link></li>
             <li><Link to="/register" className="text-gray-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400">Ücretsiz Kayıt Ol</Link></li>
           </ul>
