@@ -16,6 +16,7 @@ import {
   Factory,
   Eye,
   ShieldCheck,
+  Table,
 } from 'lucide-react';
 import LandingLayout from './LandingLayout';
 
@@ -149,6 +150,74 @@ export default function Landing() {
                   <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">Devam Ediyor</span>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ZORUNLU BELGE MATRİSİ */}
+      <section className="border-y border-gray-100 bg-white py-20 dark:border-slate-800 dark:bg-slate-900">
+        <div className="mx-auto max-w-7xl px-4 md:px-8">
+          <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
+            <div className="order-2 overflow-x-auto rounded-2xl border border-gray-100 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:order-1">
+              <table className="w-full min-w-[420px] text-left text-xs">
+                <thead>
+                  <tr className="text-gray-500 dark:text-slate-400">
+                    <th className="pb-3 font-bold">İşletme</th>
+                    <th className="pb-3 text-center font-bold">Çevre İzni</th>
+                    <th className="pb-3 text-center font-bold">Atık Beyanı</th>
+                    <th className="pb-3 text-center font-bold">SEA Raporu</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                  <tr>
+                    <td className="py-3 font-semibold text-gray-800 dark:text-slate-200">ABC Kimya</td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">Tamam</span></td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">Süresi Geçti</span></td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">Tamam</span></td>
+                  </tr>
+                  <tr>
+                    <td className="py-3 font-semibold text-gray-800 dark:text-slate-200">XYZ Tekstil</td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">Tamam</span></td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">Tamam</span></td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-blue-50 px-2.5 py-1 font-bold text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">Muaf</span></td>
+                  </tr>
+                  <tr>
+                    <td className="py-3 font-semibold text-gray-800 dark:text-slate-200">Deniz Metal</td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">Süresi Geçti</span></td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">Tamam</span></td>
+                    <td className="py-3 text-center"><span className="rounded-full bg-gray-100 px-2.5 py-1 font-bold text-gray-500 dark:bg-slate-800 dark:text-slate-400">-</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="order-1 lg:order-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-400">
+                <Table size={13} /> Danışmanlık Firmaları İçin
+              </span>
+              <h2 className="mt-4 text-3xl font-extrabold leading-tight tracking-tight text-gray-900 dark:text-white">
+                Zorunlu Belge Matrisi ile portföyünüzü tek ekrandan denetleyin
+              </h2>
+              <p className="mt-4 text-gray-600 dark:text-slate-300">
+                Danışmanlık verdiğiniz her işletme bir satır, her zorunlu belge türü bir sütun. Hangi işletmenin
+                hangi belgesinin eksik, süresi geçmiş ya da muaf olduğunu tek bir matriste anında görün — onlarca
+                müşteriyi tek tek kontrol etmeye gerek kalmaz.
+              </p>
+              <ul className="mt-6 space-y-4">
+                {[
+                  'Süresi geçen zorunlu belgeler matriste otomatik olarak işaretlenir, hiçbiri gözden kaçmaz.',
+                  'Zorunlu belgeleri işletme bazında veya toplu olarak atayın; muafiyet nedenlerini kayıt altında tutun.',
+                  'Aynı matris üzerinden ilgili belgeye tıklayarak doğrudan detayına ve yüklemesine ulaşın.',
+                ].map((text) => (
+                  <li key={text} className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400">
+                      <CheckCircle2 size={16} />
+                    </div>
+                    <p className="text-sm leading-relaxed text-gray-600 dark:text-slate-300">{text}</p>
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         </div>
