@@ -14,6 +14,8 @@ import {
   CheckCircle2,
   Building2,
   Factory,
+  Eye,
+  ShieldCheck,
 } from 'lucide-react';
 import LandingLayout from './LandingLayout';
 
@@ -83,6 +85,72 @@ export default function Landing() {
               <p className="text-sm leading-relaxed text-gray-500 dark:text-slate-400">{item.desc}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* EKİP ŞEFFAFLIĞI — firma sahibinin danışman/personel takibi */}
+      <section className="bg-white py-20 dark:bg-slate-900">
+        <div className="mx-auto max-w-7xl px-4 md:px-8">
+          <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
+            <div>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3.5 py-1.5 text-xs font-bold text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-400">
+                <Eye size={13} /> Firma Sahipleri İçin
+              </span>
+              <h2 className="mt-4 text-3xl font-extrabold leading-tight tracking-tight text-gray-900 dark:text-white">
+                Danışmanlarınızın ne yaptığını her an görün
+              </h2>
+              <p className="mt-4 text-gray-600 dark:text-slate-300">
+                EvrakLab'in en güçlü yanlarından biri, firma sahiplerine ekibindeki danışmanları ve personeli
+                yakından takip etme imkanı sunmasıdır. Hangi danışman hangi müşteriyle ilgileniyor, hangi evrakı
+                takip ediyor, hangi görevi ne zaman tamamladı — hepsi tek panelden şeffaf şekilde görünür.
+              </p>
+              <ul className="mt-6 space-y-4">
+                {[
+                  { icon: ClipboardList, text: 'Her göreve/aksiyona hangi danışmanın atandığını, durumunu ve tamamlanma tarihini görün.' },
+                  { icon: FileText, text: 'Bir evrakı kimin yüklediğini, kimin takip ettiğini kayıt altında tutun — hiçbir sorumluluk gözden kaçmaz.' },
+                  { icon: Users, text: 'Danışman bazında hangi müşteri portföyünün atandığını ve iş yükünü tek bakışta karşılaştırın.' },
+                  { icon: ShieldCheck, text: 'Müşterilerinizden gelen değerlendirmelerle ekibinizin performansını ölçün.' },
+                ].map((item) => (
+                  <li key={item.text} className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400">
+                      <item.icon size={16} />
+                    </div>
+                    <p className="text-sm leading-relaxed text-gray-600 dark:text-slate-300">{item.text}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-6 dark:border-slate-800 dark:bg-slate-950">
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white">Ekip Aktivitesi</h3>
+                <span className="text-xs text-gray-400 dark:text-slate-500">Bugün</span>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+                  <div>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white">Ahmet Y.</p>
+                    <p className="text-xs text-gray-500 dark:text-slate-400">ABC Kimya için atık raporu yükledi</p>
+                  </div>
+                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">Tamamlandı</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+                  <div>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white">Elif K.</p>
+                    <p className="text-xs text-gray-500 dark:text-slate-400">XYZ Tekstil saha denetimini gerçekleştirdi</p>
+                  </div>
+                  <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">İncelemede</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+                  <div>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white">Mert D.</p>
+                    <p className="text-xs text-gray-500 dark:text-slate-400">3 müşteri için mevzuat uyum kontrolü yaptı</p>
+                  </div>
+                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">Devam Ediyor</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
