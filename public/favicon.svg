@@ -1,10 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <defs>
-    <linearGradient id="evraklabFaviconGradient" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7e14ff"/>
-      <stop offset="1" stop-color="#47bfff"/>
+    <linearGradient id="evraklabFaviconLab" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2ca58d"/>
+      <stop offset="1" stop-color="#84cc16"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#evraklabFaviconGradient)"/>
-  <text x="32" y="44" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="30" letter-spacing="-1" fill="#ffffff">EL</text>
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="#ffffff" stroke="#e5e7eb" stroke-width="2"/>
+  <text x="16" y="44" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="30" fill="#0e2a47">E</text>
+  <text x="42" y="44" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="30" fill="url(#evraklabFaviconLab)">L</text>
 </svg>
